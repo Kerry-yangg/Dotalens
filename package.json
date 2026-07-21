@@ -4,13 +4,13 @@
   "description": "Dota 2 本地单场 Replay 复盘与逐秒数据分析客户端",
   "author": "Dota Lens",
   "license": "MIT",
-  "homepage": "https://github.com/15857182453/Dotalens#readme",
+  "homepage": "https://github.com/Kerry-yangg/Dotalens#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/15857182453/Dotalens.git"
+    "url": "git+https://github.com/Kerry-yangg/Dotalens.git"
   },
   "bugs": {
-    "url": "https://github.com/15857182453/Dotalens/issues"
+    "url": "https://github.com/Kerry-yangg/Dotalens/issues"
   },
   "private": true,
   "type": "module",

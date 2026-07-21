@@ -5,7 +5,7 @@ ID 后，可读取最近比赛、获取 Replay，并在本机完成逐秒解析�
 
 > 当前版本：`0.4.1` 预览版。分析结论用于辅助复盘，不应视为绝对的游戏判断。
 
-[下载 v0.4.1 Windows 安装程序](https://github.com/15857182453/Dotalens/releases/tag/v0.4.1)
+[下载 v0.4.1 Windows 安装程序](https://github.com/Kerry-yangg/Dotalens/releases/tag/v0.4.1)
 
 ## 主要功能
 
@@ -20,7 +20,7 @@ ID 后，可读取最近比赛、获取 Replay，并在本机完成逐秒解析�
 
 支持 Windows 10/11 x64。普通用户无需单独安装 Node.js、Java 或 Maven。
 
-1. 在 [Releases](https://github.com/15857182453/Dotalens/releases) 下载
+1. 在 [Releases](https://github.com/Kerry-yangg/Dotalens/releases) 下载
    `Dota-Lens-Setup-0.4.1-x64.exe`。
 2. 运行安装程序并选择安装目录。
 3. 启动 Dota Lens，输入 OpenDota 使用的 Steam 32 位 `account_id`。

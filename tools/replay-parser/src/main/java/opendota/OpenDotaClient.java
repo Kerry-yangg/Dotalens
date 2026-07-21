@@ -18,7 +18,7 @@ import com.google.gson.JsonParser;
 
 final class OpenDotaClient {
     private static final String DEFAULT_API_BASE = "https://api.opendota.com/api";
-    private static final String USER_AGENT = "DotaLens/0.4.1 (+local replay analysis; github.com/15857182453/Dotalens)";
+    private static final String USER_AGENT = "DotaLens/0.4.1 (+local replay analysis; github.com/Kerry-yangg/Dotalens)";
     private static final String[] MATCH_LIST_FIELDS = {
             "player_slot", "radiant_win", "duration", "game_mode", "lobby_type", "hero_id",
             "start_time", "version", "kills", "deaths", "assists", "skill", "leaver_status",
