@@ -1,0 +1,55 @@
+export const HERO_META = {
+  1: ["antimage", "敌法师"], 2: ["axe", "斧王"], 3: ["bane", "祸乱之源"],
+  4: ["bloodseeker", "血魔"], 5: ["crystal_maiden", "水晶室女"], 6: ["drow_ranger", "卓尔游侠"],
+  7: ["earthshaker", "撼地者"], 8: ["juggernaut", "主宰"], 9: ["mirana", "米拉娜"],
+  10: ["morphling", "变体精灵"], 11: ["nevermore", "影魔"], 12: ["phantom_lancer", "幻影长矛手"],
+  13: ["puck", "帕克"], 14: ["pudge", "帕吉"], 15: ["razor", "剃刀"],
+  16: ["sand_king", "沙王"], 17: ["storm_spirit", "风暴之灵"], 18: ["sven", "斯温"],
+  19: ["tiny", "小小"], 20: ["vengefulspirit", "复仇之魂"], 21: ["windrunner", "风行者"],
+  22: ["zuus", "宙斯"], 23: ["kunkka", "昆卡"], 25: ["lina", "莉娜"],
+  26: ["lion", "莱恩"], 27: ["shadow_shaman", "暗影萨满"], 28: ["slardar", "斯拉达"],
+  29: ["tidehunter", "潮汐猎人"], 30: ["witch_doctor", "巫医"], 31: ["lich", "巫妖"],
+  32: ["riki", "力丸"], 33: ["enigma", "谜团"], 34: ["tinker", "修补匠"],
+  35: ["sniper", "狙击手"], 36: ["necrolyte", "瘟疫法师"], 37: ["warlock", "术士"],
+  38: ["beastmaster", "兽王"], 39: ["queenofpain", "痛苦女王"], 40: ["venomancer", "剧毒术士"],
+  41: ["faceless_void", "虚空假面"], 42: ["skeleton_king", "冥魂大帝"], 43: ["death_prophet", "死亡先知"],
+  44: ["phantom_assassin", "幻影刺客"], 45: ["pugna", "帕格纳"], 46: ["templar_assassin", "圣堂刺客"],
+  47: ["viper", "冥界亚龙"], 48: ["luna", "露娜"], 49: ["dragon_knight", "龙骑士"],
+  50: ["dazzle", "戴泽"], 51: ["rattletrap", "发条技师"], 52: ["leshrac", "拉席克"],
+  53: ["furion", "先知"], 54: ["life_stealer", "噬魂鬼"], 55: ["dark_seer", "黑暗贤者"],
+  56: ["clinkz", "克林克兹"], 57: ["omniknight", "全能骑士"], 58: ["enchantress", "魅惑魔女"],
+  59: ["huskar", "哈斯卡"], 60: ["night_stalker", "暗夜魔王"], 61: ["broodmother", "育母蜘蛛"],
+  62: ["bounty_hunter", "赏金猎人"], 63: ["weaver", "编织者"], 64: ["jakiro", "杰奇洛"],
+  65: ["batrider", "蝙蝠骑士"], 66: ["chen", "陈"], 67: ["spectre", "幽鬼"],
+  68: ["ancient_apparition", "远古冰魄"], 69: ["doom_bringer", "末日使者"], 70: ["ursa", "熊战士"],
+  71: ["spirit_breaker", "裂魂人"], 72: ["gyrocopter", "矮人直升机"], 73: ["alchemist", "炼金术士"],
+  74: ["invoker", "祈求者"], 75: ["silencer", "沉默术士"], 76: ["obsidian_destroyer", "殁境神蚀者"],
+  77: ["lycan", "狼人"], 78: ["brewmaster", "酒仙"], 79: ["shadow_demon", "暗影恶魔"],
+  80: ["lone_druid", "德鲁伊"], 81: ["chaos_knight", "混沌骑士"], 82: ["meepo", "米波"],
+  83: ["treant", "树精卫士"], 84: ["ogre_magi", "食人魔魔法师"], 85: ["undying", "不朽尸王"],
+  86: ["rubick", "拉比克"], 87: ["disruptor", "干扰者"], 88: ["nyx_assassin", "司夜刺客"],
+  89: ["naga_siren", "娜迦海妖"], 90: ["keeper_of_the_light", "光之守卫"], 91: ["wisp", "艾欧"],
+  92: ["visage", "维萨吉"], 93: ["slark", "斯拉克"], 94: ["medusa", "美杜莎"],
+  95: ["troll_warlord", "巨魔战将"], 96: ["centaur", "半人马战行者"], 97: ["magnataur", "马格纳斯"],
+  98: ["shredder", "伐木机"], 99: ["bristleback", "钢背兽"], 100: ["tusk", "巨牙海民"],
+  101: ["skywrath_mage", "天怒法师"], 102: ["abaddon", "亚巴顿"], 103: ["elder_titan", "上古巨神"],
+  104: ["legion_commander", "军团指挥官"], 105: ["techies", "工程师"], 106: ["ember_spirit", "灰烬之灵"],
+  107: ["earth_spirit", "大地之灵"], 108: ["abyssal_underlord", "孽主"], 109: ["terrorblade", "恐怖利刃"],
+  110: ["phoenix", "凤凰"], 111: ["oracle", "神谕者"], 112: ["winter_wyvern", "寒冬飞龙"],
+  113: ["arc_warden", "天穹守望者"], 114: ["monkey_king", "齐天大圣"], 119: ["dark_willow", "邪影芳灵"],
+  120: ["pangolier", "石鳞剑士"], 121: ["grimstroke", "天涯墨客"], 123: ["hoodwink", "森海飞霞"],
+  126: ["void_spirit", "虚无之灵"], 128: ["snapfire", "电炎绝手"], 129: ["mars", "玛尔斯"],
+  135: ["dawnbreaker", "破晓辰星"], 136: ["marci", "玛西"], 137: ["primal_beast", "兽"],
+  131: ["ringmaster", "百戏大王"], 138: ["muerta", "琼英碧灵"], 145: ["kez", "凯"],
+};
+
+export const GAME_MODES_ZH = {
+  0: "未知模式", 1: "全英雄选择", 2: "队长模式", 3: "随机征召", 4: "单一征召",
+  5: "全体随机", 12: "生疏模式", 16: "队长征召", 18: "技能征召",
+  20: "全随机死亡竞赛", 22: "天梯全英雄选择", 23: "加速模式",
+};
+
+export function heroMeta(heroId) {
+  const [token = "unknown", name = `英雄 ${heroId}`] = HERO_META[heroId] || [];
+  return { id: Number(heroId) || 0, token, name };
+}

@@ -1,0 +1,40 @@
+# Dependencies and build outputs
+node_modules/
+dist/
+release/
+.vite/
+coverage/
+tools/replay-parser/target/
+
+# Local runtimes, replay data, and generated analysis
+tools/runtime/
+tools/replay-poc/output/
+*.dem
+*.dem.bz2
+*.raw.jsonl
+*.raw.jsonl.gz
+*.part
+*.tmp
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# QA and workspace artifacts
+.agents/
+.codex/
+.playwright-mcp/
+.validation/
+qa/
+*.log
+*.msi
+npm-debug.log*
+__pycache__/
+*.pyc
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

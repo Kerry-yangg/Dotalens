@@ -1,0 +1,94 @@
+[CmdletBinding()]
+param(
+    [ValidateRange(1024, 65535)]
+    [int]$FrontendPort = 4173,
+
+    [string]$DataDirectory = (Join-Path $PSScriptRoot "runtime\dota-lens-data"),
+
+    [switch]$BuildParser
+)
+
+$ErrorActionPreference = "Stop"
+$root = Split-Path -Parent $PSScriptRoot
+$java = Join-Path $PSScriptRoot "runtime\jdk-21\bin\java.exe"
+$jar = Join-Path $PSScriptRoot "replay-parser\target\stats-0.1.0.jar"
+$logs = Join-Path $DataDirectory "logs"
+$parserProcess = $null
+$ownsParser = $false
+
+function Test-LocalEndpoint {
+    param([string]$Uri)
+    try {
+        Invoke-RestMethod -Uri $Uri -TimeoutSec 1 | Out-Null
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+if ($BuildParser -or -not (Test-Path -LiteralPath $jar)) {
+    & (Join-Path $PSScriptRoot "Build-DotaLensParser.ps1")
+}
+
+if (-not (Test-Path -LiteralPath $java)) {
+    throw "Java 21 runtime not found at $java"
+}
+
+New-Item -ItemType Directory -Force -Path $DataDirectory, $logs | Out-Null
+
+if (-not (Test-LocalEndpoint "http://127.0.0.1:5600/api/status")) {
+    $previousDataDirectory = $env:DOTA_LENS_DATA_DIR
+    $previousPython = $env:DOTA_LENS_PYTHON
+    try {
+        $env:DOTA_LENS_DATA_DIR = (Resolve-Path -LiteralPath $DataDirectory).Path
+        $python = Get-Command python -ErrorAction SilentlyContinue
+        $env:DOTA_LENS_PYTHON = if ($python) { $python.Source } else { $null }
+        $parserProcess = Start-Process -FilePath $java `
+            -ArgumentList @("-Xmx2g", "-jar", $jar) `
+            -PassThru `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput (Join-Path $logs "parser.stdout.log") `
+            -RedirectStandardError (Join-Path $logs "parser.stderr.log")
+        $ownsParser = $true
+    } finally {
+        $env:DOTA_LENS_DATA_DIR = $previousDataDirectory
+        $env:DOTA_LENS_PYTHON = $previousPython
+    }
+
+    $ready = $false
+    for ($attempt = 0; $attempt -lt 40; $attempt++) {
+        if (Test-LocalEndpoint "http://127.0.0.1:5600/api/status") {
+            $ready = $true
+            break
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    if (-not $ready) {
+        if ($parserProcess -and -not $parserProcess.HasExited) {
+            Stop-Process -Id $parserProcess.Id -Force
+        }
+        throw "Dota Lens parser did not become ready. Check $logs\parser.stderr.log"
+    }
+}
+
+$url = "http://127.0.0.1:$FrontendPort/"
+Write-Host "Dota Lens parser: http://127.0.0.1:5600/api/status"
+Write-Host "Dota Lens app:    $url"
+
+$frontendAlreadyRunning = Test-NetConnection -ComputerName 127.0.0.1 -Port $FrontendPort `
+    -InformationLevel Quiet -WarningAction SilentlyContinue
+if ($frontendAlreadyRunning) {
+    Write-Host "Frontend port is already active; reusing the existing server."
+    return
+}
+
+Push-Location $root
+try {
+    npm run dev -- --port $FrontendPort
+} finally {
+    Pop-Location
+    if ($ownsParser -and $parserProcess -and -not $parserProcess.HasExited) {
+        Stop-Process -Id $parserProcess.Id -Force
+        $parserProcess.WaitForExit()
+    }
+}
