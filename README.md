@@ -5,7 +5,7 @@ ID 后，可读取最近比赛、获取 Replay，并在本机完成逐秒解析�
 
 > 当前版本：`0.4.1` 预览版。分析结论用于辅助复盘，不应视为绝对的游戏判断。
 
-[下载最新版 Windows 安装程序](https://github.com/15857182453/Dotalens/releases/latest)
+[下载 v0.4.1 Windows 安装程序](https://github.com/15857182453/Dotalens/releases/tag/v0.4.1)
 
 ## 主要功能
 
