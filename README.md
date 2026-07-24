@@ -3,9 +3,9 @@
 Dota Lens 是一款面向 Dota 2 玩家个人复盘的 Windows 桌面客户端。输入 Steam 32 位数字
 ID 后，可读取最近比赛、获取 Replay，并在本机完成逐秒解析和多模块分析。
 
-> 当前版本：`0.4.1` 预览版。分析结论用于辅助复盘，不应视为绝对的游戏判断。
+> 当前版本：`0.4.2` 预览版。分析结论用于辅助复盘，不应视为绝对的游戏判断。
 
-[下载 v0.4.1 Windows 安装程序](https://github.com/Kerry-yangg/Dotalens/releases/tag/v0.4.1)
+[下载 v0.4.2 Windows 安装程序](https://github.com/Kerry-yangg/Dotalens/releases/tag/v0.4.2)
 
 ## 主要功能
 
@@ -21,7 +21,7 @@ ID 后，可读取最近比赛、获取 Replay，并在本机完成逐秒解析�
 支持 Windows 10/11 x64。普通用户无需单独安装 Node.js、Java 或 Maven。
 
 1. 在 [Releases](https://github.com/Kerry-yangg/Dotalens/releases) 下载
-   `Dota-Lens-Setup-0.4.1-x64.exe`。
+   `Dota-Lens-Setup-0.4.2-x64.exe`。
 2. 运行安装程序并选择安装目录。
 3. 启动 Dota Lens，输入 OpenDota 使用的 Steam 32 位 `account_id`。
 4. 选择一场比赛，确认后等待本地解析完成。
@@ -45,7 +45,7 @@ Release 页面下载，并核对 Release 中公布的 SHA-256。
 - 不同 Dota 2 Patch 的 Replay 字段会变化，地图校准和派生结论需要持续回归验证。
 - 连续真实队伍视野、完整逐波兵线和营地状态在部分 Replay 中不可得，产品会显示证据缺口。
 - 当前只构建和验证 Windows x64 安装程序，尚未提供 macOS 或 Linux 桌面包。
-- `0.4.1` 仍使用 Electron 默认程序图标，后续版本会补充独立品牌图标与代码签名。
+- `0.4.2` 仍使用 Electron 默认程序图标，后续版本会补充独立品牌图标与代码签名。
 
 ## 本地开发
 

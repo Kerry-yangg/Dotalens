@@ -34,10 +34,14 @@ class AnalysisStorageTest {
         JsonObject snapshots = modules.getAsJsonObject("snapshots");
         assertEquals(AnalysisStorage.SNAPSHOT_SCHEMA, snapshots.get("schema").getAsString());
         assertEquals(2, snapshots.getAsJsonObject("by_slot").getAsJsonArray("0").size());
-        assertEquals(14, snapshots.getAsJsonObject("by_slot").getAsJsonArray("0").get(0)
+        assertEquals(AnalysisStorage.SNAPSHOT_FIELDS.size(), snapshots.getAsJsonObject("by_slot")
+                .getAsJsonArray("0").get(0)
                 .getAsJsonArray().size());
+        assertEquals(2, snapshots.getAsJsonArray("omitted_repeated_fields").size());
         assertFalse(modules.has("combat"));
         assertFalse(modules.has("farm"));
+        assertEquals("exact", modules.getAsJsonObject("ability_metadata")
+                .get("match").getAsString());
         assertEquals("split-gzip-modules",
                 stored.getAsJsonObject("analysis_storage").get("layout").getAsString());
 
@@ -90,6 +94,9 @@ class AnalysisStorageTest {
         modules.add("players", new JsonObject());
         modules.add("module_evidence", new JsonObject());
         modules.add("coordinate_system", new JsonObject());
+        JsonObject abilityMetadata = new JsonObject();
+        abilityMetadata.addProperty("match", "exact");
+        modules.add("ability_metadata", abilityMetadata);
         modules.add("farm", new JsonObject());
         JsonObject combat = new JsonObject();
         JsonArray fights = new JsonArray();

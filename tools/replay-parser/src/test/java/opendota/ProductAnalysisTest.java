@@ -1,9 +1,12 @@
 package opendota;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
@@ -26,7 +29,6 @@ class ProductAnalysisTest {
         addLaneSnapshot(analysis, 7, "juggernaut", 14, 26, 55, 5200);
         addLaneSnapshot(analysis, 8, "crystal_maiden", 18, 24, 4, 1800);
         addLaneSnapshot(analysis, 9, "hoodwink", 83, 69, 7, 2200);
-
         JsonObject laning = analysis.build(600).getAsJsonObject("laning");
         JsonObject positions = laning.getAsJsonObject("positions_by_slot");
 
@@ -99,10 +101,7 @@ class ProductAnalysisTest {
                 {"type":"interval","slot":0,"time":10,"x":160,"y":80,"life_state":0}
                 """));
 
-        JsonObject point = analysis.build(60)
-                .getAsJsonObject("snapshots")
-                .getAsJsonArray("0")
-                .get(0).getAsJsonObject();
+        JsonObject point = snapshotAt(analysis.build(60), 0, 0);
 
         assertEquals(75.0, point.get("x").getAsDouble(), 0.01);
         assertEquals(87.5, point.get("y").getAsDouble(), 0.01);
@@ -157,6 +156,40 @@ class ProductAnalysisTest {
     }
 
     @Test
+    void valuesAConfirmedStackFromSameMatchNeutralGoldEvidence() {
+        ProductAnalysis analysis = new ProductAnalysis("7.41");
+        analysis.accept(json("""
+                {"type":"unit_enter","time":-90,"game_time_ms":-90000,"event_seq":1,"ehandle":500,"unit":"CDOTA_NeutralSpawner","unit_kind":"neutral","team":0,"x":102.56,"y":160.97}
+                """));
+        analysis.accept(json("""
+                {"type":"interval","slot":4,"time":58,"unit":"CDOTA_Unit_Hero_Slark","x":102.56,"y":160.97,"life_state":0,"camps_stacked":0,"creeps_stacked":0}
+                """));
+        analysis.accept(json("""
+                {"type":"interval","slot":4,"time":60,"unit":"CDOTA_Unit_Hero_Slark","x":102.56,"y":160.97,"life_state":0,"camps_stacked":1,"creeps_stacked":3}
+                """));
+        analysis.accept(json("""
+                {"type":"unit_enter","time":60,"game_time_ms":60000,"event_seq":10,"ehandle":501,"unit":"CDOTA_BaseNPC_Creep_Neutral","unit_kind":"neutral","team":4,"x":102.56,"y":160.97,"hp":400,"max_hp":400,"life_state":0}
+                """));
+        analysis.accept(json("""
+                {"type":"unit_state","time":80,"game_time_ms":80000,"event_seq":20,"ehandle":501,"unit":"CDOTA_BaseNPC_Creep_Neutral","unit_kind":"neutral","team":4,"x":102.56,"y":160.97,"hp":0,"max_hp":400,"life_state":1}
+                """));
+        analysis.accept(json("""
+                {"type":"DOTA_COMBATLOG_DEATH","time":80,"game_time_ms":80000,"event_seq":21,"attackername":"npc_dota_hero_slark","targetname":"npc_dota_neutral_centaur_outrunner","attackerhero":true,"targethero":false,"attacker_team":2,"target_team":4}
+                """));
+        analysis.accept(json("""
+                {"type":"DOTA_COMBATLOG_GOLD","time":80,"game_time_ms":80000,"event_seq":22,"targetname":"npc_dota_hero_slark","value":25,"gold_reason":14}
+                """));
+
+        JsonObject stack = analysis.build(120).getAsJsonObject("farm")
+                .getAsJsonObject("stack_events_by_slot").getAsJsonArray("4")
+                .get(0).getAsJsonObject();
+
+        assertEquals(75, stack.get("created_gold_estimate").getAsInt());
+        assertEquals("confirmed_creep_delta_times_same_camp_observed_median",
+                stack.get("value_evidence").getAsString());
+    }
+
+    @Test
     void buildsFightVisionAndRoleResponsibilityEvidence() {
         ProductAnalysis analysis = new ProductAnalysis();
         analysis.accept(json("""
@@ -207,6 +240,8 @@ class ProductAnalysisTest {
         assertEquals(2.4, support.get("controlSeconds").getAsDouble(), 0.01);
         assertEquals(180, support.get("healing").getAsInt());
         assertEquals(1, support.get("setupSentries").getAsInt());
+        assertEquals("position-responsibility/1.0", support.get("responsibility_model").getAsString());
+        assertTrue(support.get("role").getAsString().startsWith("position_"));
     }
 
     @Test
@@ -639,7 +674,7 @@ class ProductAnalysisTest {
                 """));
 
         JsonObject modules = analysis.build(700);
-        JsonObject snapshot = modules.getAsJsonObject("snapshots").getAsJsonArray("0").get(0).getAsJsonObject();
+        JsonObject snapshot = snapshotAt(modules, 0, 0);
         JsonObject farm = modules.getAsJsonObject("farm").getAsJsonObject("gold_events_by_slot")
                 .getAsJsonArray("0").get(0).getAsJsonObject();
         JsonObject ward = modules.getAsJsonObject("vision").getAsJsonArray("wards").get(0).getAsJsonObject();
@@ -660,13 +695,32 @@ class ProductAnalysisTest {
                 """));
 
         JsonObject modules = analysis.build(60);
-        JsonObject snapshot = modules.getAsJsonObject("snapshots").getAsJsonArray("0").get(0).getAsJsonObject();
+        JsonObject snapshot = snapshotAt(modules, 0, 0);
 
         assertFalse(snapshot.has("x"));
         assertFalse(snapshot.has("y"));
         assertFalse(snapshot.get("coordinate_valid").getAsBoolean());
         assertTrue(modules.getAsJsonObject("coordinate_system").getAsJsonObject("diagnostics")
                 .get("invalid_total").getAsLong() > 0);
+    }
+
+    @Test
+    void skipsUnmappableWardsWhenBuildingFarmVisionContext() {
+        ProductAnalysis analysis = new ProductAnalysis("7.41");
+        analysis.accept(json("""
+                {"type":"interval","slot":0,"time":60,"unit":"CDOTA_Unit_Hero_Axe","x":128,"y":128,"life_state":0,"level":5,"lh":20,"networth":2500}
+                """));
+        analysis.accept(json("""
+                {"type":"obs","time":55,"ehandle":44,"team":2,"owner_slot":0,"x":193.3,"y":126.2,"day_vision_range":1600}
+                """));
+
+        JsonObject modules = assertDoesNotThrow(() -> analysis.build(180));
+        JsonObject ward = modules.getAsJsonObject("vision").getAsJsonArray("wards")
+                .get(0).getAsJsonObject();
+
+        assertFalse(ward.get("coordinate_valid").getAsBoolean());
+        assertFalse(ward.has("x"));
+        assertFalse(ward.has("y"));
     }
 
     @Test
@@ -703,17 +757,14 @@ class ProductAnalysisTest {
     }
 
     @Test
-    void preservesPerSecondVisionMovementAbilityAndItemRuntimeState() {
+    void packsPerSecondScalarStateAndKeepsInventoryTransitions() {
         ProductAnalysis analysis = new ProductAnalysis("7.41");
         analysis.accept(json("""
                 {"type":"interval","slot":0,"time":10,"unit":"CDOTA_Unit_Hero_Axe","x":160,"y":80,"life_state":0,"move_speed":315,"visible_by_team":6,"day_vision_range":1800,"night_vision_range":800,"fow_team":2,"reveal_radius":450.5,"selection_ring_visible":true,"hero_abilities":[{"id":"axe_berserkers_call","ability_level":2,"cooldown":7.5,"cooldown_length":16.0,"current_charges":1,"mana_cost":90,"cast_range":300}],"hero_inventory":[{"id":"item_blink","slot":0,"num_charges":0,"num_secondary_charges":0,"cooldown":2.25,"cooldown_length":15.0}]}
                 """));
 
         JsonObject modules = analysis.build(60);
-        JsonObject snapshot = modules.getAsJsonObject("snapshots").getAsJsonArray("0")
-                .get(0).getAsJsonObject();
-        JsonObject ability = snapshot.getAsJsonArray("hero_abilities").get(0).getAsJsonObject();
-        JsonObject item = snapshot.getAsJsonArray("hero_inventory").get(0).getAsJsonObject();
+        JsonObject snapshot = snapshotAt(modules, 0, 0);
 
         assertEquals(315, snapshot.get("move_speed").getAsInt());
         assertEquals(6, snapshot.get("visible_by_team").getAsInt());
@@ -721,11 +772,10 @@ class ProductAnalysisTest {
         assertEquals(800, snapshot.get("night_vision_range").getAsInt());
         assertEquals(2, snapshot.get("fow_team").getAsInt());
         assertTrue(snapshot.get("selection_ring_visible").getAsBoolean());
-        assertEquals(7.5, ability.get("cooldown").getAsDouble(), 0.001);
-        assertEquals(1, ability.get("charges").getAsInt());
-        assertEquals(300, ability.get("cast_range").getAsInt());
-        assertEquals(2.25, item.get("cooldown").getAsDouble(), 0.001);
-        assertEquals(15.0, item.get("cooldown_length").getAsDouble(), 0.001);
+        JsonObject packedSnapshots = modules.getAsJsonObject("snapshots");
+        assertEquals(AnalysisStorage.SNAPSHOT_SCHEMA, packedSnapshots.get("schema").getAsString());
+        assertTrue(packedSnapshots.getAsJsonArray("omitted_repeated_fields")
+                .toString().contains("hero_abilities"));
         JsonObject inventoryPoint = modules.getAsJsonObject("build").getAsJsonObject("by_slot")
                 .getAsJsonObject("0").getAsJsonArray("inventory").get(0).getAsJsonObject();
         assertEquals(2.25, inventoryPoint.getAsJsonArray("items").get(0).getAsJsonObject()
@@ -888,8 +938,190 @@ class ProductAnalysisTest {
         assertEquals("visibility_lost", cycle.get("state").getAsString());
         assertEquals("visibility_lost", cycle.getAsJsonArray("transitions").get(1)
                 .getAsJsonObject().get("state").getAsString());
-        assertEquals("observed-resource-state/1.0",
+        assertEquals("observed-resource-state/1.1",
                 farm.getAsJsonObject("resource_state_schema").get("schema").getAsString());
+    }
+
+    @Test
+    void attributesEachLaneCreepDeathToOneCombatLogAndGoldEvent() {
+        ProductAnalysis analysis = new ProductAnalysis("7.41d");
+        analysis.accept(json("""
+                {"type":"interval","slot":0,"time":34,"game_time_ms":34000,"event_seq":1,"unit":"CDOTA_Unit_Hero_Puck","x":158,"y":82,"life_state":0,"lh":0,"networth":900}
+                """));
+        analysis.accept(json("""
+                {"type":"unit_enter","time":4,"game_time_ms":4000,"event_seq":10,"ehandle":101,"unit":"CDOTA_BaseNPC_Creep_Lane","unit_kind":"lane_creep","team":3,"x":160,"y":80,"hp":550,"max_hp":550,"life_state":0}
+                """));
+        analysis.accept(json("""
+                {"type":"unit_state","time":35,"game_time_ms":35600,"event_seq":20,"ehandle":101,"unit":"CDOTA_BaseNPC_Creep_Lane","unit_kind":"lane_creep","team":3,"x":158,"y":82,"hp":0,"max_hp":550,"life_state":1}
+                """));
+        analysis.accept(json("""
+                {"type":"DOTA_COMBATLOG_DEATH","time":35,"game_time_ms":35600,"event_seq":25,"attackername":"npc_dota_hero_puck","targetname":"npc_dota_creep_badguys_melee","attackerhero":true,"targethero":false,"attacker_team":2,"target_team":3,"event_last_hits":1}
+                """));
+        analysis.accept(json("""
+                {"type":"DOTA_COMBATLOG_GOLD","time":35,"game_time_ms":35600,"event_seq":26,"targetname":"npc_dota_hero_puck","value":38,"gold_reason":13}
+                """));
+        analysis.accept(json("""
+                {"type":"unit_enter","time":5,"game_time_ms":5000,"event_seq":30,"ehandle":102,"unit":"CDOTA_BaseNPC_Creep_Lane","unit_kind":"lane_creep","team":3,"x":160,"y":80,"hp":550,"max_hp":550,"life_state":0}
+                """));
+        analysis.accept(json("""
+                {"type":"unit_state","time":40,"game_time_ms":40000,"event_seq":31,"ehandle":102,"unit":"CDOTA_BaseNPC_Creep_Lane","unit_kind":"lane_creep","team":3,"x":158,"y":82,"hp":0,"max_hp":550,"life_state":1}
+                """));
+
+        JsonObject farm = analysis.build(60).getAsJsonObject("farm");
+        JsonObject creep = farm.getAsJsonArray("creep_resolutions").get(0).getAsJsonObject();
+        JsonObject wave = farm.getAsJsonArray("lane_waves").get(0).getAsJsonObject();
+
+        assertEquals("confirmed_death_attributed", creep.get("resolution").getAsString());
+        assertEquals("last_hit", creep.get("outcome").getAsString());
+        assertEquals(0, creep.get("killer_slot").getAsInt());
+        assertEquals(38, creep.get("observed_gold").getAsInt());
+        assertEquals(1, wave.getAsJsonObject("last_hits_by_slot").get("0").getAsInt());
+        assertEquals(38, wave.getAsJsonObject("observed_gold_by_slot").get("0").getAsInt());
+        JsonObject unattributed = farm.getAsJsonArray("creep_resolutions").get(1).getAsJsonObject();
+        assertEquals("confirmed_death_unattributed", unattributed.get("resolution").getAsString());
+        assertEquals(38, unattributed.get("estimated_gold").getAsInt());
+        assertEquals("same_match_observed_unit_kind_median",
+                unattributed.get("gold_evidence").getAsString());
+    }
+
+    @Test
+    void enablesRetrospectiveLaneRouteOnlyWhenUnitVisibilityAndRoleGatesPass() {
+        ProductAnalysis analysis = new ProductAnalysis("7.41d");
+        addLaneSnapshot(analysis, 0, "puck", 12, 28, 42, 4200);
+        addLaneSnapshot(analysis, 1, "tusk", 15, 30, 6, 2100);
+        addLaneSnapshot(analysis, 2, "bane", 84, 74, 5, 1900);
+        addLaneSnapshot(analysis, 3, "axe", 47, 52, 46, 4700);
+        addLaneSnapshot(analysis, 4, "drow_ranger", 82, 76, 51, 5000);
+        addLaneSnapshot(analysis, 5, "centaur", 86, 72, 44, 4300);
+        addLaneSnapshot(analysis, 6, "storm_spirit", 84, 70, 48, 4800);
+        addLaneSnapshot(analysis, 7, "juggernaut", 82, 74, 55, 5200);
+        addLaneSnapshot(analysis, 8, "crystal_maiden", 80, 72, 4, 1800);
+        addLaneSnapshot(analysis, 9, "hoodwink", 78, 70, 7, 2200);
+        for (int slot = 5; slot < 10; slot++) {
+            analysis.accept(json(String.format(java.util.Locale.ROOT,
+                    "{\"type\":\"interval\",\"slot\":%d,\"time\":60,\"unit\":\"CDOTA_Unit_Hero_%s\",\"x\":170,\"y\":95,\"life_state\":0,\"visible_by_team\":4,\"move_speed\":300}",
+                    slot, List.of("centaur", "storm_spirit", "juggernaut", "crystal_maiden", "hoodwink").get(slot - 5))));
+        }
+        analysis.accept(json("""
+                {"type":"unit_enter","time":20,"game_time_ms":20000,"event_seq":10,"ehandle":100,"unit":"CDOTA_BaseNPC_Creep_Lane","unit_kind":"lane_creep","team":3,"x":79.4,"y":156.2,"hp":550,"max_hp":550,"life_state":0}
+                """));
+        analysis.accept(json("""
+                {"type":"unit_state","time":35,"game_time_ms":35000,"event_seq":20,"ehandle":100,"unit":"CDOTA_BaseNPC_Creep_Lane","unit_kind":"lane_creep","team":3,"x":79.4,"y":156.2,"hp":0,"max_hp":550,"life_state":1}
+                """));
+        analysis.accept(json("""
+                {"type":"DOTA_COMBATLOG_DEATH","time":35,"game_time_ms":35000,"event_seq":25,"attackername":"npc_dota_hero_puck","targetname":"npc_dota_creep_badguys_melee","attackerhero":true,"targethero":false,"attacker_team":2,"target_team":3}
+                """));
+        analysis.accept(json("""
+                {"type":"DOTA_COMBATLOG_GOLD","time":35,"game_time_ms":35000,"event_seq":26,"targetname":"npc_dota_hero_puck","value":38,"gold_reason":13}
+                """));
+        analysis.accept(json("""
+                {"type":"unit_enter","time":-90,"game_time_ms":-90000,"event_seq":60,"ehandle":300,"unit":"CDOTA_NeutralSpawner","unit_kind":"neutral","team":0,"x":81.92,"y":153.60}
+                """));
+        for (int index = 0; index < 2; index++) {
+            int handle = 301 + index;
+            int deathTime = 100 + index * 5;
+            analysis.accept(json(String.format(java.util.Locale.ROOT,
+                    "{\"type\":\"unit_enter\",\"time\":65,\"game_time_ms\":65000,\"event_seq\":%d,\"ehandle\":%d,\"unit\":\"CDOTA_BaseNPC_Creep_Neutral\",\"unit_kind\":\"neutral\",\"team\":4,\"x\":81.92,\"y\":153.60,\"hp\":400,\"max_hp\":400,\"life_state\":0}",
+                    61 + index, handle)));
+            analysis.accept(json(String.format(java.util.Locale.ROOT,
+                    "{\"type\":\"unit_state\",\"time\":%d,\"game_time_ms\":%d000,\"event_seq\":%d,\"ehandle\":%d,\"unit\":\"CDOTA_BaseNPC_Creep_Neutral\",\"unit_kind\":\"neutral\",\"team\":4,\"x\":81.92,\"y\":153.60,\"hp\":0,\"max_hp\":400,\"life_state\":1}",
+                    deathTime, deathTime, 63 + index, handle)));
+            analysis.accept(json(String.format(java.util.Locale.ROOT,
+                    "{\"type\":\"DOTA_COMBATLOG_DEATH\",\"time\":%d,\"game_time_ms\":%d000,\"event_seq\":%d,\"attackername\":\"npc_dota_hero_puck\",\"targetname\":\"npc_dota_neutral_centaur_outrunner\",\"attackerhero\":true,\"targethero\":false,\"attacker_team\":2,\"target_team\":4}",
+                    deathTime, deathTime, 66 + index)));
+            analysis.accept(json(String.format(java.util.Locale.ROOT,
+                    "{\"type\":\"DOTA_COMBATLOG_GOLD\",\"time\":%d,\"game_time_ms\":%d000,\"event_seq\":%d,\"targetname\":\"npc_dota_hero_puck\",\"value\":25,\"gold_reason\":14}",
+                    deathTime, deathTime, 68 + index)));
+        }
+        for (int index = 0; index < 2; index++) {
+            int handle = 201 + index;
+            int deathTime = 95 + index * 5;
+            analysis.accept(json(String.format(java.util.Locale.ROOT,
+                    "{\"type\":\"unit_enter\",\"time\":65,\"game_time_ms\":65000,\"event_seq\":%d,\"ehandle\":%d,\"unit\":\"CDOTA_BaseNPC_Creep_Lane\",\"unit_kind\":\"lane_creep\",\"team\":3,\"x\":79.4,\"y\":156.2,\"hp\":550,\"max_hp\":550,\"life_state\":0}",
+                    30 + index, handle)));
+            analysis.accept(json(String.format(java.util.Locale.ROOT,
+                    "{\"type\":\"unit_state\",\"time\":%d,\"game_time_ms\":%d000,\"event_seq\":%d,\"ehandle\":%d,\"unit\":\"CDOTA_BaseNPC_Creep_Lane\",\"unit_kind\":\"lane_creep\",\"team\":3,\"x\":79.4,\"y\":156.2,\"hp\":0,\"max_hp\":550,\"life_state\":1}",
+                    deathTime, deathTime, 40 + index, handle)));
+            analysis.accept(json(String.format(java.util.Locale.ROOT,
+                    "{\"type\":\"DOTA_COMBATLOG_DEATH\",\"time\":%d,\"game_time_ms\":%d000,\"event_seq\":%d,\"attackername\":\"npc_dota_goodguys_tower1_top\",\"targetname\":\"npc_dota_creep_badguys_melee\",\"attackerhero\":false,\"targethero\":false,\"attacker_team\":2,\"target_team\":3}",
+                    deathTime, deathTime, 50 + index)));
+        }
+
+        JsonArray diagnostics = analysis.build(360).getAsJsonObject("farm")
+                .getAsJsonObject("diagnostics_by_slot").getAsJsonArray("0");
+        JsonObject enabled = null;
+        for (JsonElement element : diagnostics) {
+            JsonObject row = element.getAsJsonObject();
+            if (row.get("recommendation_enabled").getAsBoolean()) {
+                enabled = row;
+                break;
+            }
+        }
+
+        assertNotNull(enabled);
+        assertEquals("complete", enabled.get("evidence_status").getAsString());
+        assertEquals("retrospective-resource-route/1.2", enabled.get("route_model").getAsString());
+        assertEquals("phase_baseline_then_hard_gates_then_highest_score",
+                enabled.get("selection_policy").getAsString());
+        assertEquals("collect_lane", enabled.get("recommendation").getAsString());
+        assertEquals("none", enabled.get("route_blocker").getAsString());
+        assertTrue(enabled.has("targetX"));
+        boolean blockedEarlyCamp = false;
+        for (JsonElement element : enabled.getAsJsonArray("candidates")) {
+            JsonObject candidate = element.getAsJsonObject();
+            if (candidate.get("kind").getAsString().equals("hold_jungle")
+                    && candidate.has("blocker")
+                    && candidate.get("blocker").getAsString().equals("pre10_jungle_clear_unproven")) {
+                blockedEarlyCamp = true;
+            }
+        }
+        assertTrue(blockedEarlyCamp);
+    }
+
+    @Test
+    void extendsPhaseAwareRouteReviewToMatchEndForCorePositionsOnly() {
+        ProductAnalysis analysis = new ProductAnalysis("7.41d");
+        addLaneSnapshot(analysis, 0, "axe", 12, 28, 42, 4200);
+        addLaneSnapshot(analysis, 1, "tusk", 15, 30, 6, 2100);
+        addLaneSnapshot(analysis, 2, "bane", 84, 74, 5, 1900);
+        addLaneSnapshot(analysis, 3, "puck", 47, 52, 46, 4700);
+        addLaneSnapshot(analysis, 4, "drow_ranger", 82, 76, 51, 5000);
+        addLaneSnapshot(analysis, 5, "centaur", 86, 72, 44, 4300);
+        addLaneSnapshot(analysis, 6, "storm_spirit", 52, 47, 48, 4800);
+        addLaneSnapshot(analysis, 7, "juggernaut", 14, 26, 55, 5200);
+        addLaneSnapshot(analysis, 8, "crystal_maiden", 18, 24, 4, 1800);
+        addLaneSnapshot(analysis, 9, "hoodwink", 83, 69, 7, 2200);
+        addCombatSnapshot(analysis, 4, "drow_ranger", 55, 55, 1200);
+        addCombatSnapshot(analysis, 5, "centaur", 56, 55, 1200);
+        analysis.accept(json("""
+                {"type":"DOTA_COMBATLOG_DAMAGE","time":1200,"attackername":"npc_dota_hero_drow_ranger","targetname":"npc_dota_hero_centaur","attackerhero":true,"targethero":true,"attacker_team":2,"target_team":3,"value":300}
+                """));
+
+        JsonObject farm = analysis.build(1500).getAsJsonObject("farm");
+        JsonArray coreDiagnostics = farm.getAsJsonObject("diagnostics_by_slot").getAsJsonArray("4");
+        JsonArray supportDiagnostics = farm.getAsJsonObject("diagnostics_by_slot").getAsJsonArray("2");
+        JsonObject post20 = null;
+        for (JsonElement element : coreDiagnostics) {
+            JsonObject row = element.getAsJsonObject();
+            if (row.get("time").getAsInt() >= 1200) {
+                post20 = row;
+                break;
+            }
+        }
+
+        assertNotNull(post20);
+        assertTrue(post20.get("post20_core_priority").getAsBoolean());
+        assertEquals("core_route_20_30", post20.get("phase").getAsString());
+        assertEquals(75, post20.get("route_lookahead_seconds").getAsInt());
+        assertTrue(post20.get("benchmark_group").getAsString().startsWith("post20:"));
+        assertEquals("context_exempt", post20.get("decision").getAsString());
+        assertTrue(post20.get("strategic_commitment_exempt").getAsBoolean());
+        assertFalse(post20.get("recommendation_enabled").getAsBoolean());
+        for (JsonElement element : supportDiagnostics) {
+            assertTrue(element.getAsJsonObject().get("time").getAsInt() < 1200);
+        }
+        assertEquals("match_end", farm.getAsJsonObject("route_analysis")
+                .get("core_analysis_end").getAsString());
     }
 
     @Test
@@ -924,6 +1156,33 @@ class ProductAnalysisTest {
     }
 
     @Test
+    void blocksGeometricVisionWhileSmokeIsActive() {
+        ProductAnalysis analysis = new ProductAnalysis("7.41d");
+        analysis.accept(json("""
+                {"type":"interval","slot":0,"time":10,"unit":"CDOTA_Unit_Hero_Axe","x":128,"y":128,"z":128,"life_state":0,"day_vision_range":1800}
+                """));
+        analysis.accept(json("""
+                {"type":"interval","slot":5,"time":10,"unit":"CDOTA_Unit_Hero_Bane","x":130,"y":128,"z":128,"life_state":0,"move_speed":300}
+                """));
+        analysis.accept(json("""
+                {"type":"DOTA_COMBATLOG_MODIFIER_ADD","time":9,"event_seq":20,"targetname":"npc_dota_hero_bane","targethero":true,"inflictor":"modifier_smoke_of_deceit","invisibility_modifier":true}
+                """));
+        analysis.accept(json("""
+                {"type":"DOTA_COMBATLOG_MODIFIER_REMOVE","time":11,"event_seq":30,"targetname":"npc_dota_hero_bane","targethero":true,"inflictor":"modifier_smoke_of_deceit","invisibility_modifier":true}
+                """));
+
+        JsonObject vision = analysis.build(12).getAsJsonObject("vision");
+        JsonArray intervals = vision.getAsJsonObject("visibility_by_team")
+                .getAsJsonObject("radiant").getAsJsonObject("5").getAsJsonArray("intervals");
+
+        assertTrue(intervals.toString().contains("fog_state_unavailable"));
+        assertTrue(intervals.toString().contains("allied_hero_vision_geometry"));
+        assertEquals("continuous-enemy-visibility/1.1",
+                vision.getAsJsonObject("visibility_schema").get("schema").getAsString());
+        assertTrue(vision.getAsJsonObject("visibility_schema").get("smoke_modeled").getAsBoolean());
+    }
+
+    @Test
     void suppressesNoSpellBlameWhenCooldownBlocksEveryObservedOpportunity() {
         ProductAnalysis analysis = responsibilityFight(8.0, 100, 800);
         JsonObject contribution = contributionForSlot(analysis.build(610), 0);
@@ -949,7 +1208,7 @@ class ProductAnalysisTest {
 
     @Test
     void marksResponsibilityEvidenceInsufficientWhenCastRangeIsUnknown() {
-        ProductAnalysis analysis = responsibilityFight(0.0, 100, 0);
+        ProductAnalysis analysis = responsibilityFight(0.0, 100, 0, "7.40c");
         JsonObject contribution = contributionForSlot(analysis.build(610), 0);
 
         assertEquals("insufficient_evidence", contribution.getAsJsonObject("responsibility_gate")
@@ -961,11 +1220,35 @@ class ProductAnalysisTest {
         return JsonParser.parseString(value).getAsJsonObject();
     }
 
+    private static JsonObject snapshotAt(JsonObject modules, int slot, int index) {
+        JsonObject packed = modules.getAsJsonObject("snapshots");
+        JsonArray fields = packed.getAsJsonArray("fields");
+        JsonArray regions = packed.getAsJsonArray("regions");
+        JsonArray values = packed.getAsJsonObject("by_slot").getAsJsonArray(Integer.toString(slot))
+                .get(index).getAsJsonArray();
+        JsonObject row = new JsonObject();
+        for (int fieldIndex = 0; fieldIndex < fields.size(); fieldIndex++) {
+            String field = fields.get(fieldIndex).getAsString();
+            JsonElement value = values.get(fieldIndex);
+            if (value == null || value.isJsonNull()) continue;
+            if (field.equals("region")) row.addProperty(field,
+                    regions.get(value.getAsInt()).getAsString());
+            else row.add(field, value.deepCopy());
+        }
+        row.addProperty("coordinate_valid", row.has("x") && row.has("y"));
+        return row;
+    }
+
     private static ProductAnalysis responsibilityFight(double cooldown, int mana, int castRange) {
-        ProductAnalysis analysis = new ProductAnalysis("7.41d");
+        return responsibilityFight(cooldown, mana, castRange, "7.41d");
+    }
+
+    private static ProductAnalysis responsibilityFight(double cooldown, int mana, int castRange,
+            String patch) {
+        ProductAnalysis analysis = new ProductAnalysis(patch);
         for (int time = 600; time <= 603; time++) {
             analysis.accept(json(String.format(java.util.Locale.ROOT,
-                    "{\"type\":\"interval\",\"slot\":0,\"time\":%d,\"unit\":\"CDOTA_Unit_Hero_Axe\",\"x\":128,\"y\":128,\"life_state\":0,\"mana\":%d,\"networth\":7000,\"hero_abilities\":[{\"id\":\"axe_berserkers_call\",\"ability_level\":1,\"cooldown\":%.1f,\"cooldown_length\":16,\"mana_cost\":80,\"cast_range\":%d}]} ",
+                    "{\"type\":\"interval\",\"slot\":0,\"time\":%d,\"unit\":\"CDOTA_Unit_Hero_Axe\",\"x\":128,\"y\":128,\"life_state\":0,\"mana\":%d,\"networth\":7000,\"hero_abilities\":[{\"id\":\"axe_battle_hunger\",\"ability_level\":1,\"cooldown\":%.1f,\"cooldown_length\":16,\"mana_cost\":80,\"cast_range\":%d}]} ",
                     time, mana, cooldown, castRange)));
             analysis.accept(json(String.format(java.util.Locale.ROOT,
                     "{\"type\":\"interval\",\"slot\":5,\"time\":%d,\"unit\":\"CDOTA_Unit_Hero_Bane\",\"x\":130,\"y\":128,\"life_state\":0,\"networth\":6500}",

@@ -17,7 +17,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.zip.GZIPInputStream;
-import java.util.zip.GZIPOutputStream;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -28,19 +27,23 @@ import com.google.gson.JsonParser;
 
 final class AnalysisStorage {
     static final String STORAGE_SCHEMA = "analysis-storage/1.0";
-    static final String SNAPSHOT_SCHEMA = "snapshot-columns/1.0";
+    static final String SNAPSHOT_SCHEMA = "snapshot-columns/1.1";
 
     private static final Gson GSON = new Gson();
     private static final List<String> MODULE_NAMES = List.of(
             "snapshots", "development", "build", "farm", "laning", "vision",
             "combat", "objectives", "map", "timeline", "players", "module_evidence",
-            "coordinate_system");
+            "coordinate_system", "ability_metadata");
     private static final Set<String> EAGER_MODULES = Set.of(
             "snapshots", "development", "laning", "objectives", "map", "players",
-            "module_evidence", "coordinate_system");
-    private static final List<String> SNAPSHOT_FIELDS = List.of(
+            "module_evidence", "coordinate_system", "ability_metadata");
+    static final List<String> SNAPSHOT_FIELDS = List.of(
             "second", "gold", "networth", "xp", "lh", "x", "y", "region",
-            "life_state", "hp", "max_hp", "mana", "max_mana", "level");
+            "life_state", "hp", "max_hp", "mana", "max_mana", "level",
+            "kills", "deaths", "assists", "denies", "camps_stacked", "creeps_stacked",
+            "rune_pickups", "obs_placed", "sen_placed", "move_speed", "visible_by_team",
+            "day_vision_range", "night_vision_range", "fow_team", "reveal_radius",
+            "selection_ring_visible");
 
     private AnalysisStorage() {
     }
@@ -157,10 +160,13 @@ final class AnalysisStorage {
         return new LinkedHashSet<>(MODULE_NAMES);
     }
 
-    private static JsonObject packSnapshots(JsonElement source) {
+    static JsonObject packSnapshots(JsonElement source) {
         if (!source.isJsonObject()) return new JsonObject();
         JsonObject sourceObject = source.getAsJsonObject();
-        if (SNAPSHOT_SCHEMA.equals(string(sourceObject, "schema"))) return sourceObject.deepCopy();
+        String sourceSchema = string(sourceObject, "schema");
+        if (sourceSchema != null && sourceSchema.startsWith("snapshot-columns/")) {
+            return sourceObject.deepCopy();
+        }
 
         Map<String, Integer> regionIds = new LinkedHashMap<>();
         JsonObject bySlot = new JsonObject();
@@ -197,11 +203,14 @@ final class AnalysisStorage {
         packed.add("by_slot", bySlot);
         packed.addProperty("samples", samples);
         packed.addProperty("precision_seconds", 1);
+        packed.add("omitted_repeated_fields", strings(List.of("hero_abilities", "hero_inventory")));
+        packed.addProperty("runtime_state_source", "raw_replay_archive");
         return packed;
     }
 
     private static void writeGzip(Path path, JsonElement value) throws IOException {
-        try (GZIPOutputStream output = new GZIPOutputStream(Files.newOutputStream(path), 1024 * 256);
+        try (TunedGzipOutputStream output = new TunedGzipOutputStream(
+                Files.newOutputStream(path), 1024 * 256);
                 OutputStreamWriter writer = new OutputStreamWriter(output, StandardCharsets.UTF_8)) {
             GSON.toJson(value, writer);
         }

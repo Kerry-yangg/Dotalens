@@ -24,13 +24,14 @@ import com.google.gson.JsonObject;
  * desktop product.
  */
 final class ProductAnalysis {
-    static final String CURRENT_SCHEMA = "product-modules/2.8";
+    static final String CURRENT_SCHEMA = "product-modules/2.10";
     private static final int RADIANT = 2;
     private static final int DIRE = 3;
     private static final double ROSHAN_PIT_CONTEXT_RADIUS_PCT = 6.0;
 
     private final MapCoordinateService coordinates;
     private final GoldReasonCatalog goldReasons;
+    private final PatchAbilityMetadata abilityMetadata;
     private final Map<String, Integer> heroSlots = new HashMap<>();
     private final Map<Integer, NavigableMap<Integer, Snapshot>> snapshots = new TreeMap<>();
     private final Map<Integer, Integer> actionCounts = new HashMap<>();
@@ -45,6 +46,7 @@ final class ProductAnalysis {
     private final List<HealPoint> heals = new ArrayList<>();
     private final List<ControlPoint> controls = new ArrayList<>();
     private final List<TeleportChannelPoint> teleportChannels = new ArrayList<>();
+    private final List<StealthModifierEvent> stealthModifierEvents = new ArrayList<>();
     private final List<ObjectivePoint> objectives = new ArrayList<>();
     private final Map<Integer, WardPoint> wards = new LinkedHashMap<>();
     private final Map<Integer, UnitTrack> unitTracks = new LinkedHashMap<>();
@@ -59,6 +61,7 @@ final class ProductAnalysis {
     ProductAnalysis(String patchName) {
         coordinates = new MapCoordinateService(patchName);
         goldReasons = new GoldReasonCatalog(patchName);
+        abilityMetadata = PatchAbilityMetadata.load(patchName);
     }
 
     void accept(JsonObject event) {
@@ -80,8 +83,12 @@ final class ProductAnalysis {
             case "DOTA_COMBATLOG_MODIFIER_ADD" -> {
                 acceptControl(event);
                 acceptSpecialModifier(event, false);
+                acceptStealthModifier(event, false);
             }
-            case "DOTA_COMBATLOG_MODIFIER_REMOVE" -> acceptSpecialModifier(event, true);
+            case "DOTA_COMBATLOG_MODIFIER_REMOVE" -> {
+                acceptSpecialModifier(event, true);
+                acceptStealthModifier(event, true);
+            }
             case "obs", "sen", "obs_left", "sen_left" -> acceptWard(event, type);
             case "DOTA_COMBATLOG_TEAM_BUILDING_KILL" -> acceptBuilding(event);
             case "CHAT_MESSAGE_ROSHAN_KILL", "CHAT_MESSAGE_AEGIS", "CHAT_MESSAGE_COURIER_LOST" ->
@@ -97,6 +104,7 @@ final class ProductAnalysis {
         ensureAnalysisActive();
         resolveActorSlots();
         resolveGoldClassifications();
+        resolveUnitLifecycleAttribution();
 
         List<JsonObject> wardRows = buildWards(safeDuration);
         List<JsonObject> objectiveRows = buildObjectives(safeDuration);
@@ -111,7 +119,7 @@ final class ProductAnalysis {
         ensureAnalysisActive();
         JsonObject laningModule = buildLaningModule(safeDuration, wardRows, laneAssignments);
         ensureAnalysisActive();
-        JsonObject combatModule = buildCombatModule(safeDuration, wardRows, roshanAttempts);
+        JsonObject combatModule = buildCombatModule(safeDuration, wardRows, roshanAttempts, laneAssignments);
         ensureAnalysisActive();
         JsonObject objectiveModule = buildObjectiveAnalysis(safeDuration, wardRows, roshanAttempts);
         JsonObject mapModule = buildMapModule(objectiveRows);
@@ -139,10 +147,11 @@ final class ProductAnalysis {
         modules.add("map", mapModule);
         modules.add("timeline", timelineModule);
         modules.add("players", buildPlayerMetrics(safeDuration, wardRows, laneAssignments,
-                laningModule, combatModule));
+                laningModule, combatModule, farmModule));
         modules.add("module_evidence", buildModuleEvidence(wardRows, objectiveRows, combatModule,
                 objectiveModule, timelineModule));
         modules.add("coordinate_system", coordinates.manifest());
+        modules.add("ability_metadata", abilityMetadata.manifest());
         return modules;
     }
 
@@ -266,6 +275,7 @@ final class ProductAnalysis {
                 integerValue(event, "lh"),
                 floatValue(event, "x"),
                 floatValue(event, "y"),
+                floatValue(event, "z"),
                 floatValue(event, "hp"),
                 floatValue(event, "max_hp"),
                 floatValue(event, "mana"),
@@ -333,8 +343,8 @@ final class ProductAnalysis {
         if (!laneCreep && !farmNeutral) return;
 
         UnitTrack track = unitTracks.computeIfAbsent(handle,
-                ignored -> new UnitTrack(handle, unit, kind, team, stamp.gameSecond));
-        track.observe(type, stamp.gameSecond, team, point == null ? null : position(point),
+                ignored -> new UnitTrack(handle, unit, kind, team, stamp));
+        track.observe(type, stamp, team, point == null ? null : position(point),
                 floatValue(event, "hp"), floatValue(event, "max_hp"), integerValue(event, "life_state"));
     }
 
@@ -424,10 +434,12 @@ final class ProductAnalysis {
                 stamp,
                 heroKey(stringValue(event, "attackername")),
                 heroKey(stringValue(event, "targetname")),
+                stringValue(event, "attackername"),
                 stringValue(event, "targetname"),
                 Boolean.TRUE.equals(booleanValue(event, "targethero")),
                 Boolean.TRUE.equals(booleanValue(event, "attackerhero")),
                 intValue(event, "value", 0),
+                integerValue(event, "event_last_hits"),
                 integerValue(event, "neutral_camp_type"),
                 integerValue(event, "attacker_team"),
                 integerValue(event, "target_team"),
@@ -473,6 +485,25 @@ final class ProductAnalysis {
                 floatNumber(event, "modifier_elapsed_duration", 0.0f),
                 Boolean.TRUE.equals(booleanValue(event, "modifier_purged")),
                 stringValue(event, "sourcename")));
+    }
+
+    private void acceptStealthModifier(JsonObject event, boolean removed) {
+        EventStamp stamp = eventStamp(event);
+        String modifier = stringValue(event, "inflictor");
+        if (stamp == null || modifier == null || !Boolean.TRUE.equals(booleanValue(event, "targethero"))) {
+            return;
+        }
+        boolean smoke = modifier.contains("smoke_of_deceit");
+        boolean invisibility = Boolean.TRUE.equals(booleanValue(event, "invisibility_modifier"))
+                || modifier.contains("rune_invis") || modifier.contains("invisible");
+        if (!smoke && !invisibility) return;
+        stealthModifierEvents.add(new StealthModifierEvent(
+                stamp,
+                heroKey(stringValue(event, "targetname")),
+                modifier,
+                removed,
+                smoke ? StealthKind.SMOKE : StealthKind.INVISIBLE,
+                !modifier.contains("slark_shadow_dance") && !modifier.contains("depth_shroud")));
     }
 
     private void acceptHeal(JsonObject event) {
@@ -596,6 +627,7 @@ final class ProductAnalysis {
             event.targetSlot = heroSlots.get(event.targetKey);
         });
         teleportChannels.forEach(event -> event.slot = heroSlots.get(event.targetKey));
+        stealthModifierEvents.forEach(event -> event.slot = heroSlots.get(event.targetKey));
         heroVisibilityEvents.forEach(event -> {
             if (event.slot == null) event.slot = heroSlots.get(event.heroKey);
         });
@@ -640,6 +672,64 @@ final class ProductAnalysis {
         }
     }
 
+    private void resolveUnitLifecycleAttribution() {
+        Set<Integer> matchedHandles = new HashSet<>();
+        List<DeathPoint> unitDeaths = deaths.stream()
+                .filter(death -> !death.targetHero)
+                .sorted(Comparator.comparingLong((DeathPoint death) -> death.stamp.gameTimeMs)
+                        .thenComparingLong(death -> death.stamp.eventSequence))
+                .toList();
+        for (DeathPoint death : unitDeaths) {
+            String deathKind = unitKind(death);
+            if (!(deathKind.equals("lane") || deathKind.equals("neutral") || deathKind.equals("ancient"))) {
+                continue;
+            }
+            UnitTrack best = null;
+            long bestTimeDelta = Long.MAX_VALUE;
+            long bestSequenceDelta = Long.MAX_VALUE;
+            for (UnitTrack track : unitTracks.values()) {
+                if (matchedHandles.contains(track.handle) || track.deathStamp == null) continue;
+                if (deathKind.equals("lane") != track.kind.equals("lane_creep")) continue;
+                if (!deathKind.equals("lane") && !track.kind.equals("neutral")) continue;
+                if (death.targetTeam != null && track.team != null && !death.targetTeam.equals(track.team)) continue;
+                long timeDelta = Math.abs(track.deathStamp.gameTimeMs - death.stamp.gameTimeMs);
+                if (timeDelta > 1_500) continue;
+                long sequenceDelta = Math.abs(track.deathStamp.eventSequence - death.stamp.eventSequence);
+                if (timeDelta < bestTimeDelta || timeDelta == bestTimeDelta && sequenceDelta < bestSequenceDelta) {
+                    best = track;
+                    bestTimeDelta = timeDelta;
+                    bestSequenceDelta = sequenceDelta;
+                }
+            }
+            if (best != null && (bestTimeDelta == 0 || bestSequenceDelta <= 96)) {
+                best.combatDeath = death;
+                death.unitHandle = best.handle;
+                matchedHandles.add(best.handle);
+            }
+        }
+
+        Set<GoldPoint> matchedGold = Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        for (UnitTrack track : unitTracks.values()) {
+            DeathPoint death = track.combatDeath;
+            if (death == null || death.attackerSlot == null) continue;
+            GoldPoint best = goldPoints.stream()
+                    .filter(point -> !matchedGold.contains(point) && point.slot != null
+                            && point.slot.equals(death.attackerSlot) && point.value > 0
+                            && Math.abs(point.stamp.gameTimeMs - death.stamp.gameTimeMs) <= 1_500)
+                    .filter(point -> track.kind.equals("lane_creep")
+                            ? point.classification.source().equals("lane_creep")
+                            : point.classification.source().equals("neutral")
+                                    || point.classification.source().equals("ancient"))
+                    .min(Comparator.comparingLong(point -> Math.abs(
+                            point.stamp.eventSequence - death.stamp.eventSequence)))
+                    .orElse(null);
+            if (best != null) {
+                track.observedGold = best.value;
+                matchedGold.add(best);
+            }
+        }
+    }
+
     private JsonObject buildSnapshots() {
         JsonObject result = new JsonObject();
         snapshots.forEach((slot, rows) -> {
@@ -647,7 +737,7 @@ final class ProductAnalysis {
             rows.values().forEach(snapshot -> array.add(snapshot.toJson(coordinates, positionOf(snapshot))));
             result.add(Integer.toString(slot), array);
         });
-        return result;
+        return AnalysisStorage.packSnapshots(result);
     }
 
     private JsonObject buildBuildModule() {
@@ -1197,6 +1287,7 @@ final class ProductAnalysis {
         JsonObject anomaliesBySlot = new JsonObject();
         JsonObject relativeLowsBySlot = new JsonObject();
         JsonObject stackEventsBySlot = new JsonObject();
+        JsonObject stackValueSummaryBySlot = new JsonObject();
         JsonObject cyclesBySlot = new JsonObject();
         for (int slot = 0; slot < 10; slot++) {
             heatBySlot.add(Integer.toString(slot), buildHeatCells(slot, duration));
@@ -1205,7 +1296,9 @@ final class ProductAnalysis {
             diagnosticsBySlot.add(Integer.toString(slot), diagnostics);
             anomaliesBySlot.add(Integer.toString(slot), filterDiagnostics(diagnostics, "anomaly"));
             relativeLowsBySlot.add(Integer.toString(slot), filterDiagnostics(diagnostics, "relative_low"));
-            stackEventsBySlot.add(Integer.toString(slot), buildStackEvents(slot));
+            JsonArray stackEvents = buildStackEvents(slot);
+            stackEventsBySlot.add(Integer.toString(slot), stackEvents);
+            stackValueSummaryBySlot.add(Integer.toString(slot), stackValueSummary(stackEvents));
             cyclesBySlot.add(Integer.toString(slot), buildLaneJungleCycles(slot, duration));
         }
         JsonObject module = new JsonObject();
@@ -1213,20 +1306,37 @@ final class ProductAnalysis {
         module.add("gold_reason_catalog", goldReasons.manifest());
         module.add("gold_source_summary", buildGoldSourceSummary());
         module.addProperty("early_priority_seconds", Math.min(1200, duration));
+        JsonObject routeAnalysis = new JsonObject();
+        routeAnalysis.addProperty("schema", "phase-aware-core-resource-route/1.0");
+        routeAnalysis.addProperty("core_positions", "1,2,3");
+        routeAnalysis.addProperty("core_analysis_end", "match_end");
+        routeAnalysis.addProperty("support_analysis_end_seconds", Math.min(1200, duration));
+        routeAnalysis.addProperty("post20_benchmark_bucket_seconds", 300);
+        routeAnalysis.addProperty("pre20_lookahead_seconds", 45);
+        routeAnalysis.addProperty("post20_lookahead_seconds", 75);
+        routeAnalysis.addProperty("strategic_commitment_exempt", true);
+        routeAnalysis.addProperty("selection_policy", "phase_baseline_then_hard_gates_then_highest_score");
+        module.add("route_analysis", routeAnalysis);
         module.add("heat_cells_by_slot", heatBySlot);
         module.add("gold_events_by_slot", goldBySlot);
         module.add("diagnostics_by_slot", diagnosticsBySlot);
         module.add("anomalies_by_slot", anomaliesBySlot);
         module.add("relative_lows_by_slot", relativeLowsBySlot);
         module.add("stack_events_by_slot", stackEventsBySlot);
+        module.add("stack_value_summary_by_slot", stackValueSummaryBySlot);
         module.add("lane_jungle_cycles_by_slot", cyclesBySlot);
         module.add("unit_kills", buildUnitKills());
+        module.add("creep_resolutions", buildCreepResolutions(duration));
+        module.add("lane_opportunities_by_slot",
+                buildLaneOpportunitiesBySlot(duration, laneAssignments));
         JsonObject resourceSchema = new JsonObject();
-        resourceSchema.addProperty("schema", "observed-resource-state/1.0");
+        resourceSchema.addProperty("schema", "observed-resource-state/1.1");
         resourceSchema.addProperty("lane_wave_interval_seconds", 30);
         resourceSchema.addProperty("neutral_cycle_seconds", 60);
         resourceSchema.addProperty("observed_enter_is_spawn_proof", false);
         resourceSchema.addProperty("unit_left_is_death_proof", false);
+        resourceSchema.addProperty("combat_log_death_attribution", "millisecond_and_event_sequence_one_to_one");
+        resourceSchema.addProperty("gold_attribution", "matched_combatlog_gold_event_only");
         resourceSchema.addProperty("states", "observed_present,observed_cleared,visibility_lost,unknown");
         resourceSchema.addProperty("evidence", "replay_unit_lifecycle");
         module.add("resource_state_schema", resourceSchema);
@@ -1324,6 +1434,281 @@ final class ProductAnalysis {
         return rows;
     }
 
+    private JsonArray buildCreepResolutions(int duration) {
+        JsonArray rows = new JsonArray();
+        unitTracks.values().stream()
+                .filter(track -> track.firstObserved <= duration)
+                .sorted(Comparator.comparingInt((UnitTrack track) -> track.firstObserved)
+                        .thenComparingInt(track -> track.handle))
+                .forEach(track -> {
+                    JsonObject row = new JsonObject();
+                    row.addProperty("id", "unit-" + track.handle);
+                    row.addProperty("handle", track.handle);
+                    row.addProperty("unit_class", track.unit);
+                    row.addProperty("kind", track.kind.equals("lane_creep") ? "lane" : "neutral");
+                    addNullable(row, "team_id", track.team);
+                    row.addProperty("first_observed", track.firstObserved);
+                    row.addProperty("last_observed", track.lastObserved);
+                    row.addProperty("sample_count", track.samples);
+
+                    Position position = track.referencePosition();
+                    if (position != null) addPosition(row, position);
+                    if (track.kind.equals("lane_creep")) {
+                        MapCoordinateService.Point point = canonicalPoint(position);
+                        String lane = point == null ? "unknown" : coordinates.nearestLane(point);
+                        int expectedSpawn = Math.max(0, Math.round(Math.max(0, track.firstObserved) / 30.0f) * 30);
+                        row.addProperty("lane", lane);
+                        row.addProperty("wave_id", "wave-" + track.team + "-" + lane + "-" + expectedSpawn / 30);
+                    } else {
+                        MapCoordinateService.CampAnchor camp = coordinates.nearestCamp(canonicalPoint(position));
+                        if (camp != null && camp.distance() <= 8.5) {
+                            row.addProperty("camp_id", camp.id());
+                            row.addProperty("camp_cycle", Math.max(60,
+                                    Math.max(60, track.firstObserved) / 60 * 60));
+                        }
+                    }
+
+                    JsonArray deathEvidence = new JsonArray();
+                    if (track.deathByLifeState) deathEvidence.add("life_state_nonzero");
+                    if (track.deathByHpZero) deathEvidence.add("hp_zero");
+                    if (track.combatDeath != null) deathEvidence.add("combat_log_death");
+                    row.add("death_evidence", deathEvidence);
+
+                    if (track.deathTime != null) {
+                        row.addProperty("resolution", track.combatDeath == null
+                                ? "confirmed_death_unattributed" : "confirmed_death_attributed");
+                        row.addProperty("resolved_at", track.deathTime);
+                        row.addProperty("resolution_game_time_ms", track.deathStamp.gameTimeMs);
+                    } else if (track.leftTime != null) {
+                        row.addProperty("resolution", "visibility_lost");
+                        row.addProperty("resolved_at", track.leftTime);
+                    } else {
+                        row.addProperty("resolution", "still_observed_or_unknown");
+                    }
+
+                    DeathPoint death = track.combatDeath;
+                    if (death != null) {
+                        row.addProperty("target_name", death.targetName);
+                        row.addProperty("unit_archetype", unitArchetype(death.targetName));
+                        row.addProperty("outcome", unitOutcome(track, death));
+                        addNullable(row, "killer_slot", death.attackerSlot);
+                        addNullable(row, "attacker_team", death.attackerTeam);
+                        addNullable(row, "event_last_hits", death.eventLastHits);
+                        row.addProperty("combat_death_event_seq", death.stamp.eventSequence);
+                        if (death.attackerName != null) row.addProperty("attacker_name", death.attackerName);
+                    } else {
+                        row.addProperty("outcome", track.deathTime == null ? "unresolved" : "unattributed_death");
+                    }
+                    addNullable(row, "observed_gold", track.observedGold);
+                    UnitGoldEstimate goldEstimate = estimatedUnitGold(track);
+                    row.addProperty("estimated_gold", goldEstimate.value);
+                    row.addProperty("gold_evidence", track.observedGold == null
+                            ? goldEstimate.evidence : "matched_fact");
+                    row.addProperty("gold_status", track.observedGold == null ? "estimated_or_unavailable" : "matched_fact");
+                    row.addProperty("confidence", track.combatDeath != null ? 98
+                            : track.deathTime != null ? 82 : track.leftTime != null ? 35 : 45);
+                    rows.add(row);
+                });
+        return rows;
+    }
+
+    private JsonObject buildLaneOpportunitiesBySlot(int duration,
+            Map<Integer, LaneAssignment> laneAssignments) {
+        JsonObject bySlot = new JsonObject();
+        int analysisEnd = Math.min(duration, 1200);
+        for (int slot = 0; slot < 10; slot++) {
+            LaneAssignment assignment = laneAssignments.get(slot);
+            JsonObject result = new JsonObject();
+            JsonArray events = new JsonArray();
+            int secured = 0;
+            int denied = 0;
+            int teammateClaimed = 0;
+            int missedNearby = 0;
+            int missedAbsent = 0;
+            int excused = 0;
+            int reviewable = 0;
+            int estimatedMissedGold = 0;
+            boolean resourcePriority = assignment != null && assignment.position <= 3;
+
+            for (UnitTrack track : unitTracks.values()) {
+                if (!track.kind.equals("lane_creep") || track.deathTime == null
+                        || track.deathTime < 0 || track.deathTime > analysisEnd || track.team == null
+                        || track.team == teamForSlot(slot)) continue;
+                Position deathPosition = track.lastPosition;
+                MapCoordinateService.Point point = canonicalPoint(deathPosition);
+                String lane = point == null ? "unknown" : coordinates.nearestLane(point);
+                if (assignment == null || !assignment.lane.equals(lane)) continue;
+
+                DeathPoint death = track.combatDeath;
+                Snapshot player = snapshotFloorAt(slot, track.deathTime, 2);
+                boolean alive = player != null && (player.lifeState == null || player.lifeState == 0);
+                Position playerPosition = positionOf(player);
+                double distanceWorld = playerPosition == null || deathPosition == null
+                        ? Double.POSITIVE_INFINITY : percentDistanceToWorld(distance(playerPosition, deathPosition));
+                boolean nearby = distanceWorld <= 1_800;
+                boolean combatExcuse = playerInCombatWindow(slot, track.deathTime, 5);
+                LaneSafety safety = laneSafetyAt(slot, track.deathTime, deathPosition);
+                String outcome;
+
+                if (death != null && Integer.valueOf(slot).equals(death.attackerSlot)) {
+                    outcome = "secured";
+                    secured++;
+                } else if (death != null && death.attackerSlot != null
+                        && teamForSlot(death.attackerSlot) == track.team) {
+                    outcome = "enemy_deny";
+                    denied++;
+                } else if (death != null && death.attackerSlot != null
+                        && teamForSlot(death.attackerSlot) == teamForSlot(slot)) {
+                    outcome = "teammate_claimed";
+                    teammateClaimed++;
+                } else if (!resourcePriority) {
+                    outcome = "role_not_resource_priority";
+                } else if (!alive) {
+                    outcome = "excused_dead";
+                    excused++;
+                } else if (combatExcuse) {
+                    outcome = "excused_combat";
+                    excused++;
+                } else if (nearby) {
+                    outcome = safety.safe ? "reviewable_missed_last_hit" : "missed_last_hit_safety_unproven";
+                    missedNearby++;
+                } else {
+                    outcome = safety.safe ? "reviewable_missed_wave_absence" : "missed_wave_safety_unproven";
+                    missedAbsent++;
+                }
+
+                UnitGoldEstimate goldEstimate = estimatedUnitGold(track);
+                if (outcome.startsWith("reviewable_")) {
+                    reviewable++;
+                    estimatedMissedGold += goldEstimate.value;
+                }
+                JsonObject row = new JsonObject();
+                row.addProperty("unit_id", "unit-" + track.handle);
+                row.addProperty("time", track.deathTime);
+                row.addProperty("lane", lane);
+                row.addProperty("outcome", outcome);
+                row.addProperty("resource_priority", resourcePriority);
+                row.addProperty("nearby", nearby);
+                if (Double.isFinite(distanceWorld)) row.addProperty("player_distance_world", Math.round(distanceWorld));
+                row.addProperty("safety", safety.safe ? "supported_safe" : safety.unknownEnemies > 0
+                        ? "insufficient_visibility" : safety.nearbyThreats > 0 ? "known_threat" : "unproven");
+                row.addProperty("nearby_enemy_threats", safety.nearbyThreats);
+                row.addProperty("unknown_enemy_states", safety.unknownEnemies);
+                row.addProperty("estimated_gold", goldEstimate.value);
+                row.addProperty("gold_evidence", goldEstimate.evidence);
+                if (deathPosition != null) addPosition(row, deathPosition);
+                events.add(row);
+            }
+
+            JsonObject summary = new JsonObject();
+            summary.addProperty("secured", secured);
+            summary.addProperty("enemy_denies", denied);
+            summary.addProperty("teammate_claimed", teammateClaimed);
+            summary.addProperty("missed_nearby", missedNearby);
+            summary.addProperty("missed_while_absent", missedAbsent);
+            summary.addProperty("excused", excused);
+            summary.addProperty("reviewable_misses", reviewable);
+            summary.addProperty("estimated_reviewable_gold", estimatedMissedGold);
+            summary.addProperty("recommendation_enabled", reviewable >= 2
+                    && assignment != null && assignment.confidence >= 0.65);
+            summary.addProperty("recommendation_mode", reviewable >= 2
+                    && assignment != null && assignment.confidence >= 0.65
+                            ? "retrospective_lane_review" : "facts_only");
+            summary.addProperty("analysis_end_seconds", analysisEnd);
+            summary.addProperty("scope", "first_20_minutes_lane_execution");
+            result.addProperty("position", assignment == null ? slot % 5 + 1 : assignment.position);
+            result.addProperty("lane", assignment == null ? "unknown" : assignment.lane);
+            result.addProperty("role_confidence", assignment == null ? 0 : round2(assignment.confidence * 100));
+            result.addProperty("resource_priority", resourcePriority);
+            result.add("summary", summary);
+            result.add("events", events);
+            bySlot.add(Integer.toString(slot), result);
+        }
+        return bySlot;
+    }
+
+    private UnitGoldEstimate estimatedUnitGold(UnitTrack target) {
+        String archetype = unitArchetype(target.combatDeath == null
+                ? target.unit : target.combatDeath.targetName);
+        List<Integer> values = unitTracks.values().stream()
+                .filter(track -> track.kind.equals(target.kind) && track.observedGold != null
+                        && track.observedGold > 0 && track.combatDeath != null
+                        && unitArchetype(track.combatDeath.targetName).equals(archetype))
+                .map(track -> track.observedGold).sorted().toList();
+        if (!values.isEmpty()) {
+            return new UnitGoldEstimate(values.get(values.size() / 2),
+                    "same_match_observed_archetype_median");
+        }
+        values = unitTracks.values().stream()
+                .filter(track -> track.kind.equals(target.kind) && track.observedGold != null
+                        && track.observedGold > 0)
+                .map(track -> track.observedGold).sorted().toList();
+        return values.isEmpty() ? new UnitGoldEstimate(0, "unavailable")
+                : new UnitGoldEstimate(values.get(values.size() / 2),
+                        "same_match_observed_unit_kind_median");
+    }
+
+    private boolean playerInCombatWindow(int slot, int time, int radius) {
+        return damages.stream().anyMatch(point -> Math.abs(point.time - time) <= radius
+                    && (Integer.valueOf(slot).equals(point.attackerSlot) || Integer.valueOf(slot).equals(point.targetSlot)))
+                || controls.stream().anyMatch(point -> Math.abs(point.time - time) <= radius
+                    && (Integer.valueOf(slot).equals(point.attackerSlot) || Integer.valueOf(slot).equals(point.targetSlot)))
+                || deaths.stream().anyMatch(point -> point.targetHero && Math.abs(point.time - time) <= radius
+                    && (Integer.valueOf(slot).equals(point.attackerSlot) || Integer.valueOf(slot).equals(point.targetSlot)));
+    }
+
+    private LaneSafety laneSafetyAt(int slot, int time, Position lanePosition) {
+        if (lanePosition == null) return new LaneSafety(false, 0, 5);
+        int team = teamForSlot(slot);
+        int nearbyThreats = 0;
+        int unknownEnemies = 0;
+        for (int enemy : enemySlots(slot)) {
+            VisibilitySample sample = visibilityIndex.getOrDefault(team, Map.of())
+                    .getOrDefault(enemy, new TreeMap<>()).get(time);
+            if (sample == null || sample.state.equals("unknown")) {
+                unknownEnemies++;
+                continue;
+            }
+            if (sample.position == null) continue;
+            double threatRadius = worldDistanceToPercent(3_000)
+                    + (sample.state.equals("last_seen") ? sample.uncertaintyRadius : 0);
+            if (distance(sample.position, lanePosition) <= threatRadius) nearbyThreats++;
+        }
+        return new LaneSafety(nearbyThreats == 0 && unknownEnemies == 0, nearbyThreats, unknownEnemies);
+    }
+
+    private static double percentDistanceToWorld(double percentDistance) {
+        return percentDistance / 100.0 * MapCoordinateService.ENTITY_SPAN * 128.0;
+    }
+
+    private record LaneSafety(boolean safe, int nearbyThreats, int unknownEnemies) {}
+
+    private static String unitOutcome(UnitTrack track, DeathPoint death) {
+        if (track.kind.equals("neutral")) {
+            if (death.attackerSlot != null) return "hero_last_hit";
+            if (death.attackerName != null && (death.attackerName.contains("creep_goodguys")
+                    || death.attackerName.contains("creep_badguys"))) return "lane_creep_pull_kill";
+            return "nonhero_kill";
+        }
+        if (death.attackerSlot != null && track.team != null) {
+            return teamForSlot(death.attackerSlot) == track.team ? "deny" : "last_hit";
+        }
+        if (death.attackerTeam != null && track.team != null && death.attackerTeam.equals(track.team)) {
+            return "denied_without_player_attribution";
+        }
+        return "unclaimed_lane_death";
+    }
+
+    private static String unitArchetype(String targetName) {
+        if (targetName == null) return "unknown";
+        if (targetName.contains("flagbearer")) return "flagbearer";
+        if (targetName.contains("siege")) return "siege";
+        if (targetName.contains("ranged")) return "ranged";
+        if (targetName.contains("melee")) return "melee";
+        if (targetName.contains("neutral")) return "neutral";
+        return "other";
+    }
+
     private JsonArray buildCampStates(int duration) {
         Map<String, Map<Integer, CampCycleAggregate>> cyclesByCamp = new LinkedHashMap<>();
         for (UnitTrack track : unitTracks.values()) {
@@ -1347,8 +1732,21 @@ final class ProductAnalysis {
             camp.addProperty("first_observed", anchor.firstObserved());
             addPosition(camp, position(anchor.point()));
             Map<Integer, CampCycleAggregate> observations = cyclesByCamp.getOrDefault(anchor.id(), Map.of());
+            List<CampCycleAggregate> orderedCycles = observations.values().stream()
+                    .sorted(Comparator.comparingInt(cycle -> cycle.cycleStart)).toList();
+            for (CampCycleAggregate cycle : orderedCycles) {
+                cycle.overlapFromPrevious = orderedCycles.stream()
+                        .filter(previous -> previous.cycleStart < cycle.cycleStart)
+                        .flatMap(previous -> previous.tracks.stream())
+                        .filter(track -> track.firstObserved < cycle.cycleStart
+                                && (track.deathTime == null || track.deathTime >= cycle.cycleStart)
+                                && (track.leftTime == null || track.leftTime >= cycle.cycleStart)
+                                && track.lastObserved >= cycle.cycleStart - 3)
+                        .count();
+                cycle.stackSlots.addAll(stackAttributionNear(anchor, cycle.cycleStart));
+            }
             JsonArray cycleRows = new JsonArray();
-            observations.values().stream().filter(cycle -> cycle.cycleStart <= duration)
+            orderedCycles.stream().filter(cycle -> cycle.cycleStart <= duration)
                     .forEach(cycle -> cycleRows.add(cycle.toJson()));
             camp.add("observations", cycleRows);
             camp.add("unobserved_cycle_ranges", compressedMissingCycles(observations.keySet(), duration));
@@ -1357,6 +1755,20 @@ final class ProductAnalysis {
             camps.add(camp);
         }
         return camps;
+    }
+
+    private Set<Integer> stackAttributionNear(MapCoordinateService.CampAnchor camp, int cycleStart) {
+        Set<Integer> slots = new LinkedHashSet<>();
+        Position campPosition = position(camp.point());
+        for (int slot = 0; slot < 10; slot++) {
+            Snapshot before = snapshotFloorAt(slot, cycleStart - 2, 4);
+            Snapshot after = snapshotNear(slot, cycleStart + 2, 4);
+            if (before == null || after == null || before.campsStacked == null || after.campsStacked == null
+                    || after.campsStacked <= before.campsStacked) continue;
+            Position actor = positionOf(after);
+            if (actor != null && distance(actor, campPosition) <= 12.0) slots.add(slot);
+        }
+        return slots;
     }
 
     private JsonArray compressedMissingCycles(Set<Integer> observedCycles, int duration) {
@@ -1417,12 +1829,86 @@ final class ProductAnalysis {
                     addPosition(row, position);
                     row.addProperty("region", regionCode(position));
                 }
+                StackValue stackValue = stackValueAt(position, snapshot.time, creepDelta);
+                if (stackValue != null) {
+                    row.addProperty("camp_id", stackValue.campId);
+                    row.addProperty("spawn_cycle", stackValue.spawnCycle);
+                    row.addProperty("confirmed_created_creeps", creepDelta);
+                    row.addProperty("camp_clear_observed_gold", stackValue.campClearObservedGold);
+                    row.addProperty("created_gold_estimate", stackValue.createdGoldEstimate);
+                    row.addProperty("value_evidence", stackValue.valueEvidence);
+                    row.add("cleared_by_slots", integerMap(stackValue.clearedBySlots));
+                } else {
+                    row.addProperty("value_evidence", "camp_or_creep_count_unavailable");
+                }
                 rows.add(row);
             }
             previousCamps = snapshot.campsStacked;
             if (snapshot.creepsStacked != null) previousCreeps = snapshot.creepsStacked;
         }
         return rows;
+    }
+
+    private StackValue stackValueAt(Position position, int stackTime, int creepDelta) {
+        MapCoordinateService.CampAnchor anchor = coordinates.nearestCamp(canonicalPoint(position));
+        if (anchor == null || anchor.distance() > 12.0) return null;
+        int spawnCycle = Math.max(60, Math.floorDiv(stackTime + 59, 60) * 60);
+        List<UnitTrack> cohort = unitTracks.values().stream()
+                .filter(track -> track.kind.equals("neutral")
+                        && track.firstObserved >= spawnCycle - 5 && track.firstObserved <= spawnCycle + 24)
+                .filter(track -> {
+                    MapCoordinateService.CampAnchor unitCamp = coordinates.nearestCamp(
+                            canonicalPoint(track.firstPosition != null ? track.firstPosition : track.lastPosition));
+                    return unitCamp != null && unitCamp.distance() <= 8.5 && unitCamp.id().equals(anchor.id());
+                })
+                .toList();
+        int clearGold = cohort.stream().filter(track -> track.observedGold != null)
+                .mapToInt(track -> track.observedGold).sum();
+        Map<Integer, Integer> clearedBy = new LinkedHashMap<>();
+        cohort.stream().filter(track -> track.combatDeath != null && track.combatDeath.attackerSlot != null)
+                .forEach(track -> clearedBy.merge(track.combatDeath.attackerSlot, 1, Integer::sum));
+        List<Integer> observedValues = cohort.stream().filter(track -> track.observedGold != null && track.observedGold > 0)
+                .map(track -> track.observedGold).sorted().toList();
+        boolean sameCampValues = !observedValues.isEmpty();
+        if (observedValues.isEmpty()) {
+            observedValues = unitTracks.values().stream()
+                    .filter(track -> track.kind.equals("neutral") && track.observedGold != null
+                            && track.observedGold > 0)
+                    .map(track -> track.observedGold).sorted().toList();
+        }
+        int createdGoldEstimate = creepDelta <= 0 || observedValues.isEmpty() ? 0
+                : observedValues.get(observedValues.size() / 2) * creepDelta;
+        String evidence = creepDelta <= 0 ? "stack_counter_without_creep_delta"
+                : observedValues.isEmpty() ? "confirmed_stack_value_unavailable"
+                        : sameCampValues ? "confirmed_creep_delta_times_same_camp_observed_median"
+                                : "confirmed_creep_delta_times_same_match_neutral_median";
+        return new StackValue(anchor.id(), spawnCycle, clearGold, createdGoldEstimate, evidence, clearedBy);
+    }
+
+    private static JsonObject stackValueSummary(JsonArray events) {
+        JsonObject result = new JsonObject();
+        int camps = 0;
+        int creeps = 0;
+        int observedClearGold = 0;
+        int createdGoldEstimate = 0;
+        int valuedEvents = 0;
+        for (JsonElement element : events) {
+            if (!element.isJsonObject()) continue;
+            JsonObject row = element.getAsJsonObject();
+            camps += intValue(row, "camps", 0);
+            creeps += intValue(row, "creeps", 0);
+            observedClearGold += intValue(row, "camp_clear_observed_gold", 0);
+            createdGoldEstimate += intValue(row, "created_gold_estimate", 0);
+            if (intValue(row, "created_gold_estimate", 0) > 0) valuedEvents++;
+        }
+        result.addProperty("stacked_camps", camps);
+        result.addProperty("stacked_creeps", creeps);
+        result.addProperty("observed_clear_gold", observedClearGold);
+        result.addProperty("created_gold_estimate", createdGoldEstimate);
+        result.addProperty("valued_events", valuedEvents);
+        result.addProperty("value_mode", "team_value_created_not_personal_income");
+        result.addProperty("evidence", valuedEvents > 0 ? "mixed_fact_and_same_match_estimate" : "fact_counts_only");
+        return result;
     }
 
     private JsonArray buildLaneJungleCycles(int slot, int duration) {
@@ -1432,7 +1918,7 @@ final class ProductAnalysis {
     }
 
     private List<ObservedFarmCycle> observedFarmCycles(int slot, int duration) {
-        int safeEnd = Math.min(duration, 1200);
+        int safeEnd = duration;
         List<GoldPoint> lanePoints = goldPoints.stream()
                 .filter(point -> point.slot != null && point.slot == slot && point.value > 0
                         && point.time >= 0 && point.time <= safeEnd
@@ -1509,10 +1995,38 @@ final class ProductAnalysis {
         return result;
     }
 
+    private static String farmBenchmarkGroup(int time) {
+        if (time < 1200) return "pre20";
+        int bucketStart = time / 300 * 300;
+        return "post20:" + bucketStart + "-" + (bucketStart + 300);
+    }
+
+    private static String farmRoutePhase(int time) {
+        if (time < 450) return "laning";
+        if (time < 900) return "expansion";
+        if (time < 1200) return "pre_tormentor";
+        if (time < 1800) return "core_route_20_30";
+        if (time < 2400) return "core_route_30_40";
+        return "core_route_40_plus";
+    }
+
+    private static FarmBenchmarks farmBenchmarks(List<FarmWindow> windows) {
+        List<Integer> sortedIncome = windows.stream().map(FarmWindow::totalGold).sorted().toList();
+        int medianGold = sortedIncome.isEmpty() ? 0 : sortedIncome.get(sortedIncome.size() / 2);
+        int threshold = Math.max(35, (int) Math.round(medianGold * 0.62));
+        int laneGold = Math.max(45,
+                medianPositive(windows.stream().map(window -> window.laneGold).toList()));
+        int neutralGold = Math.max(35,
+                medianPositive(windows.stream().map(window -> window.neutralGold).toList()));
+        return new FarmBenchmarks(medianGold, threshold, laneGold, neutralGold);
+    }
+
     private JsonArray buildDiagnostics(int slot, int duration, List<JsonObject> wardRows,
             Map<Integer, LaneAssignment> laneAssignments) {
         List<FarmWindow> windows = new ArrayList<>();
-        int analysisEnd = Math.min(duration, 1200);
+        LaneAssignment assignment = laneAssignments.get(slot);
+        boolean coreRoutePriority = assignment != null && assignment.position <= 3;
+        int analysisEnd = coreRoutePriority ? duration : Math.min(duration, 1200);
         for (int start = 0; start < analysisEnd; start += 30) {
             int end = Math.min(analysisEnd, start + 29);
             Snapshot middle = snapshotAt(slot, (start + end) / 2);
@@ -1530,35 +2044,47 @@ final class ProductAnalysis {
         }
         if (windows.isEmpty()) return new JsonArray();
 
-        List<Integer> sortedIncome = windows.stream().map(FarmWindow::totalGold).sorted().toList();
-        int median = sortedIncome.get(sortedIncome.size() / 2);
-        int threshold = Math.max(35, (int) Math.round(median * 0.62));
-        int laneBenchmark = Math.max(45, medianPositive(windows.stream().map(window -> window.laneGold).toList()));
-        int neutralBenchmark = Math.max(35, medianPositive(windows.stream().map(window -> window.neutralGold).toList()));
-        List<FarmWindow> anomalyWindows = windows.stream()
-                .filter(window -> window.start >= 60 && window.alive && window.totalGold() <= threshold)
-                .sorted(Comparator.comparingInt((FarmWindow window) -> window.totalGold())
-                        .thenComparingInt(window -> window.start))
-                .limit(10)
-                .sorted(Comparator.comparingInt(window -> window.start))
-                .toList();
+        Map<String, List<FarmWindow>> windowsByBenchmark = new LinkedHashMap<>();
+        windows.forEach(window -> windowsByBenchmark
+                .computeIfAbsent(farmBenchmarkGroup(window.start), ignored -> new ArrayList<>()).add(window));
+        Map<String, FarmBenchmarks> benchmarkByGroup = new LinkedHashMap<>();
+        windowsByBenchmark.forEach((group, rows) -> benchmarkByGroup.put(group, farmBenchmarks(rows)));
+
         Set<Integer> anomalyStarts = new HashSet<>();
-        anomalyWindows.forEach(window -> anomalyStarts.add(window.start));
-        List<FarmWindow> relativeLowWindows = windows.stream()
-                .filter(window -> window.start >= 60 && !anomalyStarts.contains(window.start))
-                .sorted(Comparator.comparingInt(FarmWindow::totalGold))
-                .limit(5)
-                .sorted(Comparator.comparingInt(window -> window.start))
-                .toList();
-        List<FarmWindow> reviewWindows = new ArrayList<>(anomalyWindows);
-        reviewWindows.addAll(relativeLowWindows);
+        List<FarmWindow> reviewWindows = new ArrayList<>();
+        windowsByBenchmark.forEach((group, rows) -> {
+            FarmBenchmarks benchmark = benchmarkByGroup.get(group);
+            boolean post20Group = group.startsWith("post20:");
+            int anomalyLimit = post20Group ? 4 : 10;
+            int relativeLowLimit = post20Group ? 2 : 5;
+            List<FarmWindow> anomalyWindows = rows.stream()
+                    .filter(window -> window.start >= 60 && window.alive
+                            && window.totalGold() <= benchmark.threshold)
+                    .sorted(Comparator.comparingInt((FarmWindow window) -> window.totalGold())
+                            .thenComparingInt(window -> window.start))
+                    .limit(anomalyLimit)
+                    .toList();
+            anomalyWindows.forEach(window -> anomalyStarts.add(window.start));
+            reviewWindows.addAll(anomalyWindows);
+
+            List<FarmWindow> relativeLowWindows = rows.stream()
+                    .filter(window -> window.start >= 60 && window.alive
+                            && !anomalyStarts.contains(window.start))
+                    .sorted(Comparator.comparingInt(FarmWindow::totalGold)
+                            .thenComparingInt(window -> window.start))
+                    .limit(relativeLowLimit)
+                    .toList();
+            reviewWindows.addAll(relativeLowWindows);
+        });
         reviewWindows.sort(Comparator.comparingInt(window -> window.start));
 
         JsonArray result = new JsonArray();
         int diagnosticIndex = 0;
         List<ObservedFarmCycle> observedCycles = observedFarmCycles(slot, duration);
-        LaneAssignment assignment = laneAssignments.get(slot);
         for (FarmWindow window : reviewWindows) {
+            FarmBenchmarks benchmark = benchmarkByGroup.get(farmBenchmarkGroup(window.start));
+            boolean post20CoreWindow = coreRoutePriority && window.start >= 1200;
+            int lookaheadSeconds = post20CoreWindow ? 75 : 45;
             Position currentPosition = window.position;
             Set<Integer> visible = visibleEnemies(slot, window.start);
             JsonArray visibleJson = new JsonArray();
@@ -1569,8 +2095,8 @@ final class ProductAnalysis {
             List<String> activeWardIds = activeWardIdsNear(slot, window.start, currentPosition, wardRows);
             int baseRisk = Math.max(8, Math.min(94, 20 + missingJson.size() * 12 - visibleJson.size() * 2
                     - Math.min(12, activeWardIds.size() * 3)));
-            int laneExpected = Math.max(window.laneGold, laneBenchmark);
-            int jungleExpected = Math.max(window.neutralGold, neutralBenchmark);
+            int laneExpected = Math.max(window.laneGold, benchmark.laneGold);
+            int jungleExpected = Math.max(window.neutralGold, benchmark.neutralGold);
             int laneRisk = Math.min(96, baseRisk + (window.start >= 900 ? 8 : 0));
             int jungleRisk = Math.max(8, baseRisk - 12);
             int waveDeadline = Math.max(12, 42 - window.start % 30);
@@ -1585,21 +2111,30 @@ final class ProductAnalysis {
                             || countUnitKills(slot, Math.max(0, window.start - 30), window.end + 30, "lane") > 0
                             || laneWaveObserved);
             boolean jungleEvidence = currentPosition != null && zoneType(currentPosition).equals("jungle")
-                    && (goldInWindow(slot, Math.max(0, window.start - 45), Math.min(analysisEnd, window.end + 45), "neutral") > 0
-                            || countUnitKills(slot, Math.max(0, window.start - 45), window.end + 45, "neutral") > 0
-                            || countUnitKills(slot, Math.max(0, window.start - 45), window.end + 45, "ancient") > 0
+                    && (goldInWindow(slot, Math.max(0, window.start - lookaheadSeconds),
+                            Math.min(analysisEnd, window.end + lookaheadSeconds), "neutral") > 0
+                            || countUnitKills(slot, Math.max(0, window.start - lookaheadSeconds),
+                                    window.end + lookaheadSeconds, "neutral") > 0
+                            || countUnitKills(slot, Math.max(0, window.start - lookaheadSeconds),
+                                    window.end + lookaheadSeconds, "ancient") > 0
                             || campOccupancyObserved);
             ObservedFarmCycle observedCycle = observedCycles.stream()
                     .filter(cycle -> cycle.start <= window.end && cycle.end >= window.start)
                     .findFirst().orElse(null);
 
             List<FarmCandidate> choices = new ArrayList<>();
-            if (laneEvidence) {
+            RouteEvidence laneRoute = bestLaneRouteEvidence(slot, window.start, window.end,
+                    currentPosition, assignment, laneAssignments, lookaheadSeconds);
+            RouteEvidence campRoute = bestCampRouteEvidence(slot, window.start, window.end,
+                    currentPosition, assignment, laneAssignments, lookaheadSeconds);
+            if (laneRoute.candidate != null) choices.add(laneRoute.candidate);
+            else if (laneEvidence) {
                 Position target = assignment == null ? nearestLaneAnchor(currentPosition) : laneAnchor(assignment.lane);
                 choices.add(new FarmCandidate("collect_lane", laneExpected, laneRisk, 0, waveDeadline,
                         farmScore(laneExpected, laneRisk, 0), "assigned_lane_plus_resource_event", target));
             }
-            if (jungleEvidence) {
+            if (campRoute.candidate != null) choices.add(campRoute.candidate);
+            else if (jungleEvidence) {
                 choices.add(new FarmCandidate("hold_jungle", jungleExpected, jungleRisk, 0, campDeadline,
                         farmScore(jungleExpected, jungleRisk, 0), "current_jungle_plus_resource_event", currentPosition));
             }
@@ -1610,21 +2145,41 @@ final class ProductAnalysis {
                         farmScore(cycleGold, Math.min(96, baseRisk + 5), observedCycle.end - observedCycle.start),
                         "observed_lane_jungle_lane_sequence", null));
             }
-            FarmCandidate best = choices.stream().max(Comparator.comparingDouble(choice -> choice.score)).orElse(null);
+            FarmCandidate highestRawScore = choices.stream()
+                    .max(Comparator.comparingDouble(choice -> choice.score)).orElse(null);
+            RouteEvidence executableRoute = null;
+            for (RouteEvidence route : List.of(laneRoute, campRoute)) {
+                if (route.candidate != null && route.complete && betterRoute(route, executableRoute)) {
+                    executableRoute = route;
+                }
+            }
+            FarmCandidate best = executableRoute == null ? highestRawScore : executableRoute.candidate;
+            RouteEvidence bestRoute = executableRoute != null ? executableRoute
+                    : best == null ? null
+                            : laneRoute.candidate == best ? laneRoute
+                                    : campRoute.candidate == best ? campRoute : null;
 
             String actualKind = observedFarmAction(slot, window, observedCycle);
             int delta = best == null ? 0 : Math.max(0, best.expectedGold - window.totalGold());
             boolean matchedBestOption = best != null && best.kind.equals(actualKind);
             String diagnosticClass = anomalyStarts.contains(window.start) ? "anomaly" : "relative_low";
-            boolean reviewRequired = diagnosticClass.equals("anomaly") && best != null && !matchedBestOption;
-            String evidenceStatus = best == null ? "missing" : "partial";
+            boolean strategicCommitment = post20CoreWindow
+                    && (actualKind.equals("combat") || actualKind.equals("objective_or_resource"));
+            boolean reviewRequired = diagnosticClass.equals("anomaly") && best != null
+                    && !matchedBestOption && !strategicCommitment;
+            boolean routeEvidenceComplete = bestRoute != null && bestRoute.complete;
+            String evidenceStatus = best == null ? "missing" : routeEvidenceComplete ? "complete" : "partial";
             boolean recommendationEnabled = reviewRequired && evidenceStatus.equals("complete");
-            String decision = diagnosticClass.equals("relative_low") ? "relative_low"
+            String decision = strategicCommitment ? "context_exempt"
+                    : diagnosticClass.equals("relative_low") ? "relative_low"
                     : best == null ? "evidence_gap" : matchedBestOption ? "correct" : "review";
-            int confidence = best == null ? 38 : Math.min(72, 46 + visibleJson.size() * 3
+            int confidence = best == null ? 38 : Math.min(routeEvidenceComplete ? 92 : 72, 46 + visibleJson.size() * 3
                     + Math.min(8, activeWardIds.size() * 2) + (window.laneKills + window.neutralKills > 0 ? 8 : 0));
-            String recommendation = best == null ? "insufficient_evidence" : best.kind;
-            String title = best == null ? "evidence_gap"
+            if (routeEvidenceComplete) confidence = Math.max(72, confidence);
+            String recommendation = strategicCommitment ? actualKind
+                    : best == null ? "insufficient_evidence" : best.kind;
+            String title = strategicCommitment ? "strategic_commitment"
+                    : best == null ? "evidence_gap"
                     : observedCycle != null ? "observed_lane_jungle_cycle"
                             : matchedBestOption && best.kind.equals("collect_lane") ? "verified_lane_farm"
                                     : matchedBestOption ? "verified_jungle_farm"
@@ -1634,23 +2189,33 @@ final class ProductAnalysis {
             row.addProperty("id", "diagnostic-" + slot + "-" + diagnosticIndex++);
             row.addProperty("time", window.start);
             row.addProperty("end", window.end);
-            row.addProperty("phase", window.start < 450 ? "laning" : window.start < 900 ? "expansion" : "pre_tormentor");
+            row.addProperty("phase", farmRoutePhase(window.start));
+            row.addProperty("post20_core_priority", post20CoreWindow);
+            row.addProperty("resource_position", assignment == null ? 0 : assignment.position);
+            row.addProperty("benchmark_group", farmBenchmarkGroup(window.start));
+            row.addProperty("benchmark_median_gold", benchmark.medianGold);
             row.addProperty("title", title);
             row.addProperty("decision", decision);
             row.addProperty("diagnostic_class", diagnosticClass);
-            row.addProperty("anomaly_threshold", threshold);
+            row.addProperty("anomaly_threshold", benchmark.threshold);
             row.addProperty("observed_action", actualKind);
             row.addProperty("best_supported_option", best == null ? "insufficient_evidence" : best.kind);
             row.addProperty("matched_best_option", matchedBestOption);
             row.addProperty("review_required", reviewRequired);
             row.addProperty("recommendation_enabled", recommendationEnabled);
             row.addProperty("evidence_status", evidenceStatus);
+            row.addProperty("route_model", "retrospective-resource-route/1.2");
+            row.addProperty("route_scope", "observed_next_" + lookaheadSeconds + "_seconds");
+            row.addProperty("route_lookahead_seconds", lookaheadSeconds);
+            row.addProperty("travel_model", "straight_line_lower_bound");
+            row.addProperty("selection_policy", "phase_baseline_then_hard_gates_then_highest_score");
+            row.addProperty("strategic_commitment_exempt", strategicCommitment);
             row.addProperty("actionable", matchedBestOption);
             row.addProperty("actionable_deprecated", true);
             row.addProperty("actual", actualKind);
             row.addProperty("recommendation", recommendation);
             row.addProperty("actualGold", window.totalGold());
-            row.addProperty("suggestedGold", best == null || matchedBestOption
+            row.addProperty("suggestedGold", best == null || matchedBestOption || strategicCommitment
                     ? window.totalGold() : Math.max(window.totalGold(), best.expectedGold));
             row.addProperty("laneGold", window.laneGold);
             row.addProperty("neutralGold", window.neutralGold);
@@ -1668,28 +2233,54 @@ final class ProductAnalysis {
             row.add("enemyVisibility", enemyVisibilityEvidence(slot, window.start));
             row.addProperty("laneWaveObserved", laneWaveObserved);
             row.addProperty("campOccupancyObserved", campOccupancyObserved);
+            if (bestRoute != null) {
+                row.addProperty("route_resource", bestRoute.resourceId);
+                row.addProperty("route_observed_units", bestRoute.observedUnits);
+                row.addProperty("route_blocker", strategicCommitment ? "strategic_commitment" : bestRoute.blocker);
+                row.addProperty("route_safety", bestRoute.safety.safe ? "supported_safe"
+                        : bestRoute.safety.unknownEnemies > 0 ? "insufficient_visibility" : "known_threat");
+                row.addProperty("route_unknown_enemies", bestRoute.safety.unknownEnemies);
+                row.addProperty("route_nearby_threats", bestRoute.safety.nearbyThreats);
+            } else if (strategicCommitment) {
+                row.addProperty("route_blocker", "strategic_commitment");
+            }
             JsonArray wardIds = new JsonArray();
             activeWardIds.forEach(wardIds::add);
             row.add("wardIds", wardIds);
             JsonArray choiceRows = new JsonArray();
             choices.stream().sorted(Comparator.comparingDouble((FarmCandidate choice) -> choice.score).reversed())
-                    .forEach(choice -> choiceRows.add(choice.toJson()));
+                    .forEach(choice -> {
+                        JsonObject choiceRow = choice.toJson();
+                        RouteEvidence route = laneRoute.candidate == choice ? laneRoute
+                                : campRoute.candidate == choice ? campRoute : null;
+                        if (route != null) {
+                            choiceRow.addProperty("hard_gates_passed", route.complete);
+                            choiceRow.addProperty("blocker", route.blocker);
+                            choiceRow.addProperty("resource", route.resourceId);
+                        }
+                        choiceRows.add(choiceRow);
+                    });
             row.add("candidates", choiceRows);
             JsonArray missingEvidence = new JsonArray();
-            if (!laneWaveObserved) missingEvidence.add("lane_unit_positions");
-            if (!campOccupancyObserved) missingEvidence.add("camp_occupancy");
-            missingEvidence.add("team_resource_claims");
+            if (laneRoute.candidate == null) missingEvidence.add("lane_unit_lifecycle_window");
+            if (campRoute.candidate == null) missingEvidence.add("camp_unit_lifecycle_window");
+            if (bestRoute != null && bestRoute.blocker.equals("team_resource_claim")) {
+                missingEvidence.add("team_resource_priority_conflict");
+            }
             if (observedCycle == null) missingEvidence.add("hero_clear_time");
             row.add("missingEvidence", missingEvidence);
-            if (observedCycle == null) {
+            if (observedCycle == null && !routeEvidenceComplete && !strategicCommitment) {
                 JsonArray blocked = new JsonArray();
                 JsonObject cycleBlock = new JsonObject();
                 cycleBlock.addProperty("kind", "lane_jungle_cycle");
-                cycleBlock.addProperty("reason", "缺少兵线位置、野点存活和本英雄清理耗时，不能证明往返可执行");
+                cycleBlock.addProperty("reason", bestRoute == null
+                        ? "缺少逐单位兵线或营地生命周期，不能证明路线可执行"
+                        : routeBlockerDescription(bestRoute.blocker));
                 blocked.add(cycleBlock);
                 row.add("blockedCandidates", blocked);
             }
-            row.addProperty("reason", "route_evidence_gate");
+            row.addProperty("reason", strategicCommitment
+                    ? "strategic_commitment_exempt" : "route_evidence_gate");
             row.addProperty("evidence", "facts_plus_conservative_gate");
             if (recommendationEnabled && best != null && best.target != null && confidence >= 68) {
                 row.addProperty("targetX", best.target.x);
@@ -1698,6 +2289,178 @@ final class ProductAnalysis {
             result.add(row);
         }
         return result;
+    }
+
+    private RouteEvidence bestLaneRouteEvidence(int slot, int start, int end, Position currentPosition,
+            LaneAssignment assignment, Map<Integer, LaneAssignment> assignments, int lookaheadSeconds) {
+        int enemyCreepTeam = slot < 5 ? DIRE : RADIANT;
+        Map<String, List<UnitTrack>> byLane = new LinkedHashMap<>();
+        for (UnitTrack track : unitTracks.values()) {
+            if (!track.kind.equals("lane_creep") || track.team == null || track.team != enemyCreepTeam
+                    || track.deathTime == null || track.deathTime < start
+                    || track.deathTime > end + lookaheadSeconds) continue;
+            DeathPoint death = track.combatDeath;
+            if (death != null && death.attackerSlot != null && death.attackerSlot != slot
+                    && teamForSlot(death.attackerSlot) == teamForSlot(slot)) continue;
+            Position position = track.lastPosition != null ? track.lastPosition : track.firstPosition;
+            MapCoordinateService.Point point = canonicalPoint(position);
+            if (point == null) continue;
+            String lane = coordinates.nearestLane(point);
+            if (start < 600 && assignment != null && !assignment.lane.equals(lane)) continue;
+            byLane.computeIfAbsent(lane, ignored -> new ArrayList<>()).add(track);
+        }
+        RouteEvidence best = null;
+        for (Map.Entry<String, List<UnitTrack>> entry : byLane.entrySet()) {
+            List<UnitTrack> tracks = entry.getValue();
+            Position target = averageTrackPosition(tracks);
+            int expectedGold = tracks.stream().mapToInt(track -> estimatedUnitGold(track).value).sum();
+            int travelSeconds = routeTravelSeconds(slot, start, currentPosition, target);
+            List<Integer> deadlines = tracks.stream().map(track -> Math.max(1, track.deathTime - start)).sorted().toList();
+            int deadline = deadlines.isEmpty() ? 0 : deadlines.get(deadlines.size() / 2);
+            LaneSafety safety = laneSafetyAt(slot, start, target);
+            boolean teammateClaim = teammateHasResourcePriority(slot, start, target, assignments);
+            String blocker = routeBlocker(assignment, tracks.size(), expectedGold, safety,
+                    teammateClaim, travelSeconds, deadline);
+            int risk = Math.min(98, 16 + safety.nearbyThreats * 28 + safety.unknownEnemies * 15
+                    + (teammateClaim ? 18 : 0));
+            FarmCandidate candidate = new FarmCandidate("collect_lane", expectedGold, risk,
+                    travelSeconds, deadline, farmScore(expectedGold, risk, travelSeconds),
+                    "unit_lifecycle_plus_continuous_visibility", target);
+            RouteEvidence route = new RouteEvidence(candidate, blocker.equals("none"), blocker,
+                    tracks.size(), safety, "lane:" + entry.getKey());
+            if (betterRoute(route, best)) best = route;
+        }
+        return best == null ? RouteEvidence.missing("lane_units_unavailable") : best;
+    }
+
+    private RouteEvidence bestCampRouteEvidence(int slot, int start, int end, Position currentPosition,
+            LaneAssignment assignment, Map<Integer, LaneAssignment> assignments, int lookaheadSeconds) {
+        Map<String, List<UnitTrack>> byCamp = new LinkedHashMap<>();
+        for (UnitTrack track : unitTracks.values()) {
+            if (!track.kind.equals("neutral") || track.firstObserved > end + 15 || track.lastObserved < start
+                    || track.deathTime != null && track.deathTime < start
+                    || track.deathTime == null && track.leftTime != null && track.leftTime < start) continue;
+            Position position = track.firstPosition != null ? track.firstPosition : track.lastPosition;
+            MapCoordinateService.CampAnchor camp = coordinates.nearestCamp(canonicalPoint(position));
+            if (camp == null || camp.distance() > 8.5) continue;
+            byCamp.computeIfAbsent(camp.id(), ignored -> new ArrayList<>()).add(track);
+        }
+        RouteEvidence best = null;
+        for (Map.Entry<String, List<UnitTrack>> entry : byCamp.entrySet()) {
+            List<UnitTrack> tracks = entry.getValue();
+            Position target = averageTrackPosition(tracks);
+            int expectedGold = tracks.stream().mapToInt(track -> estimatedUnitGold(track).value).sum();
+            int travelSeconds = routeTravelSeconds(slot, start, currentPosition, target);
+            List<Integer> clearDeadlines = tracks.stream().filter(track -> track.deathTime != null)
+                    .map(track -> Math.max(1, track.deathTime - start)).sorted().toList();
+            int deadline = clearDeadlines.isEmpty() ? lookaheadSeconds
+                    : clearDeadlines.get(clearDeadlines.size() / 2);
+            LaneSafety safety = laneSafetyAt(slot, start, target);
+            boolean teammateClaim = teammateHasResourcePriority(slot, start, target, assignments);
+            String blocker = routeBlocker(assignment, tracks.size(), expectedGold, safety,
+                    teammateClaim, travelSeconds, deadline);
+            if (blocker.equals("none") && start < 600 && !observedNeutralClearBefore(slot, start)) {
+                blocker = "pre10_jungle_clear_unproven";
+            }
+            int risk = Math.min(98, 12 + safety.nearbyThreats * 28 + safety.unknownEnemies * 15
+                    + (teammateClaim ? 18 : 0));
+            FarmCandidate candidate = new FarmCandidate("hold_jungle", expectedGold, risk,
+                    travelSeconds, deadline, farmScore(expectedGold, risk, travelSeconds),
+                    "camp_lifecycle_plus_continuous_visibility", target);
+            RouteEvidence route = new RouteEvidence(candidate, blocker.equals("none"), blocker,
+                    tracks.size(), safety, "camp:" + entry.getKey());
+            if (betterRoute(route, best)) best = route;
+        }
+        return best == null ? RouteEvidence.missing("camp_units_unavailable") : best;
+    }
+
+    private static boolean betterRoute(RouteEvidence candidate, RouteEvidence current) {
+        if (current == null) return true;
+        if (candidate.complete != current.complete) return candidate.complete;
+        return candidate.candidate.score > current.candidate.score;
+    }
+
+    private Position averageTrackPosition(List<UnitTrack> tracks) {
+        float x = 0;
+        float y = 0;
+        int count = 0;
+        for (UnitTrack track : tracks) {
+            Position position = track.lastPosition != null ? track.lastPosition : track.firstPosition;
+            if (position == null) continue;
+            x += position.x;
+            y += position.y;
+            count++;
+        }
+        return count == 0 ? null : new Position(x / count, y / count);
+    }
+
+    private int routeTravelSeconds(int slot, int time, Position current, Position target) {
+        if (current == null || target == null) return Integer.MAX_VALUE;
+        Snapshot snapshot = snapshotFloorAt(slot, time, 3);
+        int moveSpeed = snapshot == null || snapshot.moveSpeed == null || snapshot.moveSpeed <= 0
+                ? 300 : snapshot.moveSpeed;
+        return Math.max(0, (int) Math.ceil(percentDistanceToWorld(distance(current, target)) / moveSpeed));
+    }
+
+    private boolean teammateHasResourcePriority(int slot, int time, Position target,
+            Map<Integer, LaneAssignment> assignments) {
+        if (target == null) return false;
+        LaneAssignment own = assignments.get(slot);
+        int ownPosition = own == null ? 5 : own.position;
+        Position ownLocation = positionOf(snapshotFloorAt(slot, time, 3));
+        if (ownLocation == null) return false;
+        double ownDistance = distance(ownLocation, target);
+        int teamStart = slot < 5 ? 0 : 5;
+        for (int teammate = teamStart; teammate < teamStart + 5; teammate++) {
+            if (teammate == slot) continue;
+            LaneAssignment other = assignments.get(teammate);
+            if (other == null || other.position > 3 || other.position > ownPosition) continue;
+            Snapshot snapshot = snapshotFloorAt(teammate, time, 3);
+            if (snapshot == null || snapshot.lifeState != null && snapshot.lifeState != 0) continue;
+            Position location = positionOf(snapshot);
+            if (location != null && distance(location, target) + 2.5 < ownDistance) return true;
+        }
+        return false;
+    }
+
+    private static String routeBlocker(LaneAssignment assignment, int units, int expectedGold,
+            LaneSafety safety, boolean teammateClaim, int travelSeconds, int deadline) {
+        if (assignment == null || assignment.confidence < 0.65) return "role_uncertain";
+        if (assignment.position > 3) return "role_not_resource_priority";
+        if (units < 2) return "resource_sample_too_small";
+        if (expectedGold <= 0) return "unit_value_unavailable";
+        if (safety.unknownEnemies > 0) return "enemy_visibility_incomplete";
+        if (safety.nearbyThreats > 0) return "known_enemy_threat";
+        if (teammateClaim) return "team_resource_claim";
+        if (travelSeconds == Integer.MAX_VALUE) return "player_position_unavailable";
+        if (deadline <= 0 || travelSeconds > deadline) return "arrival_after_resource_deadline";
+        return "none";
+    }
+
+    private static String routeBlockerDescription(String blocker) {
+        return switch (blocker) {
+            case "role_uncertain" -> "分路与位置置信度不足，暂不生成资源路线";
+            case "role_not_resource_priority" -> "该位置不应为了候选资源抢占核心路线";
+            case "resource_sample_too_small" -> "可确认存活的资源单位不足两个";
+            case "unit_value_unavailable" -> "缺少同场同类单位金币样本，不能估算路线收益";
+            case "enemy_visibility_incomplete" -> "敌方连续可见性不完整，不能把路线判为安全";
+            case "known_enemy_threat" -> "候选路线附近存在已知敌方威胁";
+            case "team_resource_claim" -> "更高资源优先级队友更接近该资源";
+            case "pre10_jungle_clear_unproven" -> "10 分钟前没有该英雄已完成清野的证据，不能建议离线进野区";
+            case "strategic_commitment" -> "该窗口正在参团或处理关键目标，不用纯打钱收益追责";
+            case "arrival_after_resource_deadline" -> "按移动速度下限估算，抵达时资源已经消失";
+            default -> "逐单位资源或位置证据不足，不能证明路线可执行";
+        };
+    }
+
+    private boolean observedNeutralClearBefore(int slot, int time) {
+        return goldPoints.stream().anyMatch(point -> point.slot != null && point.slot == slot
+                        && point.time >= 0 && point.time <= time
+                        && (point.classification.source().equals("neutral")
+                                || point.classification.source().equals("ancient")))
+                || deaths.stream().anyMatch(death -> death.attackerSlot != null
+                        && death.attackerSlot == slot && death.time >= 0 && death.time <= time
+                        && (unitKind(death).equals("neutral") || unitKind(death).equals("ancient")));
     }
 
     private String observedFarmAction(int slot, FarmWindow window, ObservedFarmCycle observedCycle) {
@@ -1860,6 +2623,7 @@ final class ProductAnalysis {
 
     private void rebuildVisibilityIndex(int duration, List<JsonObject> wardRows) {
         visibilityIndex.clear();
+        Map<Integer, List<StealthInterval>> stealthBySlot = buildStealthIntervals(duration);
         Map<Integer, NavigableMap<Integer, Integer>> eventMasks = new HashMap<>();
         for (HeroVisibilityEvent event : heroVisibilityEvents) {
             if (event.slot == null) continue;
@@ -1903,6 +2667,16 @@ final class ProductAnalysis {
                     Position exposedPosition = null;
                     Integer exposedLastSeen = null;
                     float uncertainty = 0;
+                    StealthState stealth = stealthStateAt(stealthBySlot, enemySlot, second);
+                    boolean heroVision = alive && enemyPosition != null
+                            && coveredByAlliedHero(perspectiveTeam, second, enemy, enemyPosition);
+                    boolean observerVision = alive && enemyPosition != null
+                            && coveredByObserverWard(perspectiveTeam, second, enemyPosition, wardRows);
+                    boolean sentryTrueSight = alive && enemyPosition != null
+                            && coveredBySentryWard(perspectiveTeam, second, enemyPosition, wardRows);
+                    boolean geometricVision = heroVision || observerVision;
+                    boolean geometryCanReveal = !stealth.smoked
+                            && (!stealth.invisible || stealth.trueSightRevealable && sentryTrueSight);
 
                     if (alive && maskShowsTeam(mask, perspectiveTeam)) {
                         state = "confirmed";
@@ -1913,15 +2687,17 @@ final class ProductAnalysis {
                         state = "confirmed";
                         source = "combat_log_visibility";
                         exposedPosition = enemyPosition;
-                    } else if (alive && enemyPosition != null
-                            && coveredByAlliedHero(perspectiveTeam, second, enemyPosition)) {
+                    } else if (geometricVision && geometryCanReveal && heroVision) {
                         state = "probable";
-                        source = "allied_hero_vision_geometry";
+                        source = stealth.invisible
+                                ? "sentry_true_sight_plus_hero_geometry"
+                                : "allied_hero_vision_geometry";
                         exposedPosition = enemyPosition;
-                    } else if (alive && enemyPosition != null
-                            && coveredByObserverWard(perspectiveTeam, second, enemyPosition, wardRows)) {
+                    } else if (geometricVision && geometryCanReveal && observerVision) {
                         state = "probable";
-                        source = "observer_ward_geometry";
+                        source = stealth.invisible
+                                ? "sentry_true_sight_plus_observer_geometry"
+                                : "observer_ward_geometry";
                         exposedPosition = enemyPosition;
                     }
 
@@ -1946,6 +2722,56 @@ final class ProductAnalysis {
         }
     }
 
+    private Map<Integer, List<StealthInterval>> buildStealthIntervals(int duration) {
+        Map<Integer, Map<String, StealthModifierEvent>> active = new HashMap<>();
+        Map<Integer, List<StealthInterval>> result = new HashMap<>();
+        stealthModifierEvents.stream()
+                .filter(event -> event.slot != null)
+                .sorted((left, right) -> compareEventStamps(left.stamp, right.stamp))
+                .forEach(event -> {
+                    Map<String, StealthModifierEvent> slotActive = active.computeIfAbsent(
+                            event.slot, ignored -> new LinkedHashMap<>());
+                    if (!event.removed) {
+                        slotActive.putIfAbsent(event.modifier, event);
+                        return;
+                    }
+                    StealthModifierEvent started = slotActive.remove(event.modifier);
+                    if (started == null) return;
+                    int start = Math.max(0, started.time);
+                    int endExclusive = Math.min(duration + 1, Math.max(start, event.time));
+                    if (endExclusive > start) {
+                        result.computeIfAbsent(event.slot, ignored -> new ArrayList<>())
+                                .add(new StealthInterval(start, endExclusive, started.kind,
+                                        started.trueSightRevealable));
+                    }
+                });
+        active.forEach((slot, modifiers) -> modifiers.values().forEach(started -> {
+            int start = Math.max(0, started.time);
+            if (start <= duration) {
+                result.computeIfAbsent(slot, ignored -> new ArrayList<>())
+                        .add(new StealthInterval(start, duration + 1, started.kind,
+                                started.trueSightRevealable));
+            }
+        }));
+        result.values().forEach(rows -> rows.sort(Comparator.comparingInt(StealthInterval::start)));
+        return result;
+    }
+
+    private static StealthState stealthStateAt(Map<Integer, List<StealthInterval>> bySlot,
+            int slot, int second) {
+        boolean smoked = false;
+        boolean invisible = false;
+        boolean trueSightRevealable = true;
+        for (StealthInterval interval : bySlot.getOrDefault(slot, List.of())) {
+            if (interval.start > second) break;
+            if (second >= interval.endExclusive) continue;
+            if (interval.kind == StealthKind.SMOKE) smoked = true;
+            if (interval.kind == StealthKind.INVISIBLE) invisible = true;
+            trueSightRevealable &= interval.trueSightRevealable;
+        }
+        return new StealthState(smoked, invisible, trueSightRevealable);
+    }
+
     private static void addCombatVisible(Map<Integer, Set<Integer>> bySecond, int second,
             Integer slot, int perspectiveTeam) {
         if (slot == null || (slot < 5) == (perspectiveTeam == RADIANT)) return;
@@ -1956,11 +2782,13 @@ final class ProductAnalysis {
         return mask != null && ((mask & (1 << team)) != 0 || mask == team);
     }
 
-    private boolean coveredByAlliedHero(int team, int time, Position enemyPosition) {
+    private boolean coveredByAlliedHero(int team, int time, Snapshot enemy, Position enemyPosition) {
         int first = team == RADIANT ? 0 : 5;
         for (int slot = first; slot < first + 5; slot++) {
             Snapshot ally = snapshotFloorAt(slot, time, 2);
             if (ally == null || ally.lifeState != null && ally.lifeState != 0) continue;
+            if (enemy != null && enemy.rawZ != null && ally.rawZ != null
+                    && enemy.rawZ - ally.rawZ >= 96.0f) continue;
             Position allyPosition = positionOf(ally);
             if (allyPosition == null) continue;
             int vision = isDay(time)
@@ -1979,6 +2807,14 @@ final class ProductAnalysis {
                 && wardCovers(enemyPosition, ward));
     }
 
+    private boolean coveredBySentryWard(int team, int time, Position enemyPosition, List<JsonObject> wardRows) {
+        String teamName = team == RADIANT ? "radiant" : "dire";
+        return wardRows.stream().anyMatch(ward -> teamName.equals(stringValue(ward, "team"))
+                && "sentry".equals(stringValue(ward, "type"))
+                && intValue(ward, "placedAt", 0) <= time && intValue(ward, "endedAt", 0) >= time
+                && wardCovers(enemyPosition, ward));
+    }
+
     private static boolean isDay(int time) {
         return time < 0 || Math.floorDiv(time, 300) % 2 == 0;
     }
@@ -1991,9 +2827,15 @@ final class ProductAnalysis {
         JsonObject module = new JsonObject();
         module.add("wards", toArray(wardRows));
         JsonObject schema = new JsonObject();
-        schema.addProperty("schema", "continuous-enemy-visibility/1.0");
+        schema.addProperty("schema", "continuous-enemy-visibility/1.1");
         schema.addProperty("precision_seconds", 1);
         schema.addProperty("terrain_occlusion_modeled", false);
+        schema.addProperty("terrain_height_guard_modeled", true);
+        schema.addProperty("terrain_height_guard_scope", "allied_hero_geometry");
+        schema.addProperty("tree_occlusion_modeled", false);
+        schema.addProperty("smoke_modeled", true);
+        schema.addProperty("invisibility_modeled", true);
+        schema.addProperty("sentry_true_sight_modeled", true);
         schema.addProperty("hidden_current_position_exposed", false);
         schema.addProperty("states", "confirmed,probable,last_seen,unknown");
         schema.addProperty("last_seen_horizon_seconds", 20);
@@ -2103,7 +2945,7 @@ final class ProductAnalysis {
     }
 
     private JsonObject buildCombatModule(int duration, List<JsonObject> wardRows,
-            List<RoshanAttempt> roshanAttempts) {
+            List<RoshanAttempt> roshanAttempts, Map<Integer, LaneAssignment> laneAssignments) {
         List<CombatCluster> candidateClusters = mergeRelatedCombatClusters(buildCombatClusters());
         List<CombatCluster> clusters = segmentCombatClusters(candidateClusters);
         JsonArray fights = new JsonArray();
@@ -2221,7 +3063,7 @@ final class ProductAnalysis {
             fight.add("damage_by_slot", buildDamageBreakdown(fightDamage));
             fight.add("vision", buildFightVision(start, end, position, fightDamage, wardRows));
             fight.add("contributions", buildFightContributions(duration, contactStart, contactEnd, position, participants,
-                    group, fightDamage, fightHeals, fightControls, fightUsages, wardRows));
+                    group, fightDamage, fightHeals, fightControls, fightUsages, wardRows, laneAssignments));
             fights.add(fight);
         }
         JsonObject module = new JsonObject();
@@ -3473,17 +4315,27 @@ final class ProductAnalysis {
     private JsonArray buildFightContributions(int duration, int start, int end, Position position,
             Set<Integer> participants, List<DeathPoint> group, List<DamagePoint> fightDamage,
             List<HealPoint> fightHeals, List<ControlPoint> fightControls, List<ActorEvent> fightUsages,
-            List<JsonObject> wardRows) {
+            List<JsonObject> wardRows, Map<Integer, LaneAssignment> laneAssignments) {
         JsonArray rows = new JsonArray();
         Set<Integer> killedSlots = new HashSet<>();
         group.stream().filter(death -> death.targetSlot != null).forEach(death -> killedSlots.add(death.targetSlot));
         for (int slot : participants.stream().sorted().toList()) {
-            String role = roleForSlot(slot, duration);
+            LaneAssignment assignment = laneAssignments.get(slot);
+            int playerPosition = assignment == null ? slot % 5 + 1 : assignment.position;
+            int roleConfidence = assignment == null ? 0 : (int) Math.round(assignment.confidence * 100);
+            String role = "position_" + playerPosition;
+            String roleGroup = playerPosition <= 3 ? "core" : "support";
             int damage = fightDamage.stream()
                     .filter(point -> point.attackerSlot != null && point.attackerSlot == slot)
                     .mapToInt(point -> point.value).sum();
             int teamDamage = fightDamage.stream()
                     .filter(point -> point.attackerSlot != null && (point.attackerSlot < 5) == (slot < 5))
+                    .mapToInt(point -> point.value).sum();
+            int damageTaken = fightDamage.stream()
+                    .filter(point -> point.targetSlot != null && point.targetSlot == slot)
+                    .mapToInt(point -> point.value).sum();
+            int teamDamageTaken = fightDamage.stream()
+                    .filter(point -> point.targetSlot != null && (point.targetSlot < 5) == (slot < 5))
                     .mapToInt(point -> point.value).sum();
             int damageToKills = fightDamage.stream()
                     .filter(point -> point.attackerSlot != null && point.attackerSlot == slot
@@ -3510,28 +4362,62 @@ final class ProductAnalysis {
                     && responsibilityGate.opportunitySeconds >= 2;
             boolean sentryCheckRequired = sentryCheckRequired(position);
             double damageShare = teamDamage == 0 ? 0 : damage / (double) teamDamage;
+            double damageTakenShare = teamDamageTaken == 0 ? 0 : damageTaken / (double) teamDamageTaken;
             double conversionShare = damage == 0 ? 0 : damageToKills / (double) damage;
             int score;
             List<String> issues = new ArrayList<>();
-            if (role.equals("core")) {
-                score = (int) Math.round(28 + Math.min(36, damageShare * 100)
-                        + Math.min(12, abilityCasts * 3) + Math.min(10, conversionShare * 10)
-                        + presencePct * 0.14 - playerDeaths * 6);
-                if (damageShare < 0.12 && spellJudgmentAllowed) issues.add("low_damage_share");
-                if (abilityCasts == 0 && spellJudgmentAllowed) issues.add("no_spell_output");
-                if (presencePct < 45) issues.add("late_or_absent");
-                if (!killedSlots.isEmpty() && damageToKills == 0) issues.add("no_kill_conversion");
-            } else {
-                score = (int) Math.round(30 + Math.min(22, abilityCasts * 4)
-                        + Math.min(15, controlSeconds * 2.5) + Math.min(10, healing / 250.0)
+            score = switch (playerPosition) {
+                case 1 -> (int) Math.round(24 + Math.min(38, damageShare * 100)
+                        + Math.min(12, conversionShare * 14) + Math.min(10, abilityCasts * 2.5)
+                        + presencePct * 0.14 - playerDeaths * 7);
+                case 2 -> (int) Math.round(24 + Math.min(34, damageShare * 100)
+                        + Math.min(14, abilityCasts * 3) + Math.min(10, controlSeconds * 2)
+                        + Math.max(0, 10 - arrivalDelay * 2) + presencePct * 0.12 - playerDeaths * 6);
+                case 3 -> (int) Math.round(24 + Math.min(24, damageShare * 100)
+                        + Math.min(18, damageTakenShare * 100) + Math.min(18, controlSeconds * 3)
+                        + Math.min(8, abilityCasts * 2) + presencePct * 0.12 - playerDeaths * 4);
+                case 4 -> (int) Math.round(26 + Math.min(20, abilityCasts * 4)
+                        + Math.min(20, controlSeconds * 3) + Math.min(10, healing / 220.0)
                         + Math.min(10, (setupObserver + setupSentry) * 5)
                         + Math.min(8, itemUses * 2) + presencePct * 0.10 - playerDeaths * 5);
-                if (abilityCasts == 0 && spellJudgmentAllowed) issues.add("no_spell_cast");
-                if (controlSeconds == 0 && healing == 0 && damageShare < 0.08 && spellJudgmentAllowed) {
-                    issues.add("low_utility_output");
+                default -> (int) Math.round(26 + Math.min(18, abilityCasts * 4)
+                        + Math.min(18, controlSeconds * 3) + Math.min(16, healing / 180.0)
+                        + Math.min(12, (setupObserver + setupSentry) * 6)
+                        + Math.min(8, itemUses * 2) + presencePct * 0.10 - playerDeaths * 5);
+            };
+            if (abilityCasts == 0 && spellJudgmentAllowed) {
+                issues.add(playerPosition <= 3 ? "no_spell_output" : "no_spell_cast");
+            }
+            if (roleConfidence >= 65) {
+                switch (playerPosition) {
+                    case 1 -> {
+                        if (damageShare < 0.18 && spellJudgmentAllowed) issues.add("low_carry_damage_share");
+                        if (!killedSlots.isEmpty() && damageToKills == 0) issues.add("no_kill_conversion");
+                    }
+                    case 2 -> {
+                        if (damageShare < 0.16 && spellJudgmentAllowed) issues.add("low_mid_combat_output");
+                        if (arrivalDelay > 4) issues.add("late_tempo_arrival");
+                    }
+                    case 3 -> {
+                        if (controlSeconds == 0 && damageTakenShare < 0.12 && spellJudgmentAllowed) {
+                            issues.add("low_initiation_or_frontline_value");
+                        }
+                    }
+                    case 4 -> {
+                        if (controlSeconds == 0 && healing == 0 && damageShare < 0.06 && spellJudgmentAllowed) {
+                            issues.add("low_roamer_utility_output");
+                        }
+                    }
+                    default -> {
+                        if (controlSeconds == 0 && healing == 0 && itemUses == 0 && spellJudgmentAllowed) {
+                            issues.add("low_save_or_control_output");
+                        }
+                    }
                 }
-                if (sentryCheckRequired && setupSentry == 0 && presencePct >= 45) issues.add("no_sentry_setup");
-                if (presencePct < 45) issues.add("late_or_absent");
+                if (playerPosition >= 4 && sentryCheckRequired && setupSentry == 0 && presencePct >= 45) {
+                    issues.add("no_sentry_setup");
+                }
+                if (presencePct < 35 && arrivalDelay > 4) issues.add("late_or_absent");
             }
             score = Math.max(0, Math.min(100, score));
             int evidenceCount = abilityCasts + itemUses + (int) Math.ceil(controlSeconds) + (damage > 0 ? 2 : 0)
@@ -3543,8 +4429,14 @@ final class ProductAnalysis {
             JsonObject row = new JsonObject();
             row.addProperty("slot", slot);
             row.addProperty("role", role);
+            row.addProperty("role_group", roleGroup);
+            row.addProperty("position", playerPosition);
+            row.addProperty("role_confidence", roleConfidence);
+            row.addProperty("responsibility_model", "position-responsibility/1.0");
             row.addProperty("damage", damage);
+            row.addProperty("damageTaken", damageTaken);
             row.addProperty("teamDamageShare", Math.round(damageShare * 1000) / 10.0);
+            row.addProperty("teamDamageTakenShare", Math.round(damageTakenShare * 1000) / 10.0);
             row.addProperty("damageToKills", damageToKills);
             row.addProperty("killConversion", Math.round(conversionShare * 1000) / 10.0);
             row.addProperty("abilityCasts", abilityCasts);
@@ -3559,7 +4451,7 @@ final class ProductAnalysis {
             row.addProperty("setupSentries", setupSentry);
             row.addProperty("sentryCheckRequired", sentryCheckRequired);
             row.addProperty("responsibilityScore", score);
-            row.addProperty("status", responsibilityGate.status.equals("insufficient_evidence")
+            row.addProperty("status", responsibilityGate.status.equals("insufficient_evidence") || roleConfidence < 65
                     ? "insufficient_evidence" : score >= 72 ? "ok" : score >= 48 ? "watch" : "issue");
             row.addProperty("confidence", confidence);
             JsonArray issueRows = new JsonArray();
@@ -3579,6 +4471,7 @@ final class ProductAnalysis {
         int candidateSamples = 0;
         int decisiveSamples = 0;
         int opportunitySeconds = 0;
+        int metadataSamples = 0;
         Map<String, Integer> blockers = new LinkedHashMap<>();
         Map<String, AbilityWindow> activeWindows = new HashMap<>();
         List<AbilityWindow> windows = new ArrayList<>();
@@ -3611,12 +4504,24 @@ final class ProductAnalysis {
                 Float cooldownLength = floatValue(ability, "cooldown_length");
                 Integer manaCost = integerValue(ability, "mana_cost");
                 Integer charges = integerValue(ability, "charges");
-                Float castRange = floatValue(ability, "cast_range");
+                PatchAbilityMetadata.AbilityProfile profile = abilityMetadata.ability(key);
+                if (profile == null) {
+                    candidateSamples++;
+                    increment(blockers, "patch_metadata_missing");
+                    continue;
+                }
+                if (!profile.responsibilityCandidate()) continue;
                 if ((cooldownLength == null || cooldownLength <= 0)
-                        && (manaCost == null || manaCost <= 0) && charges == null && castRange == null) {
+                        && (manaCost == null || manaCost <= 0) && charges == null) {
                     continue;
                 }
                 candidateSamples++;
+                metadataSamples++;
+
+                if (!profile.targetSemanticsKnown()) {
+                    increment(blockers, "ability_semantics_unknown");
+                    continue;
+                }
 
                 if (control != null) {
                     increment(blockers, control);
@@ -3643,11 +4548,13 @@ final class ProductAnalysis {
                     decisiveSamples++;
                     continue;
                 }
-                if (castRange == null || castRange <= 0) {
+                Float castRange = floatValue(ability, "cast_range");
+                float effectiveRange = profile.effectiveRange(level, castRange);
+                if (effectiveRange <= 0) {
                     increment(blockers, "range_unknown");
                     continue;
                 }
-                if (!hasReasonableAbilityTarget(slot, second, castRange)) {
+                if (!hasReasonableAbilityTarget(slot, second, profile, level, castRange)) {
                     increment(blockers, "target_or_range");
                     decisiveSamples++;
                     continue;
@@ -3656,7 +4563,8 @@ final class ProductAnalysis {
                 opportunityThisSecond = true;
                 AbilityWindow active = activeWindows.get(key);
                 if (active == null || active.end != second - 1) {
-                    active = new AbilityWindow(key, second, castRange);
+                    active = new AbilityWindow(key, second, effectiveRange,
+                            profile.targetMode().name().toLowerCase(Locale.ROOT));
                     activeWindows.put(key, active);
                     windows.add(active);
                 } else {
@@ -3676,7 +4584,8 @@ final class ProductAnalysis {
             status = "insufficient_evidence";
         }
         return new ResponsibilityGate(status, coverage, snapshotSeconds, abilityStateSeconds,
-                candidateSamples, decisiveSamples, opportunitySeconds, blockers, windows);
+                candidateSamples, decisiveSamples, opportunitySeconds, metadataSamples,
+                abilityMetadata.exactMatch(), blockers, windows);
     }
 
     private String activeCastBlockingControl(int slot, int second) {
@@ -3691,26 +4600,34 @@ final class ProductAnalysis {
         return null;
     }
 
-    private boolean hasReasonableAbilityTarget(int slot, int second, float castRange) {
+    private boolean hasReasonableAbilityTarget(int slot, int second,
+            PatchAbilityMetadata.AbilityProfile profile, int level, Float replayCastRange) {
         Snapshot player = snapshotFloorAt(slot, second, 2);
         Position origin = positionOf(player);
         if (origin == null) return false;
-        double radius = worldDistanceToPercent(castRange + 150.0);
-        for (int target : enemySlots(slot)) {
-            Snapshot enemy = snapshotFloorAt(target, second, 2);
-            if (enemy == null || enemy.lifeState != null && enemy.lifeState != 0) continue;
-            Position targetPosition = positionOf(enemy);
-            if (targetPosition != null && distance(origin, targetPosition) <= radius) return true;
+        double radius = worldDistanceToPercent(profile.effectiveRange(level, replayCastRange) + 150.0);
+        if (profile.targetsEnemyHero()) {
+            int perspectiveTeam = teamForSlot(slot);
+            for (int target : enemySlots(slot)) {
+                VisibilitySample visible = visibilityIndex.getOrDefault(perspectiveTeam, Map.of())
+                        .getOrDefault(target, new TreeMap<>()).get(second);
+                if (visible == null || !(visible.state.equals("confirmed") || visible.state.equals("probable"))) {
+                    continue;
+                }
+                if (visible.position != null && distance(origin, visible.position) <= radius) return true;
+            }
         }
-        int teamStart = slot < 5 ? 0 : 5;
-        for (int ally = teamStart; ally < teamStart + 5; ally++) {
-            if (ally == slot) continue;
-            Snapshot target = snapshotFloorAt(ally, second, 2);
-            if (target == null || target.lifeState != null && target.lifeState != 0
-                    || target.hp == null || target.maxHp == null || target.maxHp <= 0
-                    || target.hp / target.maxHp > 0.8f) continue;
-            Position targetPosition = positionOf(target);
-            if (targetPosition != null && distance(origin, targetPosition) <= radius) return true;
+        if (profile.targetsFriendlyHero()) {
+            int teamStart = slot < 5 ? 0 : 5;
+            for (int ally = teamStart; ally < teamStart + 5; ally++) {
+                if (ally == slot) continue;
+                Snapshot target = snapshotFloorAt(ally, second, 2);
+                if (target == null || target.lifeState != null && target.lifeState != 0
+                        || target.hp == null || target.maxHp == null || target.maxHp <= 0
+                        || target.hp / target.maxHp > 0.8f) continue;
+                Position targetPosition = positionOf(target);
+                if (targetPosition != null && distance(origin, targetPosition) <= radius) return true;
+            }
         }
         return false;
     }
@@ -3799,8 +4716,9 @@ final class ProductAnalysis {
     }
 
     private static double wardDistance(Position position, JsonObject ward) {
-        if (position == null || !hasValue(ward, "x") || !hasValue(ward, "y")) return Double.MAX_VALUE;
-        return distance(position, new Position(floatValue(ward, "x"), floatValue(ward, "y")));
+        Position wardPosition = jsonPosition(ward);
+        return position == null || wardPosition == null
+                ? Double.MAX_VALUE : distance(position, wardPosition);
     }
 
     private static boolean wardCovers(Position position, JsonObject ward) {
@@ -4362,8 +5280,9 @@ final class ProductAnalysis {
         int id = 0;
         for (JsonObject row : rows) {
             row.addProperty("id", "timeline-" + (++id));
-            if (!row.has("location") && row.has("x") && row.has("y")) {
-                row.addProperty("location", regionCode(new Position(floatValue(row, "x"), floatValue(row, "y"))));
+            Position rowPosition = jsonPosition(row);
+            if (!row.has("location") && rowPosition != null) {
+                row.addProperty("location", regionCode(rowPosition));
             }
             events.add(row);
         }
@@ -4373,7 +5292,8 @@ final class ProductAnalysis {
     }
 
     private JsonObject buildPlayerMetrics(int duration, List<JsonObject> wardRows,
-            Map<Integer, LaneAssignment> laneAssignments, JsonObject laningModule, JsonObject combatModule) {
+            Map<Integer, LaneAssignment> laneAssignments, JsonObject laningModule, JsonObject combatModule,
+            JsonObject farmModule) {
         JsonObject bySlot = new JsonObject();
         for (int slot = 0; slot < 10; slot++) {
             final int currentSlot = slot;
@@ -4445,6 +5365,17 @@ final class ProductAnalysis {
             row.addProperty("neutral_gold", goldInWindow(slot, 0, duration, "neutral"));
             row.addProperty("combat_gold", goldInWindow(slot, 0, duration, "combat"));
             row.addProperty("other_gold", goldInWindow(slot, 0, duration, "other"));
+            JsonObject laneOpportunities = farmModule.getAsJsonObject("lane_opportunities_by_slot");
+            if (laneOpportunities != null && laneOpportunities.has(Integer.toString(slot))) {
+                JsonObject opportunity = laneOpportunities.getAsJsonObject(Integer.toString(slot));
+                if (opportunity.has("summary")) {
+                    row.add("lane_opportunity_summary", opportunity.getAsJsonObject("summary").deepCopy());
+                }
+            }
+            JsonObject stackValues = farmModule.getAsJsonObject("stack_value_summary_by_slot");
+            if (stackValues != null && stackValues.has(Integer.toString(slot))) {
+                row.add("stack_value_summary", stackValues.getAsJsonObject(Integer.toString(slot)).deepCopy());
+            }
             if (latest != null) {
                 addNullable(row, "networth", latest.networth);
                 addNullable(row, "xp", latest.xp);
@@ -4669,12 +5600,23 @@ final class ProductAnalysis {
         if (position == null) return List.of();
         String team = slot < 5 ? "radiant" : "dire";
         return wardRows.stream()
-                .filter(ward -> team.equals(stringValue(ward, "team"))
-                        && "observer".equals(stringValue(ward, "type"))
-                        && intValue(ward, "placedAt", 0) <= time && intValue(ward, "endedAt", 0) >= time
-                        && distance(position, new Position(floatValue(ward, "x"), floatValue(ward, "y"))) <= 24)
+                .filter(ward -> {
+                    Position wardPosition = jsonPosition(ward);
+                    return wardPosition != null
+                            && team.equals(stringValue(ward, "team"))
+                            && "observer".equals(stringValue(ward, "type"))
+                            && intValue(ward, "placedAt", 0) <= time
+                            && intValue(ward, "endedAt", 0) >= time
+                            && distance(position, wardPosition) <= 24;
+                })
                 .map(ward -> stringValue(ward, "id"))
                 .toList();
+    }
+
+    private static Position jsonPosition(JsonObject row) {
+        Float x = floatValue(row, "x");
+        Float y = floatValue(row, "y");
+        return x == null || y == null ? null : new Position(x, y);
     }
 
     private int countLaneKills(int slot, int start, int end) {
@@ -4860,7 +5802,7 @@ final class ProductAnalysis {
         return result;
     }
 
-    private static JsonArray compactAbilities(JsonElement value) {
+    private JsonArray compactAbilities(JsonElement value) {
         if (value == null || !value.isJsonArray()) return null;
         JsonArray result = new JsonArray();
         for (JsonElement element : value.getAsJsonArray()) {
@@ -4868,14 +5810,31 @@ final class ProductAnalysis {
             JsonObject source = element.getAsJsonObject();
             String id = stringValue(source, "id");
             if (id == null || id.isBlank()) continue;
+            Integer level = integerValue(source, "ability_level");
+            Float replayCastRange = floatValue(source, "cast_range");
+            PatchAbilityMetadata.AbilityProfile profile = abilityMetadata.ability(id);
+            Float resolvedCastRange = replayCastRange;
+            if ((resolvedCastRange == null || resolvedCastRange <= 0) && profile != null && level != null) {
+                float metadataRange = profile.castRange(level, null);
+                if (metadataRange > 0) resolvedCastRange = metadataRange;
+            }
             JsonObject ability = new JsonObject();
             ability.addProperty("key", id);
-            addNullable(ability, "level", integerValue(source, "ability_level"));
+            addNullable(ability, "level", level);
             addNullable(ability, "cooldown", floatValue(source, "cooldown"));
             addNullable(ability, "cooldown_length", floatValue(source, "cooldown_length"));
             addNullable(ability, "charges", integerValue(source, "current_charges"));
             addNullable(ability, "mana_cost", integerValue(source, "mana_cost"));
-            addNullable(ability, "cast_range", floatValue(source, "cast_range"));
+            addNullable(ability, "cast_range", resolvedCastRange);
+            ability.addProperty("cast_range_source", replayCastRange != null && replayCastRange > 0
+                    ? "replay_entity" : resolvedCastRange != null ? "patch_metadata" : "unavailable");
+            if (profile != null) {
+                ability.addProperty("target_mode", profile.targetMode().name().toLowerCase(Locale.ROOT));
+                ability.addProperty("target_team", profile.targetTeam);
+                ability.addProperty("target_type", profile.targetType);
+                ability.addProperty("effect_radius", profile.effectRadius(level == null ? 1 : level));
+                ability.addProperty("target_semantics_known", profile.targetSemanticsKnown());
+            }
             result.add(ability);
         }
         return result;
@@ -5077,27 +6036,41 @@ final class ProductAnalysis {
         final String kind;
         Integer team;
         final int firstObserved;
+        final EventStamp firstStamp;
         int lastObserved;
+        EventStamp lastStamp;
         Integer deathTime;
+        EventStamp deathStamp;
         Integer leftTime;
+        EventStamp leftStamp;
         Position firstPosition;
         Position lastPosition;
         Float maxHp;
+        boolean deathByLifeState;
+        boolean deathByHpZero;
+        DeathPoint combatDeath;
+        Integer observedGold;
         int samples;
 
-        UnitTrack(int handle, String unit, String kind, Integer team, int firstObserved) {
+        UnitTrack(int handle, String unit, String kind, Integer team, EventStamp firstStamp) {
             this.handle = handle;
             this.unit = unit;
             this.kind = kind;
             this.team = team;
-            this.firstObserved = firstObserved;
-            this.lastObserved = firstObserved;
+            this.firstStamp = firstStamp;
+            this.firstObserved = firstStamp.gameSecond;
+            this.lastObserved = firstStamp.gameSecond;
+            this.lastStamp = firstStamp;
         }
 
-        void observe(String type, int time, Integer observedTeam, Position position,
+        void observe(String type, EventStamp stamp, Integer observedTeam, Position position,
                 Float hp, Float observedMaxHp, Integer lifeState) {
+            int time = stamp.gameSecond;
             samples++;
-            lastObserved = Math.max(lastObserved, time);
+            if (stamp.gameTimeMs >= lastStamp.gameTimeMs) {
+                lastObserved = time;
+                lastStamp = stamp;
+            }
             if (team == null) team = observedTeam;
             if (position != null) {
                 if (firstPosition == null) firstPosition = position;
@@ -5105,9 +6078,17 @@ final class ProductAnalysis {
             }
             if (observedMaxHp != null && observedMaxHp > 0) maxHp = observedMaxHp;
             if ((lifeState != null && lifeState != 0) || hp != null && hp <= 0) {
-                deathTime = deathTime == null ? time : Math.min(deathTime, time);
+                if (deathStamp == null || stamp.gameTimeMs < deathStamp.gameTimeMs) {
+                    deathTime = time;
+                    deathStamp = stamp;
+                }
+                deathByLifeState |= lifeState != null && lifeState != 0;
+                deathByHpZero |= hp != null && hp <= 0;
             }
-            if (type.equals("unit_left")) leftTime = time;
+            if (type.equals("unit_left")) {
+                leftTime = time;
+                leftStamp = stamp;
+            }
         }
 
         Position referencePosition() {
@@ -5129,6 +6110,7 @@ final class ProductAnalysis {
         int visibilityLostAt = Integer.MIN_VALUE;
         int units;
         int samples;
+        final List<UnitTrack> tracks = new ArrayList<>();
 
         LaneWaveAggregate(int team, String lane, int waveIndex, int expectedSpawn) {
             this.team = team;
@@ -5138,6 +6120,7 @@ final class ProductAnalysis {
         }
 
         void add(UnitTrack track) {
+            tracks.add(track);
             units++;
             samples += track.samples;
             firstEnter = Math.min(firstEnter, track.firstObserved);
@@ -5167,6 +6150,29 @@ final class ProductAnalysis {
             row.addProperty("observed_deaths", deaths);
             row.addProperty("visibility_lost", visibilityLost);
             row.addProperty("sample_count", samples);
+            Map<Integer, Integer> lastHitsBySlot = new TreeMap<>();
+            Map<Integer, Integer> deniesBySlot = new TreeMap<>();
+            Map<Integer, Integer> goldBySlot = new TreeMap<>();
+            int unclaimed = 0;
+            for (UnitTrack track : tracks) {
+                DeathPoint death = track.combatDeath;
+                if (death == null || death.attackerSlot == null) {
+                    if (track.deathTime != null) unclaimed++;
+                    continue;
+                }
+                if (track.team != null && teamForSlot(death.attackerSlot) == track.team) {
+                    deniesBySlot.merge(death.attackerSlot, 1, Integer::sum);
+                } else {
+                    lastHitsBySlot.merge(death.attackerSlot, 1, Integer::sum);
+                    if (track.observedGold != null) {
+                        goldBySlot.merge(death.attackerSlot, track.observedGold, Integer::sum);
+                    }
+                }
+            }
+            row.add("last_hits_by_slot", integerMap(lastHitsBySlot));
+            row.add("denies_by_slot", integerMap(deniesBySlot));
+            row.add("observed_gold_by_slot", integerMap(goldBySlot));
+            row.addProperty("unclaimed_or_unattributed_deaths", unclaimed);
             row.addProperty("state", deaths == units ? "observed_cleared"
                     : visibilityLost > 0 ? "visibility_lost" : "observed_present");
             JsonArray transitions = new JsonArray();
@@ -5195,12 +6201,16 @@ final class ProductAnalysis {
         int visibilityLost;
         int clearedAt = Integer.MIN_VALUE;
         int visibilityLostAt = Integer.MIN_VALUE;
+        long overlapFromPrevious;
+        final Set<Integer> stackSlots = new LinkedHashSet<>();
+        final List<UnitTrack> tracks = new ArrayList<>();
 
         CampCycleAggregate(int cycleStart) {
             this.cycleStart = cycleStart;
         }
 
         void add(UnitTrack track) {
+            tracks.add(track);
             units++;
             firstObserved = Math.min(firstObserved, track.firstObserved);
             lastObserved = Math.max(lastObserved, track.lastObserved);
@@ -5221,6 +6231,34 @@ final class ProductAnalysis {
             row.addProperty("unit_count", units);
             row.addProperty("observed_deaths", deaths);
             row.addProperty("visibility_lost", visibilityLost);
+            Map<Integer, Integer> killsBySlot = new TreeMap<>();
+            Map<Integer, Integer> goldBySlot = new TreeMap<>();
+            int laneCreepKills = 0;
+            for (UnitTrack track : tracks) {
+                DeathPoint death = track.combatDeath;
+                if (death == null) continue;
+                if (death.attackerSlot != null) {
+                    killsBySlot.merge(death.attackerSlot, 1, Integer::sum);
+                    if (track.observedGold != null) {
+                        goldBySlot.merge(death.attackerSlot, track.observedGold, Integer::sum);
+                    }
+                } else if (death.attackerName != null && (death.attackerName.contains("creep_goodguys")
+                        || death.attackerName.contains("creep_badguys"))) {
+                    laneCreepKills++;
+                }
+            }
+            row.add("kills_by_slot", integerMap(killsBySlot));
+            row.add("observed_gold_by_slot", integerMap(goldBySlot));
+            row.addProperty("lane_creep_kills", laneCreepKills);
+            row.addProperty("pull_evidence", laneCreepKills > 0 ? "confirmed_cross_unit_death" : "not_observed");
+            row.addProperty("overlap_from_previous_cycle", overlapFromPrevious);
+            JsonArray stackActors = new JsonArray();
+            stackSlots.forEach(stackActors::add);
+            row.add("stacked_by_slots", stackActors);
+            row.addProperty("stack_status", !stackSlots.isEmpty() ? "confirmed_player_counter"
+                    : overlapFromPrevious > 0 ? "observed_cohort_overlap" : "not_observed");
+            row.addProperty("spawn_window_observed", firstObserved >= cycleStart
+                    && firstObserved <= cycleStart + 12);
             row.addProperty("state", deaths == units ? "observed_cleared"
                     : visibilityLost > 0 ? "visibility_lost" : "observed_present");
             JsonArray transitions = new JsonArray();
@@ -5236,6 +6274,12 @@ final class ProductAnalysis {
             row.addProperty("evidence", "observed_presence_not_exact_spawn");
             return row;
         }
+    }
+
+    private static JsonObject integerMap(Map<Integer, Integer> values) {
+        JsonObject row = new JsonObject();
+        values.forEach((key, value) -> row.addProperty(Integer.toString(key), value));
+        return row;
     }
 
     private static JsonObject resourceTransition(int time, String state) {
@@ -5322,13 +6366,15 @@ final class ProductAnalysis {
         final String key;
         final int start;
         int end;
-        final float castRange;
+        final float effectiveRange;
+        final String targetMode;
 
-        AbilityWindow(String key, int start, float castRange) {
+        AbilityWindow(String key, int start, float effectiveRange, String targetMode) {
             this.key = key;
             this.start = start;
             this.end = start;
-            this.castRange = castRange;
+            this.effectiveRange = effectiveRange;
+            this.targetMode = targetMode;
         }
 
         JsonObject toJson() {
@@ -5337,7 +6383,8 @@ final class ProductAnalysis {
             row.addProperty("start", start);
             row.addProperty("end", end);
             row.addProperty("seconds", end - start + 1);
-            row.addProperty("cast_range", round2(castRange));
+            row.addProperty("effective_range", round2(effectiveRange));
+            row.addProperty("target_mode", targetMode);
             return row;
         }
     }
@@ -5350,11 +6397,14 @@ final class ProductAnalysis {
         final int candidateSamples;
         final int decisiveSamples;
         final int opportunitySeconds;
+        final int metadataSamples;
+        final boolean patchMetadataMatched;
         final Map<String, Integer> blockers;
         final List<AbilityWindow> opportunities;
 
         ResponsibilityGate(String status, int coverage, int snapshotSeconds, int abilityStateSeconds,
                 int candidateSamples, int decisiveSamples, int opportunitySeconds,
+                int metadataSamples, boolean patchMetadataMatched,
                 Map<String, Integer> blockers, List<AbilityWindow> opportunities) {
             this.status = status;
             this.coverage = coverage;
@@ -5363,13 +6413,15 @@ final class ProductAnalysis {
             this.candidateSamples = candidateSamples;
             this.decisiveSamples = decisiveSamples;
             this.opportunitySeconds = opportunitySeconds;
+            this.metadataSamples = metadataSamples;
+            this.patchMetadataMatched = patchMetadataMatched;
             this.blockers = blockers;
             this.opportunities = opportunities;
         }
 
         JsonObject toJson() {
             JsonObject row = new JsonObject();
-            row.addProperty("model", "combat-responsibility-hard-gate/1.0");
+            row.addProperty("model", "combat-responsibility-hard-gate/1.1");
             row.addProperty("status", status);
             row.addProperty("coverage_pct", coverage);
             row.addProperty("snapshot_seconds", snapshotSeconds);
@@ -5377,6 +6429,8 @@ final class ProductAnalysis {
             row.addProperty("candidate_samples", candidateSamples);
             row.addProperty("decisive_samples", decisiveSamples);
             row.addProperty("opportunity_seconds", opportunitySeconds);
+            row.addProperty("metadata_samples", metadataSamples);
+            row.addProperty("patch_metadata_match", patchMetadataMatched ? "exact" : "unavailable");
             row.addProperty("judgment_suppressed", !status.equals("passed"));
             JsonObject blockerRows = new JsonObject();
             blockers.forEach(blockerRows::addProperty);
@@ -5386,9 +6440,10 @@ final class ProductAnalysis {
             row.add("opportunities", opportunityRows);
             JsonArray requirements = new JsonArray();
             for (String requirement : List.of("learned", "cooldown_ready", "mana_ready", "not_disabled",
-                    "cast_range_known", "reasonable_target_in_range")) requirements.add(requirement);
+                    "patch_metadata_exact", "target_semantics_known", "cast_range_known",
+                    "reasonable_visible_target_in_range")) requirements.add(requirement);
             row.add("requirements", requirements);
-            row.addProperty("ability_semantics_modeled", false);
+            row.addProperty("ability_semantics_modeled", patchMetadataMatched && metadataSamples > 0);
             return row;
         }
     }
@@ -5403,6 +6458,7 @@ final class ProductAnalysis {
         final Integer lh;
         final Float rawX;
         final Float rawY;
+        final Float rawZ;
         final Float hp;
         final Float maxHp;
         final Float mana;
@@ -5431,7 +6487,7 @@ final class ProductAnalysis {
         boolean positionResolved;
 
         Snapshot(EventStamp stamp, int slot, Integer gold, Integer networth, Integer xp, Integer lh,
-                Float rawX, Float rawY, Float hp, Float maxHp, Float mana, Float maxMana,
+                Float rawX, Float rawY, Float rawZ, Float hp, Float maxHp, Float mana, Float maxMana,
                 Integer level, Integer kills, Integer deaths, Integer assists, Integer denies,
                 Integer lifeState, Integer campsStacked, Integer creepsStacked, Integer runePickups,
                 Integer observersPlaced, Integer sentriesPlaced, Integer moveSpeed, Integer visibleByTeam,
@@ -5446,6 +6502,7 @@ final class ProductAnalysis {
             this.lh = lh;
             this.rawX = rawX;
             this.rawY = rawY;
+            this.rawZ = rawZ;
             this.hp = hp;
             this.maxHp = maxHp;
             this.mana = mana;
@@ -5475,7 +6532,6 @@ final class ProductAnalysis {
         JsonObject toJson(MapCoordinateService coordinates, Position position) {
             JsonObject row = new JsonObject();
             row.addProperty("second", time);
-            stamp.annotateMetadata(row);
             addNullable(row, "gold", gold);
             addNullable(row, "networth", networth);
             addNullable(row, "xp", xp);
@@ -5508,8 +6564,6 @@ final class ProductAnalysis {
             addNullable(row, "fow_team", fowTeam);
             addNullable(row, "reveal_radius", revealRadius);
             addNullable(row, "selection_ring_visible", selectionRingVisible);
-            if (abilities != null) row.add("hero_abilities", abilities.deepCopy());
-            if (inventory != null) row.add("hero_inventory", inventory.deepCopy());
             return row;
         }
     }
@@ -5659,28 +6713,34 @@ final class ProductAnalysis {
         final int time;
         final String attackerKey;
         final String targetKey;
+        final String attackerName;
         final String targetName;
         final boolean targetHero;
         final boolean attackerHero;
         final int value;
+        final Integer eventLastHits;
         final Integer neutralCampType;
         final Integer attackerTeam;
         final Integer targetTeam;
         final String inflictor;
         Integer attackerSlot;
         Integer targetSlot;
+        Integer unitHandle;
 
-        DeathPoint(EventStamp stamp, String attackerKey, String targetKey, String targetName,
-                boolean targetHero, boolean attackerHero, int value, Integer neutralCampType,
+        DeathPoint(EventStamp stamp, String attackerKey, String targetKey, String attackerName,
+                String targetName, boolean targetHero, boolean attackerHero, int value,
+                Integer eventLastHits, Integer neutralCampType,
                 Integer attackerTeam, Integer targetTeam, String inflictor) {
             this.stamp = stamp;
             this.time = stamp.gameSecond;
             this.attackerKey = attackerKey;
             this.targetKey = targetKey;
+            this.attackerName = attackerName;
             this.targetName = targetName;
             this.targetHero = targetHero;
             this.attackerHero = attackerHero;
             this.value = value;
+            this.eventLastHits = eventLastHits;
             this.neutralCampType = neutralCampType;
             this.attackerTeam = attackerTeam;
             this.targetTeam = targetTeam;
@@ -5853,6 +6913,38 @@ final class ProductAnalysis {
             this.source = source;
         }
     }
+
+    private enum StealthKind {
+        SMOKE,
+        INVISIBLE
+    }
+
+    private static final class StealthModifierEvent {
+        final EventStamp stamp;
+        final int time;
+        final String targetKey;
+        final String modifier;
+        final boolean removed;
+        final StealthKind kind;
+        final boolean trueSightRevealable;
+        Integer slot;
+
+        StealthModifierEvent(EventStamp stamp, String targetKey, String modifier, boolean removed,
+                StealthKind kind, boolean trueSightRevealable) {
+            this.stamp = stamp;
+            this.time = stamp.gameSecond;
+            this.targetKey = targetKey;
+            this.modifier = modifier;
+            this.removed = removed;
+            this.kind = kind;
+            this.trueSightRevealable = trueSightRevealable;
+        }
+    }
+
+    private record StealthInterval(int start, int endExclusive, StealthKind kind,
+            boolean trueSightRevealable) {}
+
+    private record StealthState(boolean smoked, boolean invisible, boolean trueSightRevealable) {}
 
     private static final class WardPoint {
         final int handle;
@@ -6355,6 +7447,8 @@ final class ProductAnalysis {
         }
     }
 
+    private record FarmBenchmarks(int medianGold, int threshold, int laneGold, int neutralGold) {}
+
     private record FarmCandidate(String kind, int expectedGold, int risk, int travelSeconds,
             int deadlineSeconds, double score, String evidence, Position target) {
         JsonObject toJson() {
@@ -6373,4 +7467,16 @@ final class ProductAnalysis {
             return row;
         }
     }
+
+    private record RouteEvidence(FarmCandidate candidate, boolean complete, String blocker,
+            int observedUnits, LaneSafety safety, String resourceId) {
+        static RouteEvidence missing(String blocker) {
+            return new RouteEvidence(null, false, blocker, 0, new LaneSafety(false, 0, 5), "unavailable");
+        }
+    }
+
+    private record StackValue(String campId, int spawnCycle, int campClearObservedGold,
+            int createdGoldEstimate, String valueEvidence, Map<Integer, Integer> clearedBySlots) {}
+
+    private record UnitGoldEstimate(int value, String evidence) {}
 }

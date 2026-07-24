@@ -13,8 +13,17 @@ $root = Split-Path -Parent $PSScriptRoot
 $java = Join-Path $PSScriptRoot "runtime\jdk-21\bin\java.exe"
 $jar = Join-Path $PSScriptRoot "replay-parser\target\stats-0.1.0.jar"
 $logs = Join-Path $DataDirectory "logs"
+$expectedParserVersion = "1.5.2"
 $parserProcess = $null
 $ownsParser = $false
+
+function Get-LocalParserStatus {
+    try {
+        return Invoke-RestMethod -Uri "http://127.0.0.1:5600/api/status" -TimeoutSec 1
+    } catch {
+        return $null
+    }
+}
 
 function Test-LocalEndpoint {
     param([string]$Uri)
@@ -36,7 +45,35 @@ if (-not (Test-Path -LiteralPath $java)) {
 
 New-Item -ItemType Directory -Force -Path $DataDirectory, $logs | Out-Null
 
-if (-not (Test-LocalEndpoint "http://127.0.0.1:5600/api/status")) {
+$parserStatus = Get-LocalParserStatus
+if ($parserStatus) {
+    try {
+        $parserStartedAt = [DateTimeOffset]::Parse([string]$parserStatus.started_at)
+    } catch {
+        $parserStartedAt = $null
+    }
+    $jarModifiedAt = (Get-Item -LiteralPath $jar).LastWriteTimeUtc
+    $parserCurrent = [string]$parserStatus.version -eq $expectedParserVersion -and (
+        -not $parserStartedAt -or $jarModifiedAt -le $parserStartedAt.UtcDateTime.AddSeconds(2)
+    )
+    if (-not $parserCurrent -and $parserStatus.graceful_restart -and [int]$parserStatus.active_jobs -eq 0) {
+        Write-Host "Stopping stale Dota Lens parser v$($parserStatus.version)..."
+        try {
+            Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:5600/api/shutdown" -TimeoutSec 3 | Out-Null
+            for ($attempt = 0; $attempt -lt 30; $attempt++) {
+                Start-Sleep -Milliseconds 100
+                if (-not (Get-LocalParserStatus)) {
+                    $parserStatus = $null
+                    break
+                }
+            }
+        } catch {
+            Write-Warning "The stale parser could not be restarted; this session will reuse it."
+        }
+    }
+}
+
+if (-not $parserStatus) {
     $previousDataDirectory = $env:DOTA_LENS_DATA_DIR
     $previousPython = $env:DOTA_LENS_PYTHON
     try {

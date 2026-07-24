@@ -1,0 +1,45 @@
+{
+  "schema": "dota-ability-metadata-reconstruction/1.0",
+  "target_patch": "7.41",
+  "source_patch": "7.41d",
+  "generated_at": "2026-07-22T02:00:00Z",
+  "source": "Valve Dota 2 datafeed plus reverse-applied official patch notes",
+  "patch_note_urls": [
+    "https://www.dota2.com/datafeed/patchnotes?version=7.41a&language=english",
+    "https://www.dota2.com/datafeed/patchnotes?version=7.41b&language=english",
+    "https://www.dota2.com/datafeed/patchnotes?version=7.41c&language=english",
+    "https://www.dota2.com/datafeed/patchnotes?version=7.41d&language=english"
+  ],
+  "verified_scope": [
+    "target_mode_semantics",
+    "target_team_semantics",
+    "hero_cast_ranges",
+    "canonical_effect_radii"
+  ],
+  "limitations": [
+    "talent_only_range_changes_are supplied by replay runtime state",
+    "item-only abilities are not part of hero responsibility scoring",
+    "conditional scepter and shard radii are not promoted to unconditional base radius"
+  ],
+  "changes": {
+    "axe_battle_hunger": { "cast_ranges": [700, 775, 850, 925] },
+    "beastmaster_drums_of_slom": { "effect_radii": [600] },
+    "dark_willow_cursed_crown": { "cast_ranges": [600, 625, 650, 675] },
+    "dark_willow_terrorize": { "effect_radii": [400, 450, 500] },
+    "dragon_knight_dragon_tail": { "cast_ranges": [150], "effect_radii": [25] },
+    "faceless_void_time_dilation": { "effect_radii": [775] },
+    "marci_bodyguard": { "cast_ranges": [500] },
+    "mars_dauntless": { "effect_radii": [700] },
+    "obsidian_destroyer_sanity_eclipse": { "effect_radii": [450, 500, 550] },
+    "primal_beast_trample": { "effect_radii": [230] },
+    "pugna_nether_ward": { "cast_ranges": [150] },
+    "sandking_epicenter": { "effect_radii": [500] },
+    "snapfire_scatterblast": { "effect_radii": [225] },
+    "spectre_dispersion": { "effect_radii": [800] },
+    "spectre_shadow_step": { "cast_ranges": [825, 950, 1075, 1200] },
+    "tiny_toss_tree": { "cast_ranges": [1200] },
+    "witch_doctor_voodoo_restoration": { "effect_radii": [500, 550, 600, 650] },
+    "arc_warden_flux": { "cast_ranges": [500, 600, 700, 800] },
+    "elder_titan_natural_order": { "effect_radii": [350] }
+  }
+}

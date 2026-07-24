@@ -4,7 +4,6 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.net.URI;
-import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -20,27 +19,34 @@ import com.sun.net.httpserver.HttpServer;
 
 final class DotaLensApi {
     private static final Gson GSON = new Gson();
+    private static final String API_VERSION = "1.5.2";
 
     private final OpenDotaClient openDota;
     private final ReplayJobManager jobs;
-    private final GoldenSampleStore goldens;
+    private final Runnable shutdownAction;
+    private final Instant startedAt = Instant.now();
 
     DotaLensApi() throws IOException {
-        this(new OpenDotaClient(), defaultDataDirectory());
+        this(new OpenDotaClient(), defaultDataDirectory(), () -> System.exit(0));
     }
 
     DotaLensApi(OpenDotaClient openDota, Path dataDirectory) throws IOException {
+        this(openDota, dataDirectory, () -> {});
+    }
+
+    DotaLensApi(OpenDotaClient openDota, Path dataDirectory, Runnable shutdownAction) throws IOException {
         this.openDota = openDota;
         this.jobs = new ReplayJobManager(dataDirectory, openDota);
-        this.goldens = new GoldenSampleStore(dataDirectory);
+        this.shutdownAction = shutdownAction;
     }
 
     void register(HttpServer server) {
         server.createContext("/api/status", this::handleStatus);
+        server.createContext("/api/shutdown", this::handleShutdown);
         server.createContext("/api/players", this::handlePlayers);
         server.createContext("/api/matches", this::handleMatches);
         server.createContext("/api/jobs", this::handleJobs);
-        server.createContext("/api/qa/goldens", this::handleGoldenSamples);
+        server.createContext("/api/", this::handleApiNotFound);
     }
 
     private void handleStatus(HttpExchange exchange) throws IOException {
@@ -53,11 +59,48 @@ final class DotaLensApi {
         }
         JsonObject status = new JsonObject();
         status.addProperty("status", "ready");
-        status.addProperty("version", "1.5.0");
+        status.addProperty("version", API_VERSION);
         status.addProperty("parser", "odota/parser+a03b9e5");
         status.addProperty("active_jobs", jobs.activeJobs());
+        status.addProperty("pid", ProcessHandle.current().pid());
+        status.addProperty("started_at", startedAt.toString());
+        status.addProperty("graceful_restart", true);
         status.addProperty("checked_at", Instant.now().toString());
         sendJson(exchange, 200, status);
+    }
+
+    private void handleShutdown(HttpExchange exchange) throws IOException {
+        if (preflight(exchange)) {
+            return;
+        }
+        if (!exchange.getRequestMethod().equals("POST")) {
+            sendError(exchange, 405, "method_not_allowed", "Use POST to stop the local parser");
+            return;
+        }
+        if (jobs.activeJobs() > 0) {
+            sendError(exchange, 409, "parser_busy", "Wait for the active Replay task before restarting");
+            return;
+        }
+        JsonObject response = new JsonObject();
+        response.addProperty("status", "stopping");
+        response.addProperty("version", API_VERSION);
+        sendJson(exchange, 202, response);
+        Thread.ofPlatform().daemon().name("dota-lens-parser-shutdown").start(() -> {
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+            }
+            jobs.close();
+            shutdownAction.run();
+        });
+    }
+
+    private void handleApiNotFound(HttpExchange exchange) throws IOException {
+        if (preflight(exchange)) {
+            return;
+        }
+        sendError(exchange, 404, "not_found", "Unknown Dota Lens API path");
     }
 
     private void handlePlayers(HttpExchange exchange) throws IOException {
@@ -156,11 +199,6 @@ final class DotaLensApi {
                 sendError(exchange, 404, "analysis_not_found", "This match has not been parsed locally");
                 return;
             }
-            boolean upgradeRequired = analysis.has("upgrade_required")
-                && analysis.get("upgrade_required").getAsBoolean();
-            if (!upgradeRequired && analysis.getAsJsonObject("modules").has("combat")) {
-                analysis = goldens.applyLearning(matchId, analysis);
-            }
             sendJson(exchange, 200, analysis);
             return;
         }
@@ -177,14 +215,6 @@ final class DotaLensApi {
                 sendError(exchange, 404, "analysis_module_not_found",
                         "This module is not available for the local analysis");
                 return;
-            }
-            if (moduleName.equals("combat") && module.isJsonObject()) {
-                JsonObject wrapper = new JsonObject();
-                JsonObject modules = new JsonObject();
-                modules.add("combat", module);
-                wrapper.add("modules", modules);
-                module = goldens.applyLearning(matchId, wrapper)
-                        .getAsJsonObject("modules").get("combat");
             }
             sendJson(exchange, 200, module);
             return;
@@ -221,52 +251,6 @@ final class DotaLensApi {
             return;
         }
         sendJson(exchange, 200, job);
-    }
-
-    private void handleGoldenSamples(HttpExchange exchange) throws IOException {
-        if (preflight(exchange)) return;
-        String[] parts = pathParts(exchange.getRequestURI());
-        String annotator = queryParameter(exchange.getRequestURI(), "annotator", "primary");
-        try {
-            if (parts.length == 4 && exchange.getRequestMethod().equals("GET")) {
-                sendJson(exchange, 200, goldens.list(annotator));
-                return;
-            }
-            if (parts.length == 4 && exchange.getRequestMethod().equals("POST")) {
-                sendJson(exchange, 200, goldens.benchmark(annotator));
-                return;
-            }
-            if (parts.length == 5 && parts[4].equals("evaluate")
-                    && exchange.getRequestMethod().equals("POST")) {
-                sendJson(exchange, 200, goldens.benchmark(annotator));
-                return;
-            }
-            if (parts.length < 5 || parts.length > 6) {
-                sendError(exchange, 404, "not_found", "Unknown golden sample API path");
-                return;
-            }
-            Long matchId = positiveLong(parts[4]);
-            if (matchId == null) {
-                sendError(exchange, 400, "invalid_match_id", "match_id must be a positive number");
-                return;
-            }
-            if (parts.length == 5 && exchange.getRequestMethod().equals("GET")) {
-                sendJson(exchange, 200, goldens.document(matchId, annotator));
-                return;
-            }
-            if (parts.length == 5 && exchange.getRequestMethod().equals("PUT")) {
-                sendJson(exchange, 200, goldens.save(matchId, annotator, readJsonBody(exchange)));
-                return;
-            }
-            if (parts.length == 6 && parts[5].equals("evaluate")
-                    && exchange.getRequestMethod().equals("POST")) {
-                sendJson(exchange, 200, goldens.evaluate(matchId, annotator));
-                return;
-            }
-            sendError(exchange, 405, "method_not_allowed", "Use GET, PUT or POST evaluate for golden samples");
-        } catch (IllegalArgumentException error) {
-            sendError(exchange, 400, "invalid_golden_sample", error.getMessage());
-        }
     }
 
     private static String localStatus(JsonObject match, JsonObject currentJob) {
@@ -353,18 +337,6 @@ final class DotaLensApi {
 
     private static String[] pathParts(URI uri) {
         return uri.getPath().split("/");
-    }
-
-    private static String queryParameter(URI uri, String key, String fallback) {
-        String query = uri.getRawQuery();
-        if (query == null || query.isBlank()) return fallback;
-        for (String pair : query.split("&")) {
-            String[] parts = pair.split("=", 2);
-            if (URLDecoder.decode(parts[0], StandardCharsets.UTF_8).equals(key)) {
-                return parts.length == 1 ? "" : URLDecoder.decode(parts[1], StandardCharsets.UTF_8);
-            }
-        }
-        return fallback;
     }
 
     private static Long positiveLong(String value) {

@@ -26,7 +26,7 @@ public final class SummaryCli {
         JsonObject matchDetail = JsonParser.parseString(Files.readString(match, StandardCharsets.UTF_8))
                 .getAsJsonObject();
         JsonObject summary = AnalysisSummary.build(raw, matchDetail, accountId);
-        Gson gson = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
+        Gson gson = new GsonBuilder().disableHtmlEscaping().create();
         Files.writeString(output, gson.toJson(summary), StandardCharsets.UTF_8);
         System.out.println(output.toAbsolutePath());
     }

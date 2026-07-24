@@ -1,20 +1,22 @@
 const { app, BrowserWindow, Menu, dialog, ipcMain, protocol, session } = require("electron");
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 
 const APP_SCHEME = "dotalens";
 const APP_URL = `${APP_SCHEME}://app/`;
 const API_STATUS_URL = "http://127.0.0.1:5600/api/status";
+const API_SHUTDOWN_URL = "http://127.0.0.1:5600/api/shutdown";
+const PARSER_API_VERSION = "1.5.2";
 const qaCapturePath = process.env.DOTA_LENS_QA_CAPTURE ? path.resolve(process.env.DOTA_LENS_QA_CAPTURE) : null;
-const qaViews = new Set(["development", "farm", "vision", "combat", "players", "goldens", "settings"]);
+const qaViews = new Set([
+  "matches", "replays", "tasks", "settings",
+  "development", "farm", "vision", "combat", "player-score", "players",
+]);
 const qaView = qaViews.has(process.env.DOTA_LENS_QA_VIEW) ? process.env.DOTA_LENS_QA_VIEW : "farm";
 const qaMatchId = /^\d+$/.test(process.env.DOTA_LENS_QA_MATCH_ID || "") ? process.env.DOTA_LENS_QA_MATCH_ID : null;
 const qaWidth = Math.max(1024, Number.parseInt(process.env.DOTA_LENS_QA_WIDTH || "1460", 10) || 1460);
 const qaHeight = Math.max(720, Number.parseInt(process.env.DOTA_LENS_QA_HEIGHT || "920", 10) || 920);
-const qaMapFocus = process.env.DOTA_LENS_QA_MAP_FOCUS === "1";
-const qaGoldenTimeMs = Number.parseInt(process.env.DOTA_LENS_QA_GOLDEN_TIME_MS || "", 10);
-const qaAddGoldenEvent = process.env.DOTA_LENS_QA_ADD_GOLDEN_EVENT === "1";
 const qaScoreboardStress = process.env.DOTA_LENS_QA_SCOREBOARD_STRESS === "1";
 const qaDirectoryPickers = process.env.DOTA_LENS_QA_DIRECTORY_PICKERS === "1";
 const qaDirectoryRoot = process.env.DOTA_LENS_QA_DIRECTORY_ROOT || "C:\\Dota Lens QA";
@@ -61,6 +63,35 @@ function runtimePaths() {
     jar: projectPath("tools", "replay-parser", "target", "stats-0.1.0.jar"),
     data: projectPath("tools", "runtime", "dota-lens-data"),
   };
+}
+
+function discoverPython() {
+  const candidates = [];
+  if (process.env.DOTA_LENS_PYTHON) candidates.push(process.env.DOTA_LENS_PYTHON);
+  if (process.platform === "win32") {
+    const located = spawnSync("where.exe", ["python.exe"], {
+      encoding: "utf8",
+      timeout: 2000,
+      windowsHide: true,
+    });
+    if (located.status === 0) {
+      candidates.push(...located.stdout.split(/\r?\n/).filter(Boolean));
+    }
+  } else {
+    candidates.push("python3", "python");
+  }
+
+  for (const candidate of [...new Set(candidates)]) {
+    const probe = spawnSync(candidate, ["--version"], {
+      encoding: "utf8",
+      timeout: 2000,
+      windowsHide: true,
+    });
+    if (probe.status === 0 && /^Python 3\./.test(`${probe.stdout}${probe.stderr}`.trim())) {
+      return candidate;
+    }
+  }
+  return null;
 }
 
 function nearestExistingDirectory(candidate) {
@@ -120,14 +151,54 @@ async function parserStatus(timeoutMs = 1200) {
   }
 }
 
+function parserRuntimeIsCurrent(status, jarPath) {
+  if (!status || status.version !== PARSER_API_VERSION) return false;
+  const startedAt = Date.parse(status.started_at || "");
+  let jarModifiedAt = Number.NaN;
+  try {
+    jarModifiedAt = fs.statSync(jarPath).mtimeMs;
+  } catch {
+    return false;
+  }
+  return !Number.isFinite(startedAt) || jarModifiedAt <= startedAt + 2000;
+}
+
+async function stopStaleParser(status) {
+  if (!status?.graceful_restart || Number(status.active_jobs || 0) > 0) return false;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 2500);
+  try {
+    const response = await fetch(API_SHUTDOWN_URL, { method: "POST", signal: controller.signal });
+    if (!response.ok) return false;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    if (!await parserStatus(250)) return true;
+  }
+  return false;
+}
+
 async function ensureParser() {
   console.error("[desktop] checking local parser");
-  if (await parserStatus()) {
-    console.error("[desktop] reusing ready parser");
-    return;
+  const paths = runtimePaths();
+  const running = await parserStatus();
+  if (running) {
+    if (parserRuntimeIsCurrent(running, paths.jar)) {
+      console.error("[desktop] reusing current parser");
+      return;
+    }
+    console.error(`[desktop] stale parser detected: running=${running.version || "unknown"} expected=${PARSER_API_VERSION}`);
+    if (!await stopStaleParser(running)) {
+      console.error("[desktop] stale parser is busy or does not support graceful restart; reusing it for this session");
+      return;
+    }
+    console.error("[desktop] stale parser stopped");
   }
 
-  const paths = runtimePaths();
   if (!fs.existsSync(paths.java) || !fs.existsSync(paths.jar)) {
     throw new Error(`解析器运行文件缺失。\nJava: ${paths.java}\nParser: ${paths.jar}`);
   }
@@ -137,9 +208,12 @@ async function ensureParser() {
   const stdout = fs.openSync(path.join(logs, "parser.stdout.log"), "a");
   const stderr = fs.openSync(path.join(logs, "parser.stderr.log"), "a");
 
+  const parserEnv = { ...process.env, DOTA_LENS_DATA_DIR: paths.data };
+  const python = discoverPython();
+  if (python) parserEnv.DOTA_LENS_PYTHON = python;
   parserProcess = spawn(paths.java, ["-Djava.net.preferIPv4Stack=true", "-Xmx2g", "-jar", paths.jar], {
     cwd: path.dirname(paths.jar),
-    env: { ...process.env, DOTA_LENS_DATA_DIR: paths.data },
+    env: parserEnv,
     windowsHide: true,
     stdio: ["ignore", stdout, stderr],
   });
@@ -217,31 +291,22 @@ function createWindow() {
   mainWindow.webContents.on("did-finish-load", async () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     if (qaCapturePath) {
-      const activePanelSelector = qaView === "goldens"
-        ? "#page-goldens.active #golden-workspace:not(.hidden)"
-        : qaView === "settings"
-          ? "#page-settings.active"
-          : `[data-detail-panel="${qaView}"].active`;
-      const readinessAttempts = qaView === "goldens" || qaMatchId ? 200 : 50;
+      const pageSelector = {
+        matches: "#page-matches.active",
+        replays: "#page-replays.active",
+        tasks: "#page-tasks.active",
+        settings: "#page-settings.active",
+      }[qaView];
+      const activePanelSelector = pageSelector || `[data-detail-panel="${qaView}"].active`;
+      const readinessAttempts = qaMatchId ? 200 : 50;
       for (let attempt = 0; attempt < readinessAttempts; attempt += 1) {
         const ready = await mainWindow.webContents.executeJavaScript(
-          qaView === "goldens"
-            ? `Boolean(document.querySelector(${JSON.stringify(activePanelSelector)})) && Boolean(document.querySelector('#golden-match-select')?.value)`
-            : qaMatchId
-              ? `Boolean(document.querySelector(${JSON.stringify(activePanelSelector)})) && document.documentElement.dataset.qaMatchLoaded === ${JSON.stringify(qaMatchId)}`
-              : `Boolean(document.querySelector(${JSON.stringify(activePanelSelector)}))`,
+          qaMatchId
+            ? `Boolean(document.querySelector(${JSON.stringify(activePanelSelector)})) && document.documentElement.dataset.qaMatchLoaded === ${JSON.stringify(qaMatchId)}`
+            : `Boolean(document.querySelector(${JSON.stringify(activePanelSelector)}))`,
         );
         if (ready) break;
         await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-      if (qaView === "goldens" && Number.isFinite(qaGoldenTimeMs)) {
-        await mainWindow.webContents.executeJavaScript(`(() => {
-          const slider = document.querySelector('#golden-time-slider');
-          if (!slider) return;
-          slider.value = ${qaGoldenTimeMs};
-          slider.dispatchEvent(new Event('input', { bubbles: true }));
-          ${qaAddGoldenEvent ? "document.querySelector('#golden-add-event')?.click();" : ""}
-        })()`);
       }
       if (qaView === "settings" && qaDirectoryPickers) {
         await mainWindow.webContents.executeJavaScript(`(async () => {
@@ -262,7 +327,7 @@ function createWindow() {
           setTimeout(done, 2000);
         })))`);
       await mainWindow.webContents.executeJavaScript("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
-      await new Promise((resolve) => setTimeout(resolve, qaView === "goldens" ? 1200 : 300));
+      await new Promise((resolve) => setTimeout(resolve, 300));
       mainWindow.setOpacity(0);
       mainWindow.showInactive();
       mainWindow.webContents.invalidate();
@@ -275,11 +340,6 @@ function createWindow() {
           '#detail-vision', '.ward-main-layout', '.ward-map-panel', '.ward-browser-panel', '.ward-inspector-panel',
           '#detail-combat', '.combat-layout', '.combat-map-panel', '.combat-map-canvas',
           '.combat-vision-panel', '.combat-contribution-panel', '.combat-inspector-panel',
-          '#page-goldens', '.golden-toolbar', '.golden-workspace', '.golden-event-panel',
-          '.golden-stage-panel', '.golden-map-canvas', '.golden-inspector-panel',
-          '.golden-playback-row', '.golden-density-toolbar', '.golden-window-track',
-          '.golden-signal-list', '.golden-evaluation-panel', '#golden-density-canvas',
-          '#golden-review-start', '#golden-contact-start', '#golden-peak-time', '#golden-contact-end',
           '#detail-players', '.scoreboard', '.scoreboard-table-scroll', '.scoreboard-table-head', '.scoreboard-row',
           '#page-settings', '.settings-layout', '.settings-content', '#settings-dota', '#settings-parser',
           '#settings-dota-path', '#settings-replay-path', '#settings-temp-path'
@@ -347,7 +407,7 @@ function createWindow() {
   });
   mainWindow.on("closed", () => { mainWindow = null; });
   const frontendUrl = qaCapturePath
-    ? `${APP_URL}?preview=${qaView}${qaMatchId ? `&qaMatch=${qaMatchId}` : ""}${qaMapFocus ? "&mapFocus=1" : ""}${qaScoreboardStress ? "&scoreboardStress=1" : ""}${qaView === "settings" ? `&settingsPanel=${qaSettingsPanel}` : ""}`
+    ? `${APP_URL}?preview=${qaView}${qaMatchId ? `&qaMatch=${qaMatchId}` : ""}${qaScoreboardStress ? "&scoreboardStress=1" : ""}${qaView === "settings" ? `&settingsPanel=${qaSettingsPanel}` : ""}`
     : APP_URL;
   mainWindow.loadURL(frontendUrl).catch((error) => {
     console.error(`Failed to load ${APP_URL}`, error);

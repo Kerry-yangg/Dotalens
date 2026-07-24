@@ -7,20 +7,31 @@ const API_BASE = "http://127.0.0.1:5600/api";
 const APP_PARAMS = new URLSearchParams(window.location.search);
 const PREVIEW_VIEW = APP_PARAMS.get("preview");
 const PREVIEW_MATCH_ID = /^\d+$/.test(APP_PARAMS.get("qaMatch") || "") ? APP_PARAMS.get("qaMatch") : null;
-const PREVIEW_MAP_FOCUS = APP_PARAMS.get("mapFocus") === "1";
 const PREVIEW_SCOREBOARD_STRESS = APP_PARAMS.get("scoreboardStress") === "1";
 const PREVIEW_SETTINGS_PANEL = APP_PARAMS.get("settingsPanel") || "dota";
 const DEFAULT_ACCOUNT_ID = window.localStorage.getItem("dota-lens-account-id") || "";
 const DIRECTORY_SETTINGS_KEY = "dota-lens-directory-settings-v1";
-const REAL_ANALYSIS_VIEWS = new Set(["development", "farm", "map", "vision", "build", "combat", "timeline", "players", "coverage"]);
+const PLAYER_SCORE_MODE_KEY = "dota-lens-player-score-mode-v3";
+const SIDEBAR_STATE_KEY = "dota-lens-sidebar-collapsed-v1";
+const WARD_TIMELINE_STATE_KEY = "dota-lens-ward-timeline-collapsed-v1";
+const WARD_MAP_ZOOM_MIN = 1;
+const WARD_MAP_ZOOM_MAX = 4;
+const WARD_MAP_ZOOM_FACTOR = 1.22;
+const DEFAULT_PLAYER_SCORE_MODE = window.localStorage.getItem(PLAYER_SCORE_MODE_KEY) === "deep" ? "deep" : "brief";
+const SAVED_SIDEBAR_STATE = window.localStorage.getItem(SIDEBAR_STATE_KEY);
+const DEFAULT_SIDEBAR_COLLAPSED = SAVED_SIDEBAR_STATE == null
+  ? window.matchMedia("(max-width: 1279px)").matches
+  : SAVED_SIDEBAR_STATE === "1";
+const REAL_ANALYSIS_VIEWS = new Set(["development", "farm", "map", "vision", "build", "combat", "timeline", "player-score", "players", "coverage"]);
 const ANALYSIS_MODULES_BY_VIEW = {
-  development: [],
+  development: ["farm"],
   farm: ["farm", "vision"],
   map: ["farm", "vision", "combat"],
   vision: ["vision"],
   build: ["build"],
   combat: ["combat", "vision"],
   timeline: ["timeline"],
+  "player-score": ["laning", "farm", "combat", "vision", "build", "timeline", "map"],
   players: [],
   coverage: [],
 };
@@ -354,6 +365,9 @@ const FARM_MECHANICS = {
 
 const FARM_STACK_EVENTS = [];
 const FARM_LANE_JUNGLE_CYCLES = [];
+const FARM_CREEP_RESOLUTIONS = [];
+const FARM_LANE_OPPORTUNITY = { summary: {}, events: [] };
+const FARM_STACK_VALUE_SUMMARY = {};
 const FARM_LANE_WAVES = Array.from({ length: 18 }, (_, index) => ({
   id: `demo-wave-${index}`,
   expected_spawn: index * 30,
@@ -394,21 +408,6 @@ const OBJECTIVE_EVENTS = [
 const ROSHAN_ATTEMPTS = [];
 const AEGIS_LIFECYCLES = [];
 
-const GOLDEN_LABEL_META = {
-  poke: { label: "消耗", tone: "info" },
-  trade: { label: "换血", tone: "warning" },
-  pickoff: { label: "抓单", tone: "negative" },
-  skirmish: { label: "小规模冲突", tone: "warning" },
-  teamfight: { label: "团战", tone: "negative" },
-  non_combat: { label: "非战斗", tone: "neutral" },
-};
-
-const GOLDEN_MODEL_LABEL_ALIASES = {
-  harass: "poke",
-  lane_trade: "trade",
-  small_skirmish: "skirmish",
-};
-
 const COMBAT_CONTEXT_NAMES = {
   lane_context: "兵线区域",
   gank: "多人抓单",
@@ -430,6 +429,7 @@ const COMBAT_REASON_NAMES = {
   solo_kill: "1v1 产生击杀",
   focused_kill: "伤害集中并产生单次减员",
   teamfight_gate_not_met: "未通过团战硬门槛",
+  insufficient_teamfight_participants: "团战参与人数不足",
 };
 
 const COMBAT_PHASE_NAMES = {
@@ -500,34 +500,16 @@ const AEGIS_STATE_NAMES = {
   removed_reason_unknown: "消失原因待核对",
 };
 
-const GOLDEN_TAG_META = {
-  lane: "线上",
-  zero_death: "无死亡逼退",
-  long_chase: "长追击",
-  simultaneous: "双地点冲突",
-  roshan: "肉山",
-  highground: "高地",
-  illusion: "幻象",
-  buyback: "买活",
-  vision_advantage: "视野优势",
-  objective: "目标争夺",
-  forced_retreat: "强制撤退",
-};
-
-const GOLDEN_ANNOTATOR_META = {
-  primary: "标注员 A",
-  secondary: "标注员 B",
-  adjudicated: "仲裁结果",
-};
-
-const GOLDEN_RAW_COMBAT_KINDS = new Set(["hero_death", "damage", "control", "ability_use", "item_use", "heal"]);
-
-function isGoldenRawCombatEvent(event) {
-  return event?.category === "combat" || GOLDEN_RAW_COMBAT_KINDS.has(event?.kind);
-}
-
 const state = {
   page: "matches",
+  sidebarCollapsed: DEFAULT_SIDEBAR_COLLAPSED,
+  wardSideView: "list",
+  wardTimelineCollapsed: window.localStorage.getItem(WARD_TIMELINE_STATE_KEY) === "1",
+  farmCompactView: "map",
+  buildCompactView: "tracks",
+  combatCompactView: "context",
+  playerScoreEvidenceOpen: false,
+  playerReportView: "facts",
   accountId: DEFAULT_ACCOUNT_ID,
   matches: [],
   matchesStatus: "idle",
@@ -545,6 +527,10 @@ const state = {
   segmentFilter: "all",
   settingsPanel: "account",
   selectedHeroSlot: 0,
+  playerScoreMode: DEFAULT_PLAYER_SCORE_MODE,
+  playerScoreSection: "overview",
+  playerScoreRosterFilter: "all",
+  selectedPlayerScoreEvidence: null,
   selectedSegmentId: "seg-7",
   selectedCombatId: "fight-2",
   selectedCombatPlayerSlot: 0,
@@ -555,6 +541,9 @@ const state = {
   farmTeam: "winner",
   wardFilters: { team: "all", player: "all", type: "all", purpose: "all" },
   wardLayers: { ranges: true, detections: true },
+  wardMapZoom: WARD_MAP_ZOOM_MIN,
+  wardMapPan: { x: 0, y: 0 },
+  wardMapExpanded: false,
   currentTime: 744,
   playheadMs: 744000,
   isPlaying: false,
@@ -576,28 +565,124 @@ const state = {
   combatFilter: "all",
   selectedCombatPhase: "clash",
   pendingMatch: null,
-  golden: {
-    matches: [],
-    matchId: "",
-    annotator: "primary",
-    document: null,
-    analysis: null,
-    selectedEventId: null,
-    currentTimeMs: 0,
-    blind: true,
-    dirty: false,
-    evaluation: null,
-    evaluationScope: "match",
-    model: null,
-    density: [],
-    densityPeaks: [],
-    densityWindowSeconds: 0,
-    signalsExpanded: false,
-    mapFocused: PREVIEW_MAP_FOCUS,
-    evaluationExpanded: false,
-    loading: false,
-  },
 };
+
+const wardMapDrag = {
+  active: false,
+  pointerId: null,
+  startX: 0,
+  startY: 0,
+  panX: 0,
+  panY: 0,
+};
+
+function setDetailMoreOpen(open) {
+  const button = document.querySelector("#detail-more-toggle");
+  const popover = document.querySelector("#detail-more-popover");
+  if (!button || !popover) return;
+  button.setAttribute("aria-expanded", String(open));
+  popover.hidden = !open;
+}
+
+function applySidebarLayout({ persist = false } = {}) {
+  const shell = document.querySelector("#app-shell");
+  const toggle = document.querySelector("#sidebar-toggle");
+  const backdrop = document.querySelector("#sidebar-backdrop");
+  if (!shell || !toggle || !backdrop) return;
+  const compactViewport = window.innerWidth < 1280;
+  const expanded = !state.sidebarCollapsed;
+  shell.classList.toggle("sidebar-collapsed", state.sidebarCollapsed);
+  shell.classList.toggle("sidebar-expanded", expanded);
+  shell.classList.toggle("sidebar-overlay-open", compactViewport && expanded);
+  toggle.setAttribute("aria-expanded", String(expanded));
+  toggle.setAttribute("aria-label", expanded ? "收起导航" : "展开导航");
+  toggle.title = expanded ? "收起导航" : "展开导航";
+  toggle.innerHTML = `<i data-lucide="${expanded ? "panel-left-close" : "panel-left-open"}"></i>`;
+  backdrop.hidden = !(compactViewport && expanded);
+  if (persist) window.localStorage.setItem(SIDEBAR_STATE_KEY, state.sidebarCollapsed ? "1" : "0");
+  refreshIcons(toggle);
+}
+
+function setSidebarCollapsed(collapsed, options = {}) {
+  state.sidebarCollapsed = Boolean(collapsed);
+  applySidebarLayout({ persist: options.persist !== false });
+}
+
+function setWardSideView(view) {
+  state.wardSideView = view === "detail" ? "detail" : "list";
+  const layout = document.querySelector(".ward-main-layout");
+  if (layout) layout.dataset.wardSideView = state.wardSideView;
+  document.querySelectorAll("[data-ward-side-view]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.wardSideView === state.wardSideView);
+  });
+}
+
+function setWardTimelineCollapsed(collapsed, { persist = true } = {}) {
+  state.wardTimelineCollapsed = Boolean(collapsed);
+  const layout = document.querySelector(".ward-layout");
+  const button = document.querySelector("#ward-timeline-toggle");
+  layout?.classList.toggle("timeline-collapsed", state.wardTimelineCollapsed);
+  if (button) {
+    button.setAttribute("aria-expanded", String(!state.wardTimelineCollapsed));
+    button.setAttribute("aria-label", state.wardTimelineCollapsed ? "展开眼位时间轴" : "收起眼位时间轴");
+    button.title = state.wardTimelineCollapsed ? "展开眼位时间轴" : "收起眼位时间轴";
+    button.innerHTML = `<i data-lucide="${state.wardTimelineCollapsed ? "chevron-up" : "chevron-down"}"></i>`;
+    refreshIcons(button);
+  }
+  if (persist) window.localStorage.setItem(WARD_TIMELINE_STATE_KEY, state.wardTimelineCollapsed ? "1" : "0");
+}
+
+function setFarmCompactView(view) {
+  state.farmCompactView = view === "diagnosis" ? "diagnosis" : "map";
+  const layout = document.querySelector(".farm-main-layout");
+  if (layout) layout.dataset.farmCompactView = state.farmCompactView;
+  document.querySelectorAll("[data-farm-compact-view]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.farmCompactView === state.farmCompactView);
+  });
+}
+
+function setBuildCompactView(view) {
+  state.buildCompactView = view === "usage" ? "usage" : "tracks";
+  const layout = document.querySelector(".build-layout");
+  if (layout) layout.dataset.buildCompactView = state.buildCompactView;
+  document.querySelectorAll("[data-build-compact-view]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.buildCompactView === state.buildCompactView);
+  });
+}
+
+function setCombatCompactView(view) {
+  const allowed = new Set(["context", "contribution", "audit", "events"]);
+  state.combatCompactView = allowed.has(view) ? view : "context";
+  const detail = document.querySelector("#detail-combat");
+  if (detail) detail.dataset.compactView = state.combatCompactView;
+  document.querySelectorAll("[data-combat-compact-view]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.combatCompactView === state.combatCompactView);
+  });
+  if (state.combatCompactView === "events") setCombatInspectorView("events");
+  if (state.combatCompactView === "audit") setCombatInspectorView("audit");
+}
+
+function setPlayerScoreEvidenceOpen(open) {
+  state.playerScoreEvidenceOpen = Boolean(open);
+  const workspace = document.querySelector(".player-score-workspace");
+  const toggle = document.querySelector("#player-score-evidence-toggle");
+  const backdrop = document.querySelector("#player-score-evidence-backdrop");
+  workspace?.classList.toggle("evidence-open", state.playerScoreEvidenceOpen);
+  toggle?.setAttribute("aria-expanded", String(state.playerScoreEvidenceOpen));
+  if (backdrop) backdrop.hidden = !state.playerScoreEvidenceOpen;
+}
+
+function setPlayerReportView(view) {
+  const allowed = new Set(["facts", "dimensions", "phases", "insights"]);
+  state.playerReportView = allowed.has(view) ? view : "facts";
+  const body = document.querySelector("#player-report-body");
+  if (body) body.dataset.reportView = state.playerReportView;
+  document.querySelectorAll("[data-player-report-view]").forEach((button) => {
+    const active = button.dataset.playerReportView === state.playerReportView;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+}
 
 const METRICS = {
   networth: { label: "净值", color: "#5e9fd6", unit: "" },
@@ -712,6 +797,15 @@ const PLAYER_ROLE_META = {
 
 const PLAYER_DIMENSION_META = {
   lane_execution: ["对线执行", "补反、等级与对位差"],
+  farm_efficiency: ["发育效率", "GPM、XPM与同位置资源转化"],
+  resource_decision: ["资源决策", "安全兵线、线野循环与叠野价值"],
+  map_tempo: ["地图与节奏", "TP、神符、到场与行动窗口"],
+  combat_output: ["战斗输出", "伤害占比、击杀转化与在场率"],
+  combat_duty: ["战斗职责", "通过硬门禁的先反手与功能完成度"],
+  survival_risk: ["生存与风险", "阵亡、死亡时间与资源保护"],
+  objective_conversion: ["目标转化", "防御塔、肉山与战后推进"],
+  vision_team: ["视野与团队", "眼位、排眼、发现与团队价值"],
+  observable_execution: ["可观测执行", "有效操作记录与技能物品使用"],
   resource_conversion: ["资源转化", "经济转为净值与战力"],
   core_output: ["核心输出", "伤害、参战与存活输出"],
   survival_uptime: ["存活输出", "阵亡次数与死亡时间"],
@@ -743,19 +837,149 @@ const PLAYER_PHASE_META = {
 const PLAYER_EVIDENCE_META = {
   lane_score: ["对线模型", "model_points"],
   lane_confidence: ["对线置信度", "percent"],
+  secured_lane_units: ["已补线上单位", "count"],
+  reviewable_misses: ["附近可复核漏刀", "count"],
+  estimated_reviewable_gold: ["可复核损失", "gold"],
+  last_hits: ["补刀", "count"],
+  denies: ["反补", "count"],
+  level: ["等级", "count"],
   gpm: ["GPM", "per_minute"],
+  xpm: ["XPM", "per_minute"],
   networth: ["净值", "gold"],
+  lane_gold: ["兵线收入", "gold"],
+  neutral_gold: ["野区收入", "gold"],
+  resource_review_windows: ["有效路线窗口", "count"],
+  resource_missed_windows: ["错失路线窗口", "count"],
+  resource_estimated_loss: ["路线机会损失", "gold"],
+  lane_jungle_cycles: ["线野循环", "count"],
   hero_damage: ["英雄伤害", "damage"],
   fight_score: ["战斗执行", "score"],
+  fight_damage_share: ["战斗伤害占比", "percent"],
+  kill_conversion: ["击杀转化", "percent"],
+  fight_presence: ["战场存在率", "percent"],
+  reviewable_fights: ["有效战斗样本", "count"],
+  passed_duty_fights: ["职责门禁通过场次", "count"],
   deaths: ["阵亡", "count"],
   dead_seconds: ["死亡时长", "seconds"],
+  buyback_count: ["买活次数", "count"],
   tower_damage: ["建筑伤害", "damage"],
+  tower_kills: ["防御塔击杀", "count"],
+  roshan_kills: ["肉山击杀", "count"],
   damage_taken: ["承受伤害", "damage"],
+  healing: ["治疗量", "damage"],
   observer_wards: ["侦查守卫", "count"],
   sentry_wards: ["岗哨守卫", "count"],
   dewards: ["排眼", "count"],
+  vision_score: ["眼位评分", "score"],
+  ward_detections: ["眼位发现", "count"],
+  teleport_uses: ["TP 使用", "count"],
+  rune_pickups: ["神符拾取", "count"],
+  actions_per_min: ["APM", "per_minute"],
+  ability_casts: ["技能使用", "count"],
+  item_uses: ["物品使用", "count"],
+  observable_uses_per_min: ["技能物品频率", "per_minute"],
   teamfight_participation: ["战斗参与率", "percent"],
   control_seconds: ["控制时长", "seconds"],
+  stack_team_value_estimate: ["叠野团队价值", "gold"],
+};
+
+const PLAYER_SCORE_DIMENSION_META = {
+  lane_execution: { label: "对线执行", brief: "补刀、反补、经验、等级、死亡与分路职责", icon: "git-compare-arrows", module: "development" },
+  farm_efficiency: { label: "发育效率", brief: "GPM、XPM、收入来源、空转与关键物品时间", icon: "coins", module: "farm" },
+  resource_decision: { label: "资源决策", brief: "安全兵线、线野循环、营地选择与队友资源冲突", icon: "route", module: "farm" },
+  map_tempo: { label: "地图与节奏", brief: "支援、TP、神符、关键物品与目标时间", icon: "navigation", module: "map" },
+  combat_output: { label: "战斗输出", brief: "伤害、持续输出、目标选择与击杀转化", icon: "swords", module: "combat" },
+  combat_duty: { label: "战斗职责", brief: "先手、反手、控制、救人、承伤与施法机会", icon: "crosshair", module: "combat" },
+  survival_risk: { label: "生存与风险", brief: "死亡质量、撤退、买活与资源保护", icon: "shield-alert", module: "combat" },
+  objective_conversion: { label: "目标转化", brief: "防御塔、肉山、高地与战后推进", icon: "landmark", module: "map" },
+  vision_team: { label: "视野与团队功能", brief: "眼位、排眼、救人、先反手与资源纪律", icon: "scan-eye", module: "vision" },
+  observable_execution: { label: "可观测执行", brief: "有效指令、机会转化、响应与技能物品衔接", icon: "mouse-pointer-click", module: "combat" },
+};
+
+const PLAYER_SCORE_MISSING_META = {
+  reviewable_lane_unit_outcomes: "缺少可复核的兵线单位结果",
+  support_route_outcomes: "缺少辅助离线与回线结果",
+  hard_gated_lane_opportunity_windows: "没有通过门禁的兵线机会窗口",
+  hard_gated_route_windows: "没有通过安全性与资源存续门禁的路线窗口",
+  confirmed_lane_jungle_cycles: "缺少已确认的线野循环",
+  stack_team_value: "缺少可归属的叠野团队价值",
+  team_resource_claims: "暂缺队友资源占用与让线归因",
+  classified_combat_contributions: "缺少可归属的有效战斗贡献",
+  passed_responsibility_gate_fights: "没有战斗片段通过职责硬门禁",
+  hero_specific_duty_context: "暂缺英雄专属职责上下文",
+  ward_lifecycle_module: "缺少眼位生命周期数据",
+  enemy_detection_events: "缺少眼位发现敌方事件",
+  death_context_quality: "暂缺阵亡收益与代价归因",
+  retreat_decision_context: "暂缺撤退窗口上下文",
+  objective_setup_attribution: "暂缺目标前准备与站位归因",
+  classified_fight_arrival_windows: "缺少有效战斗到场窗口",
+  key_item_activation_windows: "暂缺关键装备后的行动窗口",
+  invalid_order_rate: "Replay 暂不能确认无效指令比例",
+  camera_movement: "Replay 暂不能可靠观察镜头移动",
+  hero_specific_combo_windows: "暂缺英雄专属连招机会窗口",
+  minimum_evidence_not_met: "未达到最低证据门槛",
+  dimension_not_implemented: "当前版本尚未实现该维度",
+  gpm: "缺少同位置 GPM 比较",
+  xpm: "缺少同位置 XPM 比较",
+  networth: "缺少同位置净值比较",
+};
+
+const PLAYER_SCORE_ROLE_WEIGHTS = {
+  1: { lane_execution: 15, farm_efficiency: 20, resource_decision: 15, map_tempo: 5, combat_output: 15, combat_duty: 8, survival_risk: 10, objective_conversion: 7, vision_team: 2, observable_execution: 3 },
+  2: { lane_execution: 17, farm_efficiency: 12, resource_decision: 8, map_tempo: 15, combat_output: 14, combat_duty: 10, survival_risk: 8, objective_conversion: 7, vision_team: 3, observable_execution: 6 },
+  3: { lane_execution: 15, farm_efficiency: 8, resource_decision: 7, map_tempo: 15, combat_output: 8, combat_duty: 20, survival_risk: 10, objective_conversion: 8, vision_team: 5, observable_execution: 4 },
+  4: { lane_execution: 12, farm_efficiency: 3, resource_decision: 5, map_tempo: 20, combat_output: 5, combat_duty: 20, survival_risk: 7, objective_conversion: 5, vision_team: 16, observable_execution: 7 },
+  5: { lane_execution: 15, farm_efficiency: 2, resource_decision: 4, map_tempo: 15, combat_output: 3, combat_duty: 18, survival_risk: 7, objective_conversion: 5, vision_team: 23, observable_execution: 8 },
+};
+
+const PLAYER_SCORE_DIMENSION_ALIASES = {
+  lane_execution: ["lane_execution", "mid_lane", "offlane_result", "lane_support", "lane_protection"],
+  farm_efficiency: ["farm_efficiency", "resource_efficiency", "resource_conversion"],
+  resource_decision: ["resource_decision", "resource_discipline"],
+  map_tempo: ["map_tempo", "tempo_control", "roam_tempo", "team_tempo", "space_pressure"],
+  combat_output: ["combat_output", "core_output"],
+  combat_duty: ["combat_duty", "combat_execution", "initiation_utility", "combat_utility"],
+  survival_risk: ["survival_risk", "survival_uptime", "survival_trade"],
+  objective_conversion: ["objective_conversion", "objective_finish", "objective_pressure"],
+  vision_team: ["vision_team", "vision_control"],
+  observable_execution: ["observable_execution"],
+};
+
+const PLAYER_SCORE_PHASE_META = {
+  laning: "0-10 分钟 · 对线",
+  mid_game: "10-20 分钟 · 转线",
+  late_game: "20 分钟后 · 运营",
+  lane_transition: "换线与节奏",
+  farm_distribution: "资源分配",
+  map_control: "地图控制",
+  high_ground: "高地阶段",
+};
+
+const PLAYER_SCORE_PHASE_SHORT_META = {
+  laning: "对线",
+  mid_game: "转线",
+  late_game: "运营",
+  lane_transition: "换线",
+  farm_distribution: "资源",
+  map_control: "地图",
+  high_ground: "高地",
+};
+
+const PLAYER_SCORE_DOMAIN_META = {
+  lane: { label: "对线", keys: ["lane_execution"], icon: "git-compare-arrows" },
+  farm: { label: "发育", keys: ["farm_efficiency", "resource_decision"], icon: "coins" },
+  tempo: { label: "节奏", keys: ["map_tempo", "objective_conversion"], icon: "navigation" },
+  combat: { label: "战斗", keys: ["combat_output", "combat_duty", "survival_risk"], icon: "crosshair" },
+  team: { label: "团队", keys: ["vision_team", "observable_execution"], icon: "users" },
+};
+
+const PLAYER_SCORE_BRIEF_VERDICT_META = {
+  advantage: { label: "优势", className: "positive" },
+  even: { label: "均势", className: "stable" },
+  disadvantage: { label: "承压", className: "negative" },
+  stable: { label: "表现稳定", className: "positive" },
+  issue: { label: "问题集中", className: "negative" },
+  missing: { label: "证据不足", className: "missing" },
 };
 
 function positionLabel(position) {
@@ -1006,7 +1230,7 @@ async function apiFetch(path, options = {}) {
 }
 
 function decodeSnapshotColumns(module) {
-  if (module?.schema !== "snapshot-columns/1.0") return module || {};
+  if (!String(module?.schema || "").startsWith("snapshot-columns/")) return module || {};
   const fields = Array.isArray(module.fields) ? module.fields : [];
   const regions = Array.isArray(module.regions) ? module.regions : [];
   const decoded = {};
@@ -1029,7 +1253,7 @@ function decodeSnapshotColumns(module) {
 
 function normalizeAnalysisSnapshots(analysis) {
   const snapshots = analysis?.modules?.snapshots;
-  if (snapshots?.schema === "snapshot-columns/1.0") {
+  if (String(snapshots?.schema || "").startsWith("snapshot-columns/")) {
     analysis.modules.snapshots = decodeSnapshotColumns(snapshots);
   }
   return analysis;
@@ -1208,6 +1432,11 @@ function replaceArray(target, values = []) {
   target.splice(0, target.length, ...values);
 }
 
+function replaceObject(target, value = {}) {
+  Object.keys(target).forEach((key) => delete target[key]);
+  Object.assign(target, value || {});
+}
+
 function timelineEventView(event) {
   const actor = event.actor_slot == null ? "系统" : safeHero(event.actor_slot).name;
   const target = event.target_slot == null ? "" : safeHero(event.target_slot).name;
@@ -1291,22 +1520,27 @@ function hydrateSelectedHeroModules(slot = state.selectedHeroSlot) {
   const diagnosticRows = anomalyRows.length || relativeLowRows.length
     ? [...anomalyRows, ...relativeLowRows]
     : (modules.farm?.diagnostics_by_slot?.[key] || []);
-  replaceArray(FARM_DIAGNOSTICS, diagnosticRows.map((diagnostic) => ({
-    ...diagnostic,
-    reason: farmDiagnosticReason(diagnostic),
-  })));
+  replaceArray(FARM_DIAGNOSTICS, diagnosticRows
+    .map((diagnostic) => ({ ...diagnostic, reason: farmDiagnosticReason(diagnostic) }))
+    .sort((left, right) => Number(left.time || 0) - Number(right.time || 0)));
   Object.assign(FARM_MECHANICS, modules.farm?.mechanics || {});
   replaceArray(FARM_STACK_EVENTS, (modules.farm?.stack_events_by_slot?.[key] || []).map((event) => ({ ...event, region: regionName(event.region) })));
   replaceArray(FARM_LANE_JUNGLE_CYCLES, modules.farm?.lane_jungle_cycles_by_slot?.[key] || []);
+  replaceArray(FARM_CREEP_RESOLUTIONS, modules.farm?.creep_resolutions || []);
+  replaceObject(FARM_LANE_OPPORTUNITY, modules.farm?.lane_opportunities_by_slot?.[key] || { summary: {}, events: [] });
+  replaceObject(FARM_STACK_VALUE_SUMMARY, modules.farm?.stack_value_summary_by_slot?.[key] || {});
 
-  if (!FARM_CAMP_STATES.length) {
-    replaceArray(CAMP_MARKERS, segments.filter((segment) => segment.type === "farm" && segment.x != null).map((segment) => ({
-      time: segment.start, x: segment.x, y: segment.y, type: "camp", title: `${segment.region}资源段`,
-    })));
-  }
+  const resourcePosition = Number(FARM_LANE_OPPORTUNITY.position || 0);
+  const post20Diagnostics = FARM_DIAGNOSTICS.filter((diagnostic) => Number(diagnostic.time || 0) >= 1200);
+  state.farmTimeWindow = resourcePosition > 0 && resourcePosition <= 3 && post20Diagnostics.length
+    ? "post20" : "pre20";
+  const preferredDiagnostics = state.farmTimeWindow === "post20" ? post20Diagnostics : FARM_DIAGNOSTICS;
+  const preferredDiagnostic = preferredDiagnostics.find((diagnostic) => diagnostic.recommendation_enabled)
+    || preferredDiagnostics.find((diagnostic) => diagnostic.diagnostic_class === "anomaly")
+    || preferredDiagnostics[0];
 
   state.selectedSegmentId = SEGMENTS[0]?.id || null;
-  state.selectedFarmDiagnosticId = FARM_DIAGNOSTICS[0]?.id || null;
+  state.selectedFarmDiagnosticId = preferredDiagnostic?.id || null;
 }
 
 function hydrateAnalysisModules(analysis) {
@@ -1334,18 +1568,24 @@ function hydrateAnalysisModules(analysis) {
   state.mapCalibration = modules.coordinate_system || null;
   replaceArray(FARM_LANE_WAVES, modules.farm?.lane_waves || []);
   replaceArray(FARM_CAMP_STATES, modules.farm?.camp_states || []);
-  if (FARM_CAMP_STATES.length) {
-    replaceArray(CAMP_MARKERS, FARM_CAMP_STATES
-      .filter((camp) => camp.coordinate_valid !== false && Number.isFinite(Number(camp.x)) && Number.isFinite(Number(camp.y)))
-      .map((camp) => ({
-        time: Number(camp.first_observed || 0),
+  replaceArray(CAMP_MARKERS, FARM_CAMP_STATES
+    .filter((camp) => camp.coordinate_valid !== false && Number.isFinite(Number(camp.x)) && Number.isFinite(Number(camp.y)))
+    .map((camp) => {
+      const rawX = Number(camp.coordinate_raw?.x);
+      const rawY = Number(camp.coordinate_raw?.y);
+      const rawPosition = Number.isFinite(rawX) && Number.isFinite(rawY)
+        ? ` · 实体坐标 ${rawX.toFixed(2)}, ${rawY.toFixed(2)}`
+        : "";
+      return {
+        id: camp.id,
         x: Number(camp.x),
         y: Number(camp.y),
         type: "camp",
-        title: `野点实体 · ${regionName(camp.region)}`,
+        static: true,
+        title: `Replay 营地锚点 · 地图 ${Number(camp.x).toFixed(2)}%, ${Number(camp.y).toFixed(2)}%${rawPosition}`,
         camp,
-      })));
-  }
+      };
+    }));
 
   replaceArray(UNIT_KILL_STATS, (modules.farm?.unit_kills || []).map((row) => ({ ...row, other: row.other ? String(row.other) : "—" })));
   replaceArray(COMBAT_SEGMENTS, (modules.combat?.fights || []).map((fight) => {
@@ -1404,9 +1644,6 @@ function hydrateAnalysisModules(analysis) {
   replaceArray(TIMELINE_EVENTS, (modules.timeline?.events || []).map(timelineEventView));
   hydrateSelectedHeroModules(state.selectedHeroSlot);
 
-  if (!FARM_CAMP_STATES.length) {
-    replaceArray(CAMP_MARKERS, SEGMENTS.filter((segment) => segment.type === "farm" && segment.x != null).map((segment) => ({ time: segment.start, x: segment.x, y: segment.y, type: "camp", title: `${segment.region}资源段` })));
-  }
   state.selectedCombatId = COMBAT_SEGMENTS.find((fight) => (fight.participants || []).includes(state.selectedHeroSlot))?.id || COMBAT_SEGMENTS[0]?.id || null;
   state.selectedCombatPlayerSlot = state.selectedHeroSlot;
   state.selectedWardId = WARD_RECORDS.find((ward) => ward.playerSlot === state.selectedHeroSlot)?.id || WARD_RECORDS[0]?.id || null;
@@ -1700,7 +1937,11 @@ function renderTimelineMarkers() {
 function markerHtml(marker) {
   if (!Number.isFinite(Number(marker.x)) || !Number.isFinite(Number(marker.y))) return "";
   const icon = marker.type === "camp" ? "trees" : marker.type === "ward" ? "eye" : marker.type === "objective" ? "landmark" : "swords";
-  return `<button class="map-pin ${marker.type}" type="button" data-map-time="${marker.time}" style="left:${marker.x}%;top:${marker.y}%" title="${formatTime(marker.time)} · ${marker.title}"><i data-lucide="${icon}"></i></button>`;
+  const title = marker.static ? marker.title : `${formatTime(marker.time)} · ${marker.title}`;
+  const actionAttribute = marker.static
+    ? `data-map-marker-id="${escapeHtml(marker.id || marker.type)}" aria-disabled="true"`
+    : `data-map-time="${Number(marker.time)}"`;
+  return `<button class="map-pin ${marker.type}" type="button" ${actionAttribute} style="left:${marker.x}%;top:${marker.y}%" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}"><i data-lucide="${icon}"></i></button>`;
 }
 
 function combatMapMarkers() {
@@ -1711,6 +1952,47 @@ function combatMapMarkers() {
     return position ? { time: fight.start, x: position.x, y: position.y, region: fight.location,
       location: fight.location, type: "combat", title: fight.title } : null;
   }).filter(Boolean);
+}
+
+const MAP_REFERENCE_PATCH = "7.40";
+
+function renderDevelopmentMapCalibration() {
+  const badge = document.querySelector("#development-map-calibration");
+  const campLabel = document.querySelector('[data-dev-layer="camps"] span');
+  if (campLabel) campLabel.textContent = `营地 ${CAMP_MARKERS.length}`;
+  if (!badge) return;
+
+  const analysis = state.currentAnalysis;
+  const farmLoaded = Boolean(analysis?.modules?.farm);
+  const patchLabel = String(analysis?.match?.patch_name || "").replace(/^Patch\s*/i, "");
+  const patchSeries = patchLabel.match(/\d+\.\d+/)?.[0] || "";
+  const mapMismatch = Boolean(patchSeries && patchSeries !== MAP_REFERENCE_PATCH);
+  const calibrationProfile = state.mapCalibration?.calibration_profile || state.mapCalibration?.profile || "Replay 动态校准";
+  const mapImage = document.querySelector("#development-map > img:first-child");
+
+  badge.classList.remove("ready", "patch-mismatch");
+  if (analysis && !farmLoaded) {
+    badge.textContent = "营地坐标加载中";
+    badge.title = "正在读取 Replay 的 CDOTA_NeutralSpawner 营地实体";
+  } else if (analysis && CAMP_MARKERS.length) {
+    badge.classList.add(mapMismatch ? "patch-mismatch" : "ready");
+    badge.textContent = mapMismatch
+      ? `${patchSeries} 坐标 / ${MAP_REFERENCE_PATCH} 图`
+      : `Replay 坐标 · ${CAMP_MARKERS.length} 营地`;
+    badge.title = `坐标来自 ${patchLabel || "当前"} Replay 的 CDOTA_NeutralSpawner，共 ${CAMP_MARKERS.length} 个；校准 ${calibrationProfile}${mapMismatch ? `；当前贴图为 ${MAP_REFERENCE_PATCH} 参考图，已在游戏内移动的地形可能与标记存在视觉差异` : ""}`;
+  } else if (analysis) {
+    badge.textContent = "未发现营地实体";
+    badge.title = "该 Replay 的 farm 模块没有返回有效 CDOTA_NeutralSpawner 坐标";
+  } else {
+    badge.classList.add("ready");
+    badge.textContent = `演示营地 · ${CAMP_MARKERS.length}`;
+    badge.title = "当前为界面演示数据；载入 Replay 后将替换为营地生成器实体坐标";
+  }
+
+  if (mapImage) {
+    mapImage.alt = `Dota 2 ${MAP_REFERENCE_PATCH} 参考底图`;
+    mapImage.title = badge.title;
+  }
 }
 
 function renderMapMarkers() {
@@ -1730,10 +2012,11 @@ function renderMapMarkers() {
   const fullLayer = document.querySelector("#full-map-markers");
   fullLayer.innerHTML = `${state.mapLayers.heat ? renderHeatSpots() : ""}${fullMarkers.map(markerHtml).join("")}`;
   document.querySelector("#full-map-trail").style.display = state.mapLayers.trail ? "block" : "none";
+  renderDevelopmentMapCalibration();
   const counts = {
     "map-layer-trail-count": `${snapshotsFor(state.selectedHeroSlot).length.toLocaleString("zh-CN")} 点`,
     "map-layer-heat-count": `${FARM_HEAT_CELLS.length} 区`,
-    "map-layer-camps-count": `${CAMP_MARKERS.length} 段`,
+    "map-layer-camps-count": `${CAMP_MARKERS.length} 个`,
     "map-layer-wards-count": `${WARD_RECORDS.length} 个`,
     "map-layer-combat-count": `${COMBAT_SEGMENTS.length} 场`,
     "map-layer-objectives-count": `${OBJECTIVE_EVENTS.length} 个`,
@@ -1888,6 +2171,179 @@ function renderWardInspector() {
   `;
 }
 
+function wardMapViewportMetrics() {
+  const shell = document.querySelector("#ward-map-shell");
+  const stage = document.querySelector("#ward-map");
+  if (!shell || !stage) return null;
+  const shellStyle = window.getComputedStyle(shell);
+  const horizontalPadding = (Number.parseFloat(shellStyle.paddingLeft) || 0)
+    + (Number.parseFloat(shellStyle.paddingRight) || 0);
+  const verticalPadding = (Number.parseFloat(shellStyle.paddingTop) || 0)
+    + (Number.parseFloat(shellStyle.paddingBottom) || 0);
+  return {
+    shell,
+    stage,
+    shellRect: shell.getBoundingClientRect(),
+    viewportWidth: Math.max(0, shell.clientWidth - horizontalPadding),
+    viewportHeight: Math.max(0, shell.clientHeight - verticalPadding),
+    stageWidth: stage.offsetWidth,
+    stageHeight: stage.offsetHeight,
+  };
+}
+
+function clampWardMapPan(zoom = state.wardMapZoom, pan = state.wardMapPan) {
+  const metrics = wardMapViewportMetrics();
+  if (!metrics?.stageWidth || !metrics?.stageHeight) return { x: 0, y: 0 };
+  const maxX = Math.max(0, (metrics.stageWidth * zoom - metrics.viewportWidth) / 2);
+  const maxY = Math.max(0, (metrics.stageHeight * zoom - metrics.viewportHeight) / 2);
+  return {
+    x: clamp(Number(pan?.x) || 0, -maxX, maxX),
+    y: clamp(Number(pan?.y) || 0, -maxY, maxY),
+  };
+}
+
+function applyWardMapTransform() {
+  const metrics = wardMapViewportMetrics();
+  const zoom = clamp(Number(state.wardMapZoom) || WARD_MAP_ZOOM_MIN, WARD_MAP_ZOOM_MIN, WARD_MAP_ZOOM_MAX);
+  state.wardMapZoom = zoom;
+  state.wardMapPan = clampWardMapPan(zoom, state.wardMapPan);
+  if (metrics) {
+    metrics.stage.style.setProperty("--ward-map-zoom", zoom.toFixed(4));
+    metrics.stage.style.setProperty("--ward-map-inverse-scale", (1 / zoom).toFixed(4));
+    metrics.stage.style.setProperty("--ward-map-pan-x", `${state.wardMapPan.x.toFixed(2)}px`);
+    metrics.stage.style.setProperty("--ward-map-pan-y", `${state.wardMapPan.y.toFixed(2)}px`);
+    metrics.shell.classList.toggle("is-zoomed", zoom > WARD_MAP_ZOOM_MIN + 0.001);
+  }
+  const percent = `${Math.round(zoom * 100)}%`;
+  const value = document.querySelector("#ward-map-zoom-reset");
+  if (value) {
+    value.textContent = percent;
+    value.setAttribute("aria-label", `重置地图缩放，当前 ${percent}`);
+  }
+  const zoomOut = document.querySelector("#ward-map-zoom-out");
+  const zoomIn = document.querySelector("#ward-map-zoom-in");
+  if (zoomOut) zoomOut.disabled = zoom <= WARD_MAP_ZOOM_MIN + 0.001;
+  if (zoomIn) zoomIn.disabled = zoom >= WARD_MAP_ZOOM_MAX - 0.001;
+}
+
+function setWardMapZoom(nextZoom, anchorX, anchorY) {
+  const metrics = wardMapViewportMetrics();
+  const previousZoom = state.wardMapZoom;
+  const zoom = clamp(Number(nextZoom) || WARD_MAP_ZOOM_MIN, WARD_MAP_ZOOM_MIN, WARD_MAP_ZOOM_MAX);
+  if (!metrics?.stageWidth || !metrics?.stageHeight) {
+    state.wardMapZoom = zoom;
+    applyWardMapTransform();
+    return;
+  }
+  const centerX = metrics.shellRect.left + metrics.shellRect.width / 2;
+  const centerY = metrics.shellRect.top + metrics.shellRect.height / 2;
+  const pointerX = Number.isFinite(anchorX) ? anchorX : centerX;
+  const pointerY = Number.isFinite(anchorY) ? anchorY : centerY;
+  const contentX = (pointerX - centerX - state.wardMapPan.x) / previousZoom;
+  const contentY = (pointerY - centerY - state.wardMapPan.y) / previousZoom;
+  state.wardMapZoom = zoom;
+  state.wardMapPan = {
+    x: pointerX - centerX - contentX * zoom,
+    y: pointerY - centerY - contentY * zoom,
+  };
+  applyWardMapTransform();
+}
+
+function resetWardMapView() {
+  state.wardMapZoom = WARD_MAP_ZOOM_MIN;
+  state.wardMapPan = { x: 0, y: 0 };
+  applyWardMapTransform();
+}
+
+function focusWardOnMap(ward, options = {}) {
+  if (!ward || ward.coordinate_valid === false || !Number.isFinite(Number(ward.x)) || !Number.isFinite(Number(ward.y))) return;
+  const metrics = wardMapViewportMetrics();
+  if (!metrics?.stageWidth || !metrics?.stageHeight) {
+    window.requestAnimationFrame(() => focusWardOnMap(ward, options));
+    return;
+  }
+  const minimumZoom = Number(options.minimumZoom) || 2.2;
+  state.wardMapZoom = clamp(Math.max(state.wardMapZoom, minimumZoom), WARD_MAP_ZOOM_MIN, WARD_MAP_ZOOM_MAX);
+  state.wardMapPan = {
+    x: -(Number(ward.x) / 100 - 0.5) * metrics.stageWidth * state.wardMapZoom,
+    y: -(Number(ward.y) / 100 - 0.5) * metrics.stageHeight * state.wardMapZoom,
+  };
+  applyWardMapTransform();
+}
+
+function setWardMapExpanded(expanded) {
+  state.wardMapExpanded = Boolean(expanded);
+  const panel = document.querySelector("#detail-vision");
+  const button = document.querySelector("#ward-map-expand");
+  panel?.classList.toggle("map-expanded", state.wardMapExpanded);
+  if (button) {
+    button.setAttribute("aria-pressed", String(state.wardMapExpanded));
+    button.setAttribute("aria-label", state.wardMapExpanded ? "退出大眼位地图" : "放大眼位地图");
+    button.title = state.wardMapExpanded ? "退出大眼位地图" : "放大眼位地图";
+    button.innerHTML = `<i data-lucide="${state.wardMapExpanded ? "minimize-2" : "maximize-2"}"></i>`;
+    refreshIcons(button);
+  }
+  window.requestAnimationFrame(applyWardMapTransform);
+}
+
+function setupWardMapInteractions() {
+  const shell = document.querySelector("#ward-map-shell");
+  if (!shell) return;
+  shell.addEventListener("wheel", (event) => {
+    if (event.target.closest(".ward-map-controls")) return;
+    event.preventDefault();
+    const delta = clamp(event.deltaY, -120, 120);
+    setWardMapZoom(state.wardMapZoom * Math.exp(-delta * 0.0017), event.clientX, event.clientY);
+  }, { passive: false });
+  shell.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || state.wardMapZoom <= WARD_MAP_ZOOM_MIN + 0.001) return;
+    if (event.target.closest("button")) return;
+    wardMapDrag.active = true;
+    wardMapDrag.pointerId = event.pointerId;
+    wardMapDrag.startX = event.clientX;
+    wardMapDrag.startY = event.clientY;
+    wardMapDrag.panX = state.wardMapPan.x;
+    wardMapDrag.panY = state.wardMapPan.y;
+    shell.classList.add("is-dragging");
+    shell.setPointerCapture(event.pointerId);
+  });
+  shell.addEventListener("pointermove", (event) => {
+    if (!wardMapDrag.active || event.pointerId !== wardMapDrag.pointerId) return;
+    state.wardMapPan = {
+      x: wardMapDrag.panX + event.clientX - wardMapDrag.startX,
+      y: wardMapDrag.panY + event.clientY - wardMapDrag.startY,
+    };
+    applyWardMapTransform();
+  });
+  const finishDrag = (event) => {
+    if (!wardMapDrag.active || event.pointerId !== wardMapDrag.pointerId) return;
+    wardMapDrag.active = false;
+    wardMapDrag.pointerId = null;
+    shell.classList.remove("is-dragging");
+    if (shell.hasPointerCapture(event.pointerId)) shell.releasePointerCapture(event.pointerId);
+  };
+  shell.addEventListener("pointerup", finishDrag);
+  shell.addEventListener("pointercancel", finishDrag);
+  document.querySelector("#ward-map-zoom-out")?.addEventListener("click", () => {
+    setWardMapZoom(state.wardMapZoom / WARD_MAP_ZOOM_FACTOR);
+  });
+  document.querySelector("#ward-map-zoom-in")?.addEventListener("click", () => {
+    setWardMapZoom(state.wardMapZoom * WARD_MAP_ZOOM_FACTOR);
+  });
+  document.querySelector("#ward-map-zoom-reset")?.addEventListener("click", resetWardMapView);
+  document.querySelector("#ward-map-focus")?.addEventListener("click", () => {
+    focusWardOnMap(WARD_RECORDS.find((ward) => ward.id === state.selectedWardId));
+  });
+  document.querySelector("#ward-map-expand")?.addEventListener("click", () => {
+    setWardMapExpanded(!state.wardMapExpanded);
+  });
+  if ("ResizeObserver" in window) {
+    const observer = new ResizeObserver(() => applyWardMapTransform());
+    observer.observe(shell);
+  }
+  applyWardMapTransform();
+}
+
 function renderWardMap() {
   const wards = filteredWards();
   const selected = WARD_RECORDS.find((ward) => ward.id === state.selectedWardId);
@@ -1928,6 +2384,7 @@ function renderWardMap() {
   document.querySelector("#ward-map-heading").textContent = `${wards.length} 个眼位 · ${formatTime(state.currentTime)}`;
   document.querySelector("#ward-map-region").textContent = selected?.region || "无选中眼位";
   document.querySelector("#ward-map-time").textContent = formatTime(state.currentTime);
+  applyWardMapTransform();
 }
 
 function renderWardTimeline(wards) {
@@ -1943,15 +2400,19 @@ function renderWardTimeline(wards) {
       ${wards.map((ward) => {
         const hero = safeHero(ward.playerSlot);
         const meta = wardTypeMeta(ward.type);
-        const start = (ward.placedAt / MATCH_DURATION) * 100;
-        const width = ((ward.endedAt - ward.placedAt) / MATCH_DURATION) * 100;
+        const duration = Math.max(0, ward.endedAt - ward.placedAt);
+        const visibleStart = clamp(ward.placedAt, 0, MATCH_DURATION);
+        const visibleEnd = clamp(ward.endedAt, visibleStart, MATCH_DURATION);
+        const start = (visibleStart / MATCH_DURATION) * 100;
+        const width = ((visibleEnd - visibleStart) / MATCH_DURATION) * 100;
+        const showDuration = duration >= Math.max(45, Math.round(MATCH_DURATION * 0.04));
         return `
           <div class="ward-track-row ${ward.id === state.selectedWardId ? "active" : ""} ${wardIsActive(ward) ? "live-now" : ""}" data-ward-row-id="${ward.id}">
             <button class="ward-track-label" type="button" data-ward-id="${ward.id}" data-ward-time="${ward.placedAt}" title="${hero.name} · ${ward.region}"><img src="${itemImage(meta.item)}" alt="${meta.label}"><span><strong>${hero.name}</strong><small>${ward.region}</small></span></button>
             <div class="ward-track-lane">
-              <button class="ward-life-bar ${ward.team} ${ward.type}" type="button" data-ward-id="${ward.id}" data-ward-time="${ward.placedAt}" style="left:${start}%;width:${width}%" title="${formatTime(ward.placedAt)} - ${formatTime(ward.endedAt)} · ${ward.endReason}"><span>${formatTime(ward.endedAt - ward.placedAt)}</span></button>
-              ${ward.detectionEvents.map((event) => `<button class="ward-track-detection" type="button" data-ward-id="${ward.id}" data-ward-detection-time="${event.time}" style="left:${(event.time / MATCH_DURATION) * 100}%" title="${formatTime(event.time)} · 发现 ${safeHero(event.heroSlot).name}"></button>`).join("")}
-              <span class="ward-end-marker ${ward.endReason === "被反眼" ? "dewarded" : "natural"}" style="left:${(ward.endedAt / MATCH_DURATION) * 100}%"></span>
+              <button class="ward-life-bar ${ward.team} ${ward.type} ${showDuration ? "" : "short"} ${ward.id === state.selectedWardId ? "selected" : ""}" type="button" data-ward-id="${ward.id}" data-ward-time="${ward.placedAt}" style="left:${start}%;width:${width}%" title="${formatTime(ward.placedAt)} - ${formatTime(ward.endedAt)} · ${ward.endReason}">${showDuration ? `<span>${formatTime(duration)}</span>` : ""}</button>
+              ${ward.detectionEvents.map((event) => `<button class="ward-track-detection" type="button" data-ward-id="${ward.id}" data-ward-detection-time="${event.time}" style="left:${clamp(event.time / MATCH_DURATION * 100, 0, 100)}%" title="${formatTime(event.time)} · 发现 ${safeHero(event.heroSlot).name}"></button>`).join("")}
+              <span class="ward-end-marker ${ward.endReason === "被反眼" ? "dewarded" : "natural"}" style="left:${clamp(ward.endedAt / MATCH_DURATION * 100, 0, 100)}%"></span>
               <span class="ward-row-playhead" style="left:${(state.currentTime / MATCH_DURATION) * 100}%"></span>
             </div>
           </div>
@@ -1992,6 +2453,12 @@ function selectWard(wardId, time) {
   state.selectedWardId = ward.id;
   updateCurrentTime(time ?? ward.placedAt, { syncSegment: false });
   renderWardAnalysis();
+  if (window.innerWidth < 1440) setWardSideView("detail");
+  window.requestAnimationFrame(() => {
+    document.querySelector("#ward-list .ward-list-row.active")?.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+    document.querySelector("#ward-timeline .ward-track-row.active")?.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+    if (state.wardMapZoom > WARD_MAP_ZOOM_MIN + 0.001) focusWardOnMap(ward, { minimumZoom: state.wardMapZoom });
+  });
 }
 
 const FARM_OPTION_NAMES = {
@@ -2026,6 +2493,7 @@ function farmDiagnosticTitle(value) {
     jungle_review_clue: "野区复核线索",
     lane_jungle_cycle: "线野循环",
     observed_lane_jungle_cycle: "已完成线野循环",
+    strategic_commitment: "团战与目标投入",
     jungle_reset: "应留在安全野区",
     low_income_window: "低收益时间窗",
     evidence_gap: "路线证据不足",
@@ -2034,21 +2502,82 @@ function farmDiagnosticTitle(value) {
 }
 
 function farmDiagnosticReason(diagnostic) {
-  const phase = diagnostic.phase === "laning" ? "对线期" : diagnostic.phase === "expansion" ? "转线期" : "20 分钟前目标期";
+  const phase = ({
+    laning: "对线期",
+    expansion: "转线期",
+    pre_tormentor: "20 分钟前目标期",
+    core_route_20_30: "20–30 分钟核心发育期",
+    core_route_30_40: "30–40 分钟核心发育期",
+    core_route_40_plus: "40 分钟后核心发育期",
+  })[diagnostic.phase] || "资源运营期";
   const facts = `Replay 事实：该 30 秒获得 ${Number(diagnostic.actualGold || 0)}g，其中兵线 ${Number(diagnostic.laneGold || 0)}g、野区 ${Number(diagnostic.neutralGold || 0)}g；可见敌人 ${(diagnostic.visible || []).length}/5，附近己方有效眼位 ${(diagnostic.wardIds || []).length} 个。`;
-  const missing = (diagnostic.missingEvidence || []).map((key) => ({ lane_unit_positions: "兵线实体位置", camp_occupancy: "野点存活状态", team_resource_claims: "队友资源归属", hero_clear_time: "本英雄清线清野耗时" })[key] || key);
-  const model = diagnostic.diagnostic_class === "relative_low"
+  const missingNames = {
+    lane_unit_positions: "兵线实体位置",
+    camp_occupancy: "野点存活状态",
+    team_resource_claims: "队友资源归属",
+    lane_unit_lifecycle_window: "候选兵线逐兵状态",
+    camp_unit_lifecycle_window: "候选营地逐怪状态",
+    team_resource_priority_conflict: "队友资源优先级冲突",
+    hero_clear_time: "本英雄清线清野耗时",
+  };
+  const missing = (diagnostic.missingEvidence || []).map((key) => missingNames[key] || key);
+  const model = diagnostic.strategic_commitment_exempt
+    ? `模型判断：该窗口处于${phase}，但玩家正在参团或处理地图目标，因此只记录机会成本，不用纯打钱收益追责。`
+    : diagnostic.recommendation_enabled
+    ? `模型判断：逐单位资源、战争迷雾、位置职责和抵达截止时间均通过门禁，可复盘为一条受支持的${phase}路线。`
+    : diagnostic.diagnostic_class === "relative_low"
     ? `模型判断：这是本场相对低点，不满足异常门槛，仅作为${phase}复盘样本。`
     : diagnostic.matched_best_option
       ? `模型判断：处于${phase}，实际行为与当前证据支持的最高分选项一致。`
-      : `模型门控：${missing.length ? `缺少${missing.join("、")}` : "候选证据不完整"}，因此只保留复盘线索，不生成确定路线。刷新时钟本身不能证明线野双收可执行。`;
+      : `模型门控：${routeBlockerName(diagnostic.route_blocker) || (missing.length ? `缺少${missing.join("、")}` : "候选证据不完整")}，因此只保留复盘线索，不生成确定路线。`;
   return `${facts}${model}`;
+}
+
+function routeBlockerName(value) {
+  return ({
+    role_uncertain: "位置职责置信度不足",
+    role_not_resource_priority: "该位置不应抢占核心资源",
+    resource_sample_too_small: "候选资源单位不足",
+    unit_value_unavailable: "同场单位金币样本不足",
+    enemy_visibility_incomplete: "敌方连续可见性不完整",
+    known_enemy_threat: "路线上存在已知敌方威胁",
+    team_resource_claim: "更高优先级队友更接近资源",
+    player_position_unavailable: "玩家位置缺失",
+    pre10_jungle_clear_unproven: "10 分钟前尚未证明该英雄能完成清野",
+    strategic_commitment: "正在参团或处理关键目标，免于纯打钱追责",
+    arrival_after_resource_deadline: "预计抵达晚于资源消失时间",
+  })[value] || "";
+}
+
+function laneOpportunityName(value) {
+  return ({
+    secured: "已补到",
+    enemy_deny: "被反补",
+    teammate_claimed: "队友收取",
+    role_not_resource_priority: "非本位置资源",
+    excused_dead: "阵亡豁免",
+    excused_combat: "战斗豁免",
+    reviewable_missed_last_hit: "可复核漏刀",
+    missed_last_hit_safety_unproven: "安全性不足",
+    reviewable_missed_wave_absence: "可复核漏线",
+    missed_wave_safety_unproven: "缺视野未定责",
+  })[value] || value || "未归类";
 }
 
 function farmCandidates(diagnostic) {
   if (diagnostic.candidates?.length) return diagnostic.candidates;
   if (diagnostic.recommendation === "insufficient_evidence") return [];
   return [{ kind: diagnostic.recommendation || "current_route", expectedGold: Number(diagnostic.suggestedGold || 0), risk: Number(diagnostic.risk || 0), travelSeconds: Number(diagnostic.travelSeconds || 0), deadlineSeconds: Number(diagnostic.expiresIn || 0), evidence: "legacy_model" }];
+}
+
+function farmCandidateEvidenceName(value) {
+  return ({
+    observed_lane_jungle_lane_sequence: "Replay 已完成",
+    unit_lifecycle_plus_continuous_visibility: "逐兵 + 连续视野",
+    camp_lifecycle_plus_continuous_visibility: "逐怪 + 连续视野",
+    assigned_lane_plus_resource_event: "分路 + 资源事件",
+    current_jungle_plus_resource_event: "当前位置 + 营地事件",
+  })[value] || "事实候选";
 }
 
 function nextPeriodicTime(current, first, interval, last = Infinity) {
@@ -2077,13 +2606,18 @@ function renderFarmResourceClock() {
     const remaining = time == null ? null : Math.max(0, time - current);
     return `<span class="farm-resource-tick ${remaining != null && remaining <= 10 ? "due" : ""}"><i data-lucide="${icon}"></i><span><small>${label}</small><strong>${time == null ? "本轮已结束" : `${formatTime(time)} · ${remaining}s`}</strong></span></span>`;
   }).join("");
-  const phase = current < 450 ? "0-7:30 对线期" : current < 900 ? "7:30-15:00 转线期" : current < 1200 ? "15:00-20:00 目标前" : "20 分钟后";
+  const resourcePosition = Number(FARM_LANE_OPPORTUNITY.position || 0);
+  const phase = current < 450 ? "0-7:30 对线期"
+    : current < 900 ? "7:30-15:00 转线期"
+      : current < 1200 ? "15:00-20:00 目标前"
+        : resourcePosition > 0 && resourcePosition <= 3 ? "20 分钟后核心路线期" : "20 分钟后团队运营期";
   document.querySelector("#farm-phase-label").textContent = phase;
   refreshIcons(root);
 }
 
 function farmDecisionMeta(decision) {
   if (decision === "correct") return { label: "正确决策", className: "positive", icon: "circle-check" };
+  if (decision === "context_exempt") return { label: "战略投入", className: "fact", icon: "swords" };
   if (decision === "relative_low") return { label: "相对低点", className: "aggregate", icon: "scan-line" };
   if (decision === "evidence_gap") return { label: "证据不足", className: "aggregate", icon: "circle-help" };
   if (decision === "watch" || decision === "review") return { label: "需要复核", className: "warning", icon: "search-check" };
@@ -2132,7 +2666,9 @@ function farmDiagnosticsForHero(slot = state.selectedHeroSlot) {
 }
 
 function farmWindowMatches(cell) {
-  const midpoint = (cell.start + cell.end) / 2;
+  const start = Number(cell.start ?? cell.time ?? 0);
+  const end = Number(cell.end ?? start);
+  const midpoint = (start + end) / 2;
   if (state.farmTimeWindow === "pre20") return midpoint < 1200;
   if (state.farmTimeWindow === "m0_5") return midpoint < 300;
   if (state.farmTimeWindow === "m5_10") return midpoint >= 300 && midpoint < 600;
@@ -2140,6 +2676,10 @@ function farmWindowMatches(cell) {
   if (state.farmTimeWindow === "m15_20") return midpoint >= 900 && midpoint < 1200;
   if (state.farmTimeWindow === "post20") return midpoint >= 1200;
   return true;
+}
+
+function farmDiagnosticsInSelectedWindow() {
+  return farmDiagnosticsForHero().filter((diagnostic) => farmWindowMatches(diagnostic));
 }
 
 function filteredFarmCells() {
@@ -2197,20 +2737,26 @@ function renderFarmSummary() {
   const total = cells.reduce((sum, cell) => sum + cell.gold, 0);
   const lane = cells.filter((cell) => farmCellGroup(cell) === "lane").reduce((sum, cell) => sum + cell.gold, 0);
   const neutral = cells.filter((cell) => farmCellGroup(cell) === "neutral").reduce((sum, cell) => sum + cell.gold, 0);
-  const combat = cells.filter((cell) => farmCellGroup(cell) === "combat").reduce((sum, cell) => sum + cell.gold, 0);
-  const diagnostics = farmDiagnosticsForHero();
-  const recoverable = diagnostics.filter((item) => item.review_required).reduce((sum, item) => sum + Math.max(0, item.suggestedGold - item.actualGold), 0);
-  const lowIncomeSeconds = diagnostics.filter((item) => item.diagnostic_class !== "relative_low")
-    .reduce((sum, item) => sum + Math.max(1, Number(item.end || item.time + 29) - Number(item.time || 0) + 1), 0);
+  const diagnostics = farmDiagnosticsInSelectedWindow();
+  const enabledRoutes = diagnostics.filter((item) => item.recommendation_enabled === true);
+  const recoverable = enabledRoutes.reduce((sum, item) => sum + Math.max(0, item.suggestedGold - item.actualGold), 0);
   const percentage = (value) => `${total ? Math.round((value / total) * 100) : 0}%`;
   const kills = UNIT_KILL_STATS.find((row) => Number(row.slot) === state.selectedHeroSlot) || {};
+  const laneSummary = FARM_LANE_OPPORTUNITY.summary || {};
+  const reviewableMisses = Number(laneSummary.reviewable_misses || 0);
+  const missedGold = Number(laneSummary.estimated_reviewable_gold || 0);
+  const stackGold = Number(FARM_STACK_VALUE_SUMMARY.created_gold_estimate || 0);
+  const resourcePosition = Number(FARM_LANE_OPPORTUNITY.position || 0);
+  const post20Core = state.farmTimeWindow === "post20" && resourcePosition > 0 && resourcePosition <= 3;
   const metrics = [
     ["coins", "资源收入", `${total.toLocaleString("zh-CN")}g`, "Replay 金钱事件归因"],
-    ["wheat", "兵线", `${lane.toLocaleString("zh-CN")}g`, `${percentage(lane)} · ${Number(kills.lane || 0)} 个小兵 · ${FARM_LANE_WAVES.length} 波实体`],
-    ["trees", "野区", `${neutral.toLocaleString("zh-CN")}g`, `${percentage(neutral)} · ${FARM_CAMP_STATES.length} 个野点 / ${FARM_CAMP_STATES.reduce((sum, camp) => sum + (camp.observations || []).length, 0)} 个观测周期`],
-    ["swords", "战斗与目标", `${combat.toLocaleString("zh-CN")}g`, `${percentage(combat)} · ${safeHero(state.selectedHeroSlot).kills} 次击杀`],
-    ["footprints", "前 20 分钟机会窗", formatTime(lowIncomeSeconds), "按 30 秒资源窗口识别"],
-    ["trending-up", "模型机会差", `+${recoverable}g`, `${diagnostics.length} 个候选决策点`],
+    ["wheat", "兵线", `${lane.toLocaleString("zh-CN")}g`, `${percentage(lane)} · ${Number(kills.lane || 0)} 小兵 · ${FARM_LANE_WAVES.length} 波`],
+    ["trees", "野区", `${neutral.toLocaleString("zh-CN")}g`, `${percentage(neutral)} · ${FARM_CAMP_STATES.length} 野点 · ${FARM_CAMP_STATES.reduce((sum, camp) => sum + (camp.observations || []).length, 0)} 周期`],
+    ["scan-search", "漏线复核", `${reviewableMisses} 个`, `${missedGold > 0 ? `约 ${missedGold}g` : "仅展示事实"} · 已补 ${Number(laneSummary.secured || 0)} 个`],
+    ["layers-3", "叠野创造", `${stackGold > 0 ? `约 ${stackGold}g` : `${Number(FARM_STACK_VALUE_SUMMARY.stacked_camps || 0)} 营`}`, `${Number(FARM_STACK_VALUE_SUMMARY.stacked_creeps || 0)} 个额外单位 · 团队价值`],
+    ["route", post20Core ? "20+ 核心路线" : "可执行路线", `${enabledRoutes.length} 条`, post20Core
+      ? `${diagnostics.length} 窗 · 目标免责`
+      : `${recoverable > 0 ? `复盘机会差 +${recoverable}g` : "严格证据门禁"}`],
   ];
   const root = document.querySelector("#farm-summary");
   root.innerHTML = metrics.map(([icon, label, value, detail]) => `
@@ -2222,7 +2768,7 @@ function renderFarmSummary() {
 function renderFarmMap() {
   const hero = safeHero(state.selectedHeroSlot);
   const currentPosition = positionAtTime(state.currentTime, state.selectedHeroSlot);
-  const diagnostics = farmDiagnosticsForHero();
+  const diagnostics = farmDiagnosticsInSelectedWindow();
   const diagnostic = diagnostics.find((item) => item.id === state.selectedFarmDiagnosticId) || diagnostics[0] || {
     decision: "correct", targetX: null, targetY: null, suggestedGold: 0, actualGold: 0, visible: [], missing: [], wardIds: [], confidence: 0,
   };
@@ -2309,6 +2855,8 @@ function renderFarmMap() {
   refreshIcons(evidenceLayer);
 
   const windowLabels = { pre20: "0-20 分钟", m0_5: "0-5 分钟", m5_10: "5-10 分钟", m10_15: "10-15 分钟", m15_20: "15-20 分钟", post20: "20 分钟后" };
+  document.querySelector("#farm-map-kicker").textContent = state.farmTimeWindow === "post20"
+    ? "20 分钟后核心路线收益" : "前 20 分钟空间收益";
   document.querySelector("#farm-map-heading").textContent = `${hero.name} · ${windowLabels[state.farmTimeWindow]}打钱热区`;
   document.querySelector("#farm-map-region").textContent = currentPosition
     ? (state.currentAnalysis ? regionName(currentPosition.region) : regionForPosition(currentPosition))
@@ -2317,11 +2865,14 @@ function renderFarmMap() {
 }
 
 function renderFarmDiagnosis() {
-  const diagnostics = farmDiagnosticsForHero();
+  const diagnostics = farmDiagnosticsInSelectedWindow();
   const list = document.querySelector("#farm-diagnosis-list");
+  document.querySelector("#farm-diagnosis-heading").textContent = state.farmTimeWindow === "post20"
+    ? "20 分钟后核心路线审计" : "前 20 分钟决策审计";
   if (!diagnostics.length) {
     list.innerHTML = `<div class="coverage-empty"><i data-lucide="route-off"></i><span>没有识别到可比较的低收益窗口</span></div>`;
-    document.querySelector("#farm-diagnosis-inspector").innerHTML = `<p>该英雄前 20 分钟没有形成可稳定比较的 30 秒低收益窗口，或者数据覆盖不足。</p>`;
+    const scope = state.farmTimeWindow === "post20" ? "20 分钟后" : "当前时间段";
+    document.querySelector("#farm-diagnosis-inspector").innerHTML = `<p>该英雄${scope}没有形成可稳定比较的低收益窗口，或者路线证据覆盖不足。</p>`;
     document.querySelector("#farm-model-confidence").textContent = "无异常窗口";
     refreshIcons(list);
     return;
@@ -2331,11 +2882,12 @@ function renderFarmDiagnosis() {
     const delta = Math.max(0, diagnostic.suggestedGold - diagnostic.actualGold);
     const gap = diagnostic.decision === "evidence_gap" || diagnostic.recommendation === "insufficient_evidence";
     const verified = diagnostic.matched_best_option === true;
+    const contextExempt = diagnostic.strategic_commitment_exempt === true;
     return `
       <button class="farm-diagnosis-row ${state.selectedFarmDiagnosticId === diagnostic.id ? "active" : ""}" type="button" data-farm-diagnostic-id="${diagnostic.id}" data-farm-diagnostic-time="${diagnostic.time}">
         <time>${formatTime(diagnostic.time)}</time>
-        <span class="farm-diagnosis-main"><strong>${farmDiagnosticTitle(diagnostic.title)}</strong><small>${farmOptionName(diagnostic.actual)} → ${farmOptionName(diagnostic.recommendation)}</small></span>
-        <span class="farm-diagnosis-delta ${diagnostic.decision}"><strong>${gap ? "待补证据" : verified ? "已验证" : delta > 0 ? `+${delta}g` : "需复核"}</strong><small>${gap ? `置信度 ${diagnostic.confidence}%` : `风险 ${diagnostic.risk}`}</small></span>
+        <span class="farm-diagnosis-main"><strong>${farmDiagnosticTitle(diagnostic.title)}${diagnostic.post20_core_priority ? `<em class="core-route-priority">核心路线</em>` : ""}</strong><small>${farmOptionName(diagnostic.actual)} → ${farmOptionName(diagnostic.recommendation)}</small></span>
+        <span class="farm-diagnosis-delta ${diagnostic.decision}"><strong>${contextExempt ? "目标投入" : gap ? "待补证据" : verified ? "已验证" : delta > 0 ? `+${delta}g` : "需复核"}</strong><small>${contextExempt ? "记录机会成本" : gap ? `置信度 ${diagnostic.confidence}%` : `风险 ${diagnostic.risk}`}</small></span>
         <i data-lucide="${meta.icon}"></i>
       </button>
     `;
@@ -2349,19 +2901,35 @@ function renderFarmDiagnosis() {
   const candidates = farmCandidates(diagnostic);
   const evidenceGap = diagnostic.decision === "evidence_gap" || diagnostic.recommendation === "insufficient_evidence";
   const verified = diagnostic.matched_best_option === true;
+  const contextExempt = diagnostic.strategic_commitment_exempt === true;
   const blocked = diagnostic.blockedCandidates || [];
+  const opportunityEvents = (FARM_LANE_OPPORTUNITY.events || [])
+    .filter((event) => Number(event.time) >= Number(diagnostic.time || 0) - 5
+      && Number(event.time) <= Number(diagnostic.end || diagnostic.time || 0) + 45)
+    .slice(0, 6);
+  const stackEvent = FARM_STACK_EVENTS.find((event) => Number(event.time) >= Number(diagnostic.time || 0)
+    && Number(event.time) <= Number(diagnostic.end || diagnostic.time || 0) + 30);
+  const routeState = contextExempt
+    ? "战略投入豁免"
+    : diagnostic.recommendation_enabled
+      ? "门禁通过"
+      : routeBlockerName(diagnostic.route_blocker) || "仅保留事实";
   document.querySelector("#farm-model-confidence").textContent = `置信度 ${diagnostic.confidence}%`;
   document.querySelector("#farm-model-confidence").className = `evidence-tag ${diagnostic.confidence >= 85 ? "fact" : "aggregate"}`;
   const inspector = document.querySelector("#farm-diagnosis-inspector");
   inspector.innerHTML = `
-    <div class="farm-diagnosis-head"><span><small>${formatTime(diagnostic.time)} · ${meta.label}</small><strong>${farmDiagnosticTitle(diagnostic.title)}</strong></span><span class="farm-diagnosis-grade ${meta.className}"><strong>${evidenceGap ? "?" : verified ? "✓" : delta > 0 ? `+${delta}g` : "!"}</strong><small>${evidenceGap ? "不生成路线" : verified ? "行为方向已验证" : "同类窗口基准差"}</small></span></div>
+    <div class="farm-diagnosis-head"><span><small>${formatTime(diagnostic.time)} · ${meta.label}</small><strong>${farmDiagnosticTitle(diagnostic.title)}</strong></span><span class="farm-diagnosis-grade ${meta.className}"><strong>${contextExempt ? "✓" : evidenceGap ? "?" : verified ? "✓" : delta > 0 ? `+${delta}g` : "!"}</strong><small>${contextExempt ? "不按纯打钱追责" : evidenceGap ? "不生成路线" : verified ? "行为方向已验证" : "同类窗口基准差"}</small></span></div>
     <div class="farm-route-compare">
       <span class="actual"><small>Replay 实际</small><strong>${farmOptionName(diagnostic.actual)}</strong><em>${diagnostic.actualGold}g 已归因收益</em></span>
       <i data-lucide="arrow-right"></i>
-      <span class="recommended"><small>${diagnostic.matched_best_option ? "事实匹配" : "证据门控"}</small><strong>${farmOptionName(diagnostic.recommendation)}</strong><em>${diagnostic.matched_best_option ? `${diagnostic.actualGold}g 已归因收益` : "等待兵线与野点状态"}</em></span>
+      <span class="recommended"><small>${diagnostic.matched_best_option ? "事实匹配" : diagnostic.recommendation_enabled ? "严格门禁通过" : "证据门控"}</small><strong>${farmOptionName(diagnostic.recommendation)}</strong><em>${diagnostic.matched_best_option ? `${diagnostic.actualGold}g 已归因收益` : diagnostic.recommendation_enabled ? `${diagnostic.suggestedGold}g 候选收益` : "等待兵线、营地与视野证据"}</em></span>
     </div>
     <div class="farm-candidate-grid">
-      ${candidates.length ? candidates.slice(0, 3).map((candidate) => `<span class="farm-candidate ${candidate.kind === diagnostic.recommendation ? "recommended" : ""}"><small>${candidate.evidence === "observed_lane_jungle_lane_sequence" ? "Replay 已完成" : "同类窗口基准"}</small><strong>${farmOptionName(candidate.kind)}</strong><em>${Number(candidate.expectedGold || 0)}g · 风险 ${Number(candidate.risk || 0)} · ${Number(candidate.travelSeconds || 0)}s</em></span>`).join("") : `<span class="farm-candidate blocked"><small>不可用</small><strong>没有可执行候选</strong><em>刷新时间不等于路线成立</em></span>`}
+      ${candidates.length ? candidates.slice(0, 3).map((candidate) => {
+        const candidateBlocked = candidate.hard_gates_passed === false;
+        const candidateState = candidateBlocked ? routeBlockerName(candidate.blocker) || "未通过路线门禁" : farmCandidateEvidenceName(candidate.evidence);
+        return `<span class="farm-candidate ${candidateBlocked ? "blocked" : candidate.kind === diagnostic.recommendation ? "recommended" : ""}"><small>${candidateState}</small><strong>${farmOptionName(candidate.kind)}</strong><em>${Number(candidate.expectedGold || 0)}g · 风险 ${Number(candidate.risk || 0)} · ${Number(candidate.travelSeconds || 0)}s</em></span>`;
+      }).join("") : `<span class="farm-candidate blocked"><small>不可用</small><strong>没有可执行候选</strong><em>刷新时间不等于路线成立</em></span>`}
       ${blocked.slice(0, 1).map((candidate) => `<span class="farm-candidate blocked"><small>已阻止</small><strong>${farmOptionName(candidate.kind)}</strong><em>${escapeHtml(candidate.reason || "关键证据缺失")}</em></span>`).join("")}
     </div>
     <div class="farm-model-metrics">
@@ -2371,8 +2939,11 @@ function renderFarmDiagnosis() {
       <span><small>可见敌人</small><strong>${diagnostic.visible.length} / 5</strong></span>
       <span><small>失踪威胁</small><strong>${diagnostic.missing.length} 人</strong></span>
       <span><small>己方视野</small><strong>${wardNames.length} 个眼位</strong></span>
+      <span><small>逐单位资源</small><strong>${Number(diagnostic.route_observed_units || 0)} 个</strong></span>
+      <span><small>路线门禁</small><strong>${routeState}</strong></span>
     </div>
-    <span class="farm-stack-fact"><i data-lucide="layers-3"></i>${Number(diagnostic.stackDelta || 0) > 1 ? `此窗口确认拉到 ${diagnostic.stackDelta} 个营地（双拉）` : Number(diagnostic.stackDelta || 0) === 1 ? "此窗口确认完成 1 次堆野" : "此窗口没有检测到堆野计数增长"}</span>
+    <span class="farm-stack-fact"><i data-lucide="layers-3"></i>${stackEvent ? `确认堆叠 ${Number(stackEvent.camps || 0)} 个营地 / ${Number(stackEvent.creeps || 0)} 个单位${Number(stackEvent.created_gold_estimate || 0) > 0 ? `，创造团队价值约 ${Number(stackEvent.created_gold_estimate)}g` : "，收益样本不足"}` : "此窗口没有检测到堆野计数增长"}</span>
+    ${opportunityEvents.length ? `<div class="farm-unit-evidence">${opportunityEvents.map((event) => `<button type="button" data-farm-unit-time="${Number(event.time || 0)}"><time>${formatTime(Number(event.time || 0))}</time><strong>${laneOpportunityName(event.outcome)}</strong><small>${regionName(event.lane)} · ${Number(event.estimated_gold || 0) > 0 ? `约 ${Number(event.estimated_gold)}g` : "金币未知"}</small></button>`).join("")}</div>` : ""}
     <div class="farm-evidence-strip">
       <span class="visible"><small>已看见</small>${(diagnostic.visible || []).map((slot) => `<img src="${heroImage(safeHero(slot).token)}" alt="${safeHero(slot).name}" title="${safeHero(slot).name}">`).join("")}</span>
       <span class="missing"><small>失踪</small>${(diagnostic.missing || []).map((slot) => `<img src="${heroImage(safeHero(slot).token)}" alt="${safeHero(slot).name}" title="${safeHero(slot).name}">`).join("")}</span>
@@ -2404,6 +2975,9 @@ function renderFarmUnits() {
 }
 
 function renderFarmAnalysis() {
+  document.querySelectorAll("#farm-time-filter button").forEach((button) => {
+    button.classList.toggle("active", button.dataset.farmWindow === state.farmTimeWindow);
+  });
   renderFarmSummary();
   renderFarmResourceClock();
   renderFarmDiagnosis();
@@ -2413,7 +2987,7 @@ function renderFarmAnalysis() {
 
 function syncFarmTime() {
   if (state.detailView !== "farm") return;
-  const diagnostics = farmDiagnosticsForHero();
+  const diagnostics = farmDiagnosticsInSelectedWindow();
   if (!diagnostics.length) {
     renderFarmResourceClock();
     renderFarmMap();
@@ -2712,6 +3286,12 @@ function combatEventRows(fight) {
 
 const COMBAT_ISSUE_NAMES = {
   low_damage_share: "核心伤害占比偏低",
+  low_carry_damage_share: "1 号位伤害占比偏低",
+  low_mid_combat_output: "2 号位战斗输出偏低",
+  late_tempo_arrival: "2 号位节奏到场偏晚",
+  low_initiation_or_frontline_value: "3 号位先手或前排价值不足",
+  low_roamer_utility_output: "4 号位游走与功能贡献偏低",
+  low_save_or_control_output: "5 号位救人与控制贡献偏低",
   no_spell_output: "未记录到技能输出",
   late_or_absent: "进入主战场偏晚或在场率低",
   no_kill_conversion: "对减员目标没有有效伤害",
@@ -2732,6 +3312,8 @@ const RESPONSIBILITY_BLOCKER_NAMES = {
   mana_unknown: "魔法条件未知",
   range_unknown: "施法距离未知",
   target_or_range: "没有合理范围内目标",
+  patch_metadata_missing: "缺少对应版本技能元数据",
+  ability_semantics_unknown: "技能目标语义未确认",
 };
 
 function responsibilityGateMeta(gate) {
@@ -2751,13 +3333,14 @@ function fightContributions(fight) {
   const rows = participantSlots.map((slot) => {
     const damage = (fight.damageBySlot?.[String(slot)] || []).reduce((sum, row) => sum + Number(row.value || 0), 0)
       || (slot === state.selectedHeroSlot ? Number(fight.damage || 0) : Math.round(Number(fight.damage || 1800) * (0.06 + (slot % 5) * 0.025)));
-    const role = slot % 5 < 3 ? "core" : "support";
-    const abilityCasts = role === "core" ? 3 + (slot % 3) : 4 + (slot % 2);
-    const controlSeconds = role === "support" ? 2.4 + (slot % 2) * 1.6 : slot % 2 ? 1.2 : 0;
+    const position = slot % 5 + 1;
+    const roleGroup = position <= 3 ? "core" : "support";
+    const abilityCasts = roleGroup === "core" ? 3 + (slot % 3) : 4 + (slot % 2);
+    const controlSeconds = roleGroup === "support" ? 2.4 + (slot % 2) * 1.6 : slot % 2 ? 1.2 : 0;
     const score = clamp(Math.round(55 + damage / Math.max(1, Number(fight.damage || 3000)) * 70 + abilityCasts * 2 + controlSeconds * 2), 32, 94);
     const gateStatus = slot % 4 === 1 ? "blocked" : slot % 4 === 2 ? "insufficient_evidence" : "passed";
     const responsibilityGate = { status: gateStatus, coverage_pct: gateStatus === "insufficient_evidence" ? 42 : 96, opportunity_seconds: gateStatus === "passed" ? 7 : 0, blockers: gateStatus === "blocked" ? { cooldown: 5, stun: 2 } : gateStatus === "insufficient_evidence" ? { range_unknown: 8, ability_state_missing: 3 } : {}, opportunities: [] };
-    return { slot, role, damage, teamDamageShare: 0, damageToKills: Math.round(damage * 0.62), killConversion: 62, abilityCasts, itemUses: role === "support" ? 2 : 1, controlSeconds, healing: role === "support" && slot % 2 ? 420 : 0, kills: 0, deaths: 0, presencePct: 78 - (slot % 3) * 7, arrivalDelay: slot % 4, setupObservers: role === "support" ? 1 : 0, setupSentries: role === "support" && slot % 2 ? 1 : 0, responsibilityScore: score, status: score >= 72 ? "ok" : score >= 48 ? "watch" : "issue", confidence: state.currentAnalysis ? 48 : 72, issues: [], responsibility_gate: responsibilityGate };
+    return { slot, position, role: `position_${position}`, role_group: roleGroup, role_confidence: 78, damage, teamDamageShare: 0, damageTaken: Math.round(damage * 0.7), teamDamageTakenShare: 20, damageToKills: Math.round(damage * 0.62), killConversion: 62, abilityCasts, itemUses: roleGroup === "support" ? 2 : 1, controlSeconds, healing: roleGroup === "support" && slot % 2 ? 420 : 0, kills: 0, deaths: 0, presencePct: 78 - (slot % 3) * 7, arrivalDelay: slot % 4, setupObservers: roleGroup === "support" ? 1 : 0, setupSentries: roleGroup === "support" && slot % 2 ? 1 : 0, responsibilityScore: score, status: score >= 72 ? "ok" : score >= 48 ? "watch" : "issue", confidence: state.currentAnalysis ? 48 : 72, issues: [], responsibility_gate: responsibilityGate };
   });
   ["radiant", "dire"].forEach((team) => {
     const teamRows = rows.filter((row) => (row.slot < 5 ? "radiant" : "dire") === team);
@@ -2955,7 +3538,6 @@ function renderCombatVision(fight, contributions) {
   const center = fightPosition(fight, contributions);
   const duration = Math.max(0.001, (Number(fight.contact_end_ms ?? (fight.contact_end ?? fight.end) * 1000)
     - Number(fight.contact_start_ms ?? (fight.contact_start ?? fight.start) * 1000)) / 1000);
-  const learned = fight.classification?.learning_applied;
   const confidence = Number(fight.classification?.confidence || 0);
   const tags = (fight.classification?.context_tags || []).map((tag) => COMBAT_CONTEXT_NAMES[tag] || tag);
   const reason = (fight.classification?.reasons || []).map((item) => COMBAT_REASON_NAMES[item] || item)[0];
@@ -2968,7 +3550,7 @@ function renderCombatVision(fight, contributions) {
     ["实际参与", `${(fight.participants || []).length || contributions.length} 人`],
     ["总英雄伤害", Number(fight.total_damage || fight.damage || 0).toLocaleString("zh-CN")],
     ["强度 / 减员", `${Number(fight.classification?.intensity_score || 0)} · ${Number(fight.radiant_deaths || 0)}:${Number(fight.dire_deaths || 0)}`],
-    ["识别依据", learned ? `标注相似 ${Math.round(Number(fight.classification?.similarity || 0) * 100)}%` : confidence ? `自动规则 ${confidence}%` : "固定战斗规则"],
+    ["识别依据", confidence ? `自动规则 ${confidence}%` : "固定战斗规则"],
     ["事件上下文", tags.length ? tags.join(" · ") : reason || "基础战斗事件"],
     ["关键程度", `${importanceMeta.label} ${Number(importance.score || 0)} · ${importanceReason || "未评分"}`],
   ];
@@ -2976,11 +3558,31 @@ function renderCombatVision(fight, contributions) {
   const teams = [["radiant", "天辉"], ["dire", "夜魇"]];
   document.querySelector("#combat-vision-summary").innerHTML = teams.map(([team, label]) => {
     const vision = fightVisionTeam(fight, team, center);
-    if (!vision) return `<div class="combat-vision-team ${team}"><strong>${label}</strong><span class="combat-vision-copy"><small>这场战斗缺少可用的视野事件证据</small></span><span>数据不足</span></div>`;
+    if (!vision) {
+      return `<article class="combat-vision-team ${team} unavailable">
+        <header class="combat-vision-team-head"><strong>${label}</strong><span class="combat-vision-status insufficient">数据不足</span></header>
+        <p class="combat-vision-empty">这场战斗缺少可用的视野事件证据</p>
+      </article>`;
+    }
     const visibility = Number(vision.combat_log_visibility_pct || 0);
     const observer = Number(vision.nearby_observers || 0);
     const sentry = Number(vision.nearby_sentries || 0);
-    return `<div class="combat-vision-team ${team}"><strong>${label}</strong><span class="combat-vision-copy"><span class="combat-vision-meter"><span style="width:${clamp(visibility, 0, 100)}%"></span></span><small>可见伤害事件 ${visibility}%</small><em>附近假眼 ${observer} · 真眼 ${sentry} · 开战前真眼 ${Number(vision.setup_sentries || 0)}</em></span><span>${vision.observer_coverage ? "有视野" : "无眼覆盖"}${vision.sentry_coverage ? " + 反隐" : ""}</span></div>`;
+    const status = `${vision.observer_coverage ? "有视野" : "无眼覆盖"}${vision.sentry_coverage ? " · 有反隐" : ""}`;
+    return `<article class="combat-vision-team ${team}">
+      <header class="combat-vision-team-head">
+        <strong>${label}</strong>
+        <span class="combat-vision-status ${vision.observer_coverage ? "covered" : "uncovered"}">${status}</span>
+      </header>
+      <div class="combat-vision-visibility">
+        <span><small>可见伤害事件</small><strong>${visibility}%</strong></span>
+        <span class="combat-vision-meter" aria-hidden="true"><span style="width:${clamp(visibility, 0, 100)}%"></span></span>
+      </div>
+      <dl class="combat-vision-metrics">
+        <div><dt>附近假眼</dt><dd>${observer}</dd></div>
+        <div><dt>附近真眼</dt><dd>${sentry}</dd></div>
+        <div><dt>开战前真眼</dt><dd>${Number(vision.setup_sentries || 0)}</dd></div>
+      </dl>
+    </article>`;
   }).join("");
 }
 
@@ -3048,8 +3650,8 @@ function renderCombatContributions(fight, contributions) {
   table.innerHTML = contributions.map((row) => {
     const hero = safeHero(row.slot);
     const gate = responsibilityGateMeta(row.responsibility_gate);
-    const score = row.responsibility_gate && row.responsibility_gate.status !== "passed"
-      ? gate.shortLabel : Number(row.responsibilityScore || 0);
+    const score = row.status === "insufficient_evidence" || row.responsibility_gate && row.responsibility_gate.status !== "passed"
+      ? "证据不足" : Number(row.responsibilityScore || 0);
     return `<button class="combat-contribution-row ${state.selectedCombatPlayerSlot === row.slot ? "active" : ""}" type="button" data-combat-player-slot="${row.slot}">
       <span class="combat-contribution-player"><img src="${heroImage(hero.token)}" alt="${hero.name}"><span><strong>${hero.player}${hero.me ? " · 我" : ""}</strong><small>${hero.name} · 伤害占比 ${Number(row.teamDamageShare || 0).toFixed(1)}%</small></span></span>
       <span><i class="combat-role-tag">${positionLabel(hero.position)}</i></span>
@@ -3073,22 +3675,25 @@ function renderCombatPlayerAudit(fight, contributions) {
   const gate = contribution.responsibility_gate || null;
   const gateMeta = responsibilityGateMeta(gate);
   document.querySelector("#combat-player-heading").textContent = `${hero.name} · ${positionLabel(hero.position)}`;
-  document.querySelector("#combat-audit-kicker").textContent = `责任审计 · ${gate ? gateMeta.label : `置信度 ${Number(contribution.confidence || 0)}%`}`;
-  document.querySelector("#combat-audit-score").textContent = gate && gate.status !== "passed" ? "--" : Number(contribution.responsibilityScore || 0);
+  const roleReady = Number(contribution.role_confidence || hero.roleConfidence || 0) >= 65;
+  document.querySelector("#combat-audit-kicker").textContent = `责任审计 · ${positionLabel(Number(contribution.position || hero.position))} · ${gate ? gateMeta.label : `置信度 ${Number(contribution.confidence || 0)}%`}`;
+  document.querySelector("#combat-audit-score").textContent = gate && gate.status !== "passed" || !roleReady ? "--" : Number(contribution.responsibilityScore || 0);
   const issues = contribution.issues || [];
   const blockers = Object.entries(gate?.blockers || {}).filter(([, count]) => Number(count) > 0)
     .sort((left, right) => Number(right[1]) - Number(left[1])).slice(0, 4);
   document.querySelector("#combat-player-audit").innerHTML = `
     <div class="combat-audit-metrics">
       <span><small>伤害 / 占比</small><strong>${Number(contribution.damage || 0).toLocaleString("zh-CN")} · ${Number(contribution.teamDamageShare || 0).toFixed(1)}%</strong></span>
+      <span><small>承伤 / 占比</small><strong>${Number(contribution.damageTaken || 0).toLocaleString("zh-CN")} · ${Number(contribution.teamDamageTakenShare || 0).toFixed(1)}%</strong></span>
       <span><small>技能 / 物品</small><strong>${Number(contribution.abilityCasts || 0)} / ${Number(contribution.itemUses || 0)}</strong></span>
       <span><small>控制 / 治疗</small><strong>${Number(contribution.controlSeconds || 0).toFixed(1)}s / ${Number(contribution.healing || 0)}</strong></span>
       <span><small>在场率</small><strong>${Number(contribution.presencePct || 0)}%</strong></span>
       <span><small>进入战斗</small><strong>+${Number(contribution.arrivalDelay || 0)}s</strong></span>
       <span><small>眼 / 真眼准备</small><strong>${Number(contribution.setupObservers || 0)} / ${Number(contribution.setupSentries || 0)}</strong></span>
+      <span><small>位置置信度</small><strong>${Number(contribution.role_confidence || hero.roleConfidence || 0)}%</strong></span>
     </div>
     ${gate ? `<div class="combat-gate-summary ${gateMeta.className}"><span><small>职责硬门禁</small><strong>${gateMeta.label}</strong></span><span><small>状态覆盖</small><strong>${Number(gate.coverage_pct || 0)}%</strong></span><span><small>有效机会</small><strong>${Number(gate.opportunity_seconds || 0)} 秒</strong></span><span class="combat-gate-blockers"><small>主要限制</small><strong>${blockers.length ? blockers.map(([key, count]) => `${RESPONSIBILITY_BLOCKER_NAMES[key] || key} ${count}`).join(" · ") : "无"}</strong></span></div>` : ""}
-    <div class="combat-audit-issues">${issues.length ? issues.map((issue) => `<span>${COMBAT_ISSUE_NAMES[issue] || issue}</span>`).join("") : gate && gate.status !== "passed" ? `<span class="clear">硬门禁未通过，本场不生成“没交技能”等责任结论</span>` : `<span class="clear">职责证据未发现明显缺口</span>`}</div>`;
+    <div class="combat-audit-issues">${issues.length ? issues.map((issue) => `<span>${COMBAT_ISSUE_NAMES[issue] || issue}</span>`).join("") : !roleReady ? `<span class="clear">位置置信度低于 65%，保留事实但不生成分位置责任结论</span>` : gate && gate.status !== "passed" ? `<span class="clear">硬门禁未通过，本场不生成“没交技能”等责任结论</span>` : `<span class="clear">职责证据未发现明显缺口</span>`}</div>`;
   const damage = (fight.damageBySlot?.[String(contribution.slot)] || []).map((row) => [abilityName(row.key), Number(row.value) || 0, row.key]);
   const largest = Math.max(1, ...damage.map((row) => row[1]));
   document.querySelector("#damage-breakdown").innerHTML = damage.length
@@ -3104,6 +3709,19 @@ function setCombatInspectorView(view) {
   document.querySelector("#combat-audit-pane")?.classList.toggle("active", state.combatInspectorView === "audit");
   document.querySelector("#combat-events-pane")?.classList.toggle("active", state.combatInspectorView === "events");
   document.querySelector("#combat-audit-score")?.classList.toggle("hidden", state.combatInspectorView === "events");
+}
+
+function setCombatMapExpanded(expanded) {
+  const panel = document.querySelector("#detail-combat");
+  const button = document.querySelector("#combat-map-expand");
+  if (!panel || !button) return;
+  panel.classList.toggle("map-expanded", expanded);
+  button.setAttribute("aria-pressed", String(expanded));
+  button.setAttribute("aria-label", expanded ? "退出大地图" : "放大战斗地图");
+  button.title = expanded ? "退出大地图" : "放大战斗地图";
+  button.innerHTML = `<i data-lucide="${expanded ? "minimize-2" : "maximize-2"}"></i>`;
+  refreshIcons(button);
+  window.requestAnimationFrame(() => resolveCombatMarkerCollisions(document.querySelector("#combat-map-players")));
 }
 
 function centerSelectedCombatRow(behavior = "smooth") {
@@ -3134,16 +3752,15 @@ function renderCombat(options = {}) {
   list.innerHTML = fights.length ? fights.map((fight) => {
     const contactStart = Number(fight.contact_start ?? fight.start);
     const contactEnd = Number(fight.contact_end ?? fight.end);
-    const classifier = fight.classification?.learning_applied
-      ? ` · 标注相似 ${Math.round(Number(fight.classification.similarity || 0) * 100)}%`
-      : Number(fight.classification?.confidence) > 0
-        ? ` · 自动 ${Number(fight.classification.confidence)}%`
-        : "";
+    const classifier = Number(fight.classification?.confidence) > 0
+      ? ` · 自动 ${Number(fight.classification.confidence)}%`
+      : "";
     const reason = (fight.classification?.reasons || []).map((item) => COMBAT_REASON_NAMES[item] || item)[0];
     const importance = fightImportanceMeta(fight);
     const importanceReason = (fight.importance?.reasons || []).map((item) => COMBAT_IMPORTANCE_REASON_NAMES[item] || item)[0];
     const duration = Math.max(0, Number(fight.contact_end_ms ?? contactEnd * 1000) - Number(fight.contact_start_ms ?? contactStart * 1000)) / 1000;
-    return `<button class="combat-row ${state.selectedCombatId === fight.id ? "active" : ""}" type="button" data-combat-id="${fight.id}"><time>${formatTime(contactStart)}<br>${formatTime(contactEnd)}</time><span><strong>${fight.title}<i class="combat-importance-badge ${importance.className}">${importance.label} ${Number(fight.importance?.score || 0)}</i></strong><small>${importanceReason || reason || fight.location} · 接触 ${duration.toFixed(duration < 10 ? 1 : 0)} 秒${classifier}</small></span><span class="result-pill ${fight.tone}">${fight.result}</span></button>`;
+    const compactResult = String(fight.result || "").match(/\d+\s*:\s*\d+/)?.[0] || fight.result;
+    return `<button class="combat-row ${state.selectedCombatId === fight.id ? "active" : ""}" type="button" data-combat-id="${fight.id}" title="${escapeHtml(fight.title)}"><time>${formatTime(contactStart)}<i>–</i>${formatTime(contactEnd)}</time><span class="combat-row-copy"><strong><span class="combat-row-title">${fight.title}</span><i class="combat-importance-badge ${importance.className}">${importance.label} ${Number(fight.importance?.score || 0)}</i></strong><small>${importanceReason || reason || fight.location} · 接触 ${duration.toFixed(duration < 10 ? 1 : 0)} 秒${classifier}</small></span><span class="result-pill ${fight.tone}" title="${escapeHtml(fight.result)}">${compactResult}</span></button>`;
   }).join("") : `<div class="coverage-empty"><i data-lucide="shield-off"></i><span>没有识别到战斗片段</span></div>`;
   document.querySelector("#combat-count").textContent = state.combatFilter === "all" ? `${fights.length} 场` : `${fights.length}/${baseFights.length}`;
   renderSelectedCombat();
@@ -3271,7 +3888,13 @@ function playerEvidenceText(evidence) {
   const [label, fallbackUnit] = PLAYER_EVIDENCE_META[evidence.key] || [evidence.key || "指标", evidence.unit || "count"];
   const unit = evidence.unit || fallbackUnit;
   const value = formatPlayerReportValue(evidence.value, unit);
-  const noCounterpart = new Set(["lane_confidence", "dead_seconds", "observer_wards", "sentry_wards", "dewards"]);
+  const noCounterpart = new Set([
+    "lane_confidence", "resource_review_windows", "resource_missed_windows",
+    "resource_estimated_loss", "lane_jungle_cycles", "fight_damage_share",
+    "kill_conversion", "fight_presence", "reviewable_fights", "passed_duty_fights",
+    "observer_wards", "sentry_wards", "dewards", "vision_score", "ward_detections",
+    "stack_team_value_estimate",
+  ]);
   const counterpart = Number(evidence.counterpart);
   const comparison = !noCounterpart.has(evidence.key) && Number.isFinite(counterpart)
     ? ` · 对位 ${formatPlayerReportValue(counterpart, unit)}` : "";
@@ -3315,12 +3938,14 @@ function renderPlayerReport() {
   const gradeTone = `grade-${String(report.grade || "c").toLowerCase()}`;
   const dimensionHtml = dimensions.map((dimension) => {
     const [name, brief] = PLAYER_DIMENSION_META[dimension.key] || [playerDimensionName(dimension.key), "位置职责指标"];
-    const score = Math.round(Number(dimension.score) || 0);
+    const rawScore = playerScoreNumber(dimension.score);
+    const available = dimension.available !== false && rawScore != null;
+    const score = available ? Math.round(rawScore) : null;
     const evidence = (dimension.evidence || []).slice(0, 2).map(playerEvidenceText).join(" · ");
-    return `<div class="player-report-dimension ${escapeHtml(dimension.status || "stable")}">
+    return `<div class="player-report-dimension ${escapeHtml(available ? dimension.status || "stable" : "missing")}">
       <span class="dimension-label"><strong>${escapeHtml(name)}</strong><small>${escapeHtml(brief)} · 权重 ${Number(dimension.weight) || 0}%</small></span>
-      <span class="dimension-meter"><i style="width:${clamp(score, 0, 100)}%"></i><small title="${escapeHtml(evidence)}">${escapeHtml(evidence)}</small></span>
-      <b>${score}</b>
+      <span class="dimension-meter"><i style="width:${available ? clamp(score, 0, 100) : 0}%"></i><small title="${escapeHtml(evidence)}">${escapeHtml(evidence || "当前 Replay 证据不足，本维度不计入总分")}</small></span>
+      <b>${available ? score : "待补"}</b>
     </div>`;
   }).join("");
   const phaseHtml = phases.map((phase) => {
@@ -3344,6 +3969,12 @@ function renderPlayerReport() {
     <span class="player-report-model"><i data-lucide="braces"></i>单场 Replay · 位置模型 v1</span>
     <span class="player-overall-score ${gradeTone}"><small>本场履职分</small><strong>${overall}</strong><b>${escapeHtml(report.grade || "-")}</b></span>
   </header>
+  <nav class="player-report-tabs compact-panel-tabs" aria-label="玩家报告模块">
+    <button type="button" data-player-report-view="facts" role="tab"><i data-lucide="activity"></i><span>基础数据</span></button>
+    <button type="button" data-player-report-view="dimensions" role="tab"><i data-lucide="radar"></i><span>位置评分</span></button>
+    <button type="button" data-player-report-view="phases" role="tab"><i data-lucide="chart-no-axes-column-increasing"></i><span>阶段表现</span></button>
+    <button type="button" data-player-report-view="insights" role="tab"><i data-lucide="list-checks"></i><span>优缺点</span></button>
+  </nav>
   <div class="player-report-grid">
     <section class="player-report-section player-report-facts">
       <header><span>操作与产出</span><small>Replay 事实</small></header>
@@ -3363,7 +3994,7 @@ function renderPlayerReport() {
       <div class="player-report-dimension-list">${dimensionHtml}</div>
     </section>
     <section class="player-report-section player-report-phases">
-      <header><span>分阶段表现</span><small>同位置对位基准</small></header>
+      <header><span class="player-report-phase-title">分阶段表现</span><span class="player-report-insights-title">优缺点</span><small>同位置对位基准</small></header>
       <div class="player-phase-list">${phaseHtml}</div>
       <div class="player-report-insights">
         <div><small>优势证据</small>${insightHtml(strengths, "strength")}</div>
@@ -3372,8 +4003,1651 @@ function renderPlayerReport() {
     </section>
   </div>
   <footer class="player-report-caveat"><i data-lucide="info"></i><span>分数是本场同位置相对履职评估，不代表段位百分位；英雄专属任务与施法机会仍需结合战斗时间轴复核。</span></footer>`;
+  setPlayerReportView(state.playerReportView);
   installImageFallback(root, heroImage("unknown"));
   refreshIcons(root);
+}
+
+function playerScoreNumber(value) {
+  if (value == null || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function canonicalPlayerScoreDimensionKey(key) {
+  const normalized = String(key || "");
+  return Object.keys(PLAYER_SCORE_DIMENSION_ALIASES)
+    .find((candidate) => PLAYER_SCORE_DIMENSION_ALIASES[candidate].includes(normalized)) || null;
+}
+
+function playerScoreEvidenceLevel(level) {
+  const values = {
+    full: { label: "证据完整", className: "fact" },
+    available: { label: "证据完整", className: "fact" },
+    derived: { label: "程序推导", className: "aggregate" },
+    partial: { label: "部分证据", className: "aggregate" },
+    gated: { label: "门禁评分", className: "derived" },
+    missing: { label: "证据不足", className: "insufficient" },
+    invalid: { label: "证据无效", className: "insufficient" },
+  };
+  return values[level] || values.partial;
+}
+
+function playerScoreAdviceModule(advice) {
+  const explicit = advice?.jump_target?.module;
+  if (explicit) return explicit;
+  const category = String(advice?.category || advice?.id || "");
+  if (category.includes("lane")) return "development";
+  if (category.includes("farm") || category.includes("route") || category.includes("timing")) return "farm";
+  if (category.includes("vision") || category.includes("ward")) return "vision";
+  if (category.includes("combat") || category.includes("death") || category.includes("buyback")) return "combat";
+  if (category.includes("objective") || category.includes("tempo")) return "map";
+  return "timeline";
+}
+
+function playerScoreImpactText(impact) {
+  if (!impact) return "影响范围尚未量化";
+  if (typeof impact === "string") return impact;
+  const parts = [];
+  const gold = impact.gold_range || impact.goldRange;
+  const delay = impact.item_delay_seconds_range || impact.itemDelaySecondsRange;
+  if (Array.isArray(gold) && gold.length >= 2) parts.push(`约 ${Number(gold[0]) || 0}-${Number(gold[1]) || 0} 金`);
+  if (Array.isArray(delay) && delay.length >= 2) parts.push(`装备延后 ${Number(delay[0]) || 0}-${Number(delay[1]) || 0} 秒`);
+  if (impact.target) parts.push(String(impact.target));
+  return parts.join(" · ") || "影响范围尚未量化";
+}
+
+function playerScoreMetricReference(model, reference) {
+  const reportMetrics = Array.isArray(model.report?.metrics) ? model.report.metrics : [];
+  const source = typeof reference === "object" && reference
+    ? reference
+    : model.evidenceIndex?.[reference] || reportMetrics.find((metric) => String(metric.id) === String(reference));
+  if (!source) return null;
+  const key = source.key || source.metric || source.id || "";
+  const label = source.label || source.title || PLAYER_EVIDENCE_META[key]?.[0] || "关键指标";
+  if (source.display_value != null) return { label, value: String(source.display_value) };
+  if (source.text != null) return { label, value: String(source.text) };
+  if (source.value == null) return null;
+  return {
+    label,
+    value: typeof source.value === "string"
+      ? source.value
+      : formatPlayerReportValue(source.value, source.unit || PLAYER_EVIDENCE_META[key]?.[1] || "count"),
+  };
+}
+
+function playerScoreModel(hero = safeHero(state.selectedHeroSlot), { buildBrief = true } = {}) {
+  const report = hero.report || null;
+  const scoreCard = report?.score_card || report || {};
+  const position = clamp(Number(report?.position || hero.position) || 0, 0, 5);
+  const weights = PLAYER_SCORE_ROLE_WEIGHTS[position] || PLAYER_SCORE_ROLE_WEIGHTS[3];
+  const rawDimensions = Array.isArray(scoreCard.dimensions)
+    ? scoreCard.dimensions : Array.isArray(report?.dimensions) ? report.dimensions : [];
+  const rawByKey = new Map(rawDimensions.map((dimension) => [String(dimension.key || ""), dimension]));
+  const confidence = playerScoreNumber(scoreCard.confidence ?? report?.confidence);
+  const overallScore = playerScoreNumber(scoreCard.overall_score ?? report?.overall_score);
+  const roleConfidence = playerScoreNumber(report?.role_confidence ?? hero.roleConfidence ?? hero.facts?.role_confidence);
+  const canShowOverall = overallScore != null && confidence != null && confidence >= 65 && roleConfidence != null && roleConfidence >= 65;
+  const evidenceLevel = scoreCard.evidence_level || report?.evidence_level || (report ? "partial" : "missing");
+  const dimensions = Object.entries(PLAYER_SCORE_DIMENSION_META).map(([key, meta]) => {
+    const sourceKey = PLAYER_SCORE_DIMENSION_ALIASES[key].find((candidate) => rawByKey.has(candidate));
+    const source = sourceKey ? rawByKey.get(sourceKey) : null;
+    const score = playerScoreNumber(source?.score);
+    return {
+      key,
+      ...meta,
+      sourceKey,
+      source,
+      score,
+      weight: Number(source?.weight ?? weights[key]) || 0,
+      roleWeight: Number(weights[key]) || 0,
+      effectiveWeight: playerScoreNumber(source?.effective_weight),
+      confidence: playerScoreNumber(source?.confidence) ?? (score == null ? null : confidence),
+      status: score == null ? "missing" : source?.status || (score >= 75 ? "strength" : score < 55 ? "improve" : "stable"),
+      available: source?.available !== false && score != null,
+      evidenceLevel: source?.evidence_level || (score == null ? "missing" : evidenceLevel),
+      missing: Array.isArray(source?.missing) ? source.missing : [],
+      evidence: Array.isArray(source?.evidence) ? source.evidence : [],
+      metricRefs: source?.metric_refs || [],
+      positiveRefs: source?.positive_refs || [],
+      negativeRefs: source?.negative_refs || [],
+      behaviorComponents: Array.isArray(source?.behavior_components) ? source.behavior_components : [],
+      scoreImpact: playerScoreNumber(source?.score_impact),
+    };
+  });
+  const dimensionForRawKey = (rawKey) => {
+    const canonical = canonicalPlayerScoreDimensionKey(rawKey);
+    return dimensions.find((dimension) => dimension.key === canonical) || null;
+  };
+  const rawStrengths = Array.isArray(report?.strengths) ? report.strengths : [];
+  const strengths = rawStrengths.map((strength, index) => {
+    if (typeof strength === "object" && strength) {
+      const dimension = dimensionForRawKey(strength.key || strength.dimension_key);
+      return {
+        id: strength.id || `strength-${index}`,
+        title: strength.title || dimension?.label || "稳定优势",
+        evidenceRefs: strength.evidence_refs || [],
+        dimensionKey: dimension?.key || null,
+        score: dimension?.score ?? null,
+      };
+    }
+    const dimension = dimensionForRawKey(strength);
+    return dimension ? { id: `strength-${dimension.key}`, title: dimension.label, evidenceRefs: dimension.metricRefs, dimensionKey: dimension.key, score: dimension.score } : null;
+  }).filter(Boolean).slice(0, 2);
+  if (!strengths.length) {
+    dimensions.filter((dimension) => dimension.score != null).sort((left, right) => right.score - left.score).slice(0, 2)
+      .forEach((dimension) => strengths.push({ id: `strength-${dimension.key}`, title: dimension.label, evidenceRefs: dimension.metricRefs, dimensionKey: dimension.key, score: dimension.score }));
+  }
+  const rawInsights = Array.isArray(report?.insights) ? report.insights : [];
+  const rootCauses = Array.isArray(report?.root_causes) ? report.root_causes : [];
+  const rootCauseById = new Map(rootCauses.map((rootCause) => [String(rootCause.id || ""), rootCause]));
+  const rawAdvice = Array.isArray(report?.advice)
+    ? report.advice
+    : rawInsights.filter((item) => ["improvement", "problem", "priority"].includes(String(item?.kind || "")));
+  const advice = rawAdvice.map((item, index) => ({
+    ...item,
+    id: item.id || `advice-${index}`,
+    title: item.title || "复核本场决策",
+    severity: item.severity || "review",
+    confidence: playerScoreNumber(item.confidence),
+    timeStart: playerScoreNumber(item.time_start ?? item.timeStart ?? item.jump_target?.time),
+    timeEnd: playerScoreNumber(item.time_end ?? item.timeEnd),
+    module: playerScoreAdviceModule(item),
+    impactText: playerScoreImpactText(item.impact),
+    rootCauseId: item.root_cause_id || null,
+    rootCause: rootCauseById.get(String(item.root_cause_id || "")) || null,
+  })).slice(0, 3);
+  const phases = (Array.isArray(report?.phase_reviews) ? report.phase_reviews : report?.phase_scores || []).map((phase, index) => ({
+    ...phase,
+    id: phase.id || `${phase.phase || "phase"}-${index}`,
+    start: playerScoreNumber(phase.start) ?? ({ laning: 0, mid_game: 600, late_game: 1200 }[phase.phase] ?? 0),
+    end: playerScoreNumber(phase.end) ?? ({ laning: 600, mid_game: 1200, late_game: MATCH_DURATION }[phase.phase] ?? MATCH_DURATION),
+    score: playerScoreNumber(phase.score),
+    confidence: playerScoreNumber(phase.confidence) ?? confidence,
+  }));
+  const availableDimensions = dimensions.filter((dimension) => dimension.score != null);
+  const strongest = [...availableDimensions].sort((left, right) => right.score - left.score)[0];
+  const weakest = [...availableDimensions].sort((left, right) => left.score - right.score)[0];
+  const summary = {
+    headline: report?.brief?.verdict || report?.summary?.headline || (strongest && weakest
+      ? `${strongest.label}是本场当前最高项，${weakest.label}需要结合时间证据优先复核。`
+      : "当前分析包尚未形成完整的十维玩家评分。"),
+    nextMatchFocus: report?.brief?.next_match_focus || report?.summary?.next_match_focus || "",
+  };
+  const model = {
+    hero,
+    report,
+    hasReport: Boolean(report),
+    legacy: Boolean(report && report.model !== "player-report/3.0"),
+    model: report?.model || "player-report/1.1",
+    position,
+    role: PLAYER_ROLE_META[position] || { label: positionLabel(position), brief: "职责证据待补全" },
+    roleConfidence,
+    counterpartSlot: Number(report?.counterpart_slot ?? matchupSlotFor(hero.slot)),
+    confidence,
+    canShowOverall,
+    evidenceLevel,
+    overallScore,
+    grade: canShowOverall ? scoreCard.grade || report?.grade || "-" : null,
+    dimensions,
+    strengths,
+    advice,
+    phases,
+    summary,
+    rawInsights,
+    rootCauses,
+    rootCauseById,
+    rootCauseSummary: scoreCard.root_cause_summary || null,
+    storyNodes: Array.isArray(report?.story_nodes) ? report.story_nodes : [],
+    trainingPlan: Array.isArray(report?.training_plan) ? report.training_plan : [],
+    evidenceIndex: report?.evidence_index && typeof report.evidence_index === "object" ? report.evidence_index : {},
+    caveats: report?.caveats || [],
+  };
+  if (buildBrief) {
+    model.brief = playerScoreBriefModel(model);
+    if (!model.summary.nextMatchFocus) model.summary.nextMatchFocus = model.brief.focus;
+    if (!report?.brief?.verdict && model.brief.verdict) model.summary.headline = model.brief.verdict;
+  }
+  return model;
+}
+
+function playerScoreFallbackDimensionFacts(model, key) {
+  const hero = model.hero;
+  const facts = hero.facts || {};
+  const review = laneReviewForSlot(hero.slot);
+  const observerWards = Number(facts.aggregate_observer_wards ?? facts.observer_wards) || 0;
+  const sentryWards = Number(facts.aggregate_sentry_wards ?? facts.sentry_wards) || 0;
+  const values = {
+    lane_execution: [["补刀 / 反补", `${hero.lh ?? "--"} / ${hero.denies ?? "--"}`], ["对线模型", review ? `${signedValue(review.score)} · ${Number(review.confidence || 0)}%` : "待生成"]],
+    farm_efficiency: [["GPM / 净值", `${hero.gpm ?? "--"} / ${Number(hero.networth || 0).toLocaleString("zh-CN")}`], ["线上 / 野区金钱", `${Number(facts.lane_gold || 0).toLocaleString("zh-CN")} / ${Number(facts.neutral_gold || 0).toLocaleString("zh-CN")}`]],
+    resource_decision: [["路线复核窗口", `${farmDiagnosticsForHero(hero.slot).length} 个`], ["可复核漏刀", `${Number(facts.lane_opportunity_summary?.reviewable_misses || 0)} 个`]],
+    map_tempo: [["TP 使用", `${Number(facts.teleport_uses || 0)} 次`], ["神符拾取", `${Number(facts.aggregate_rune_pickups || facts.rune_pickups || 0)} 次`]],
+    combat_output: [["英雄伤害", Number(hero.damage || facts.hero_damage || 0).toLocaleString("zh-CN")], ["战斗参与率", formatPlayerReportValue(facts.teamfight_participation, "percent")]],
+    combat_duty: [["控制时长", formatPlayerReportValue(facts.control_seconds, "seconds")], ["参与战斗", `${playerScoreFightsForSlot(hero.slot).length} 场`]],
+    survival_risk: [["阵亡 / 死亡时间", `${hero.deaths ?? "--"} / ${formatPlayerReportValue(facts.dead_seconds, "seconds")}`], ["买活", `${Number(facts.buyback_count || 0)} 次`]],
+    objective_conversion: [["建筑伤害", Number(facts.tower_damage || 0).toLocaleString("zh-CN")], ["塔 / 肉山击杀", `${Number(facts.tower_kills || 0)} / ${Number(facts.roshan_kills || 0)}`]],
+    vision_team: [["假眼 / 真眼", `${observerWards} / ${sentryWards}`], ["排眼", `${Number(facts.dewards || 0)} 次`]],
+    observable_execution: [["APM", formatPlayerReportValue(facts.actions_per_min, "per_minute")], ["技能 / 物品使用", `${Number(facts.ability_casts || 0)} / ${Number(facts.item_uses || 0)}`], ["TP 使用", `${Number(facts.teleport_uses || 0)} 次`]],
+  };
+  return (values[key] || []).filter(([, value]) => value !== "--" && !String(value).startsWith("-- /"));
+}
+
+function playerScoreBriefStatus(score, fallback = "missing") {
+  if (score == null || !Number.isFinite(Number(score))) return fallback;
+  if (Number(score) >= 68) return "stable";
+  if (Number(score) < 52) return "issue";
+  return "even";
+}
+
+function playerScoreBriefDomains(model) {
+  const v3Domains = Array.isArray(model.report?.brief?.domain_scores) ? model.report.brief.domain_scores : [];
+  if (v3Domains.length) {
+    return Object.entries(PLAYER_SCORE_DOMAIN_META).map(([key, meta]) => {
+      const source = v3Domains.find((domain) => String(domain.key) === key) || {};
+      return {
+        key,
+        ...meta,
+        score: playerScoreNumber(source.score),
+        confidence: playerScoreNumber(source.confidence),
+      };
+    });
+  }
+  return Object.entries(PLAYER_SCORE_DOMAIN_META).map(([key, meta]) => {
+    const dimensions = meta.keys.map((dimensionKey) => model.dimensions.find((dimension) => dimension.key === dimensionKey))
+      .filter((dimension) => dimension?.score != null);
+    const weight = dimensions.reduce((sum, dimension) => sum + Math.max(1, Number(dimension.roleWeight || 0)), 0);
+    const score = weight ? dimensions.reduce((sum, dimension) => sum + Number(dimension.score) * Math.max(1, Number(dimension.roleWeight || 0)), 0) / weight : null;
+    const confidences = dimensions.map((dimension) => playerScoreNumber(dimension.confidence)).filter((value) => value != null);
+    return {
+      key,
+      ...meta,
+      score,
+      confidence: confidences.length ? confidences.reduce((sum, value) => sum + value, 0) / confidences.length : null,
+    };
+  });
+}
+
+function playerScoreBriefV3Stories(model) {
+  const refs = Array.isArray(model.report?.brief?.story) ? model.report.brief.story : [];
+  const nodes = refs.length
+    ? refs.map((ref) => model.storyNodes.find((node) => String(node.id) === String(ref))).filter(Boolean)
+    : model.storyNodes.slice(0, 3);
+  return nodes.slice(0, 3).map((node, index) => {
+    const phase = String(node.phase || "");
+    const module = phase === "laning" ? "development"
+      : phase.includes("farm") || phase.includes("resource") ? "farm"
+        : phase.includes("vision") ? "vision" : phase.includes("fight") ? "combat" : "timeline";
+    const verdict = ["advantage", "even", "disadvantage", "stable", "issue", "missing"].includes(node.verdict)
+      ? node.verdict : playerScoreBriefStatus(node.score);
+    const metricSources = Array.isArray(node.metrics) && node.metrics.length
+      ? node.metrics : Array.isArray(node.key_metrics) ? node.key_metrics : [];
+    const metrics = metricSources.map((metric) => playerScoreMetricReference(model, metric)).filter(Boolean).slice(0, 2);
+    return {
+      id: node.id || `story-v3-${index}`,
+      phase: node.phase || `phase-${index}`,
+      range: `${formatTime(node.start || 0)}-${formatTime(node.end || MATCH_DURATION)}`,
+      title: node.title || PLAYER_SCORE_PHASE_META[node.phase] || "比赛阶段",
+      verdict,
+      summary: node.summary || "该阶段已有结构化结论，打开证据栏查看来源。",
+      metrics,
+      time: playerScoreNumber(node.highlight_time ?? node.start) ?? 0,
+      confidence: playerScoreNumber(node.confidence) ?? model.confidence,
+      module: node.jump_target?.module || module,
+      evidenceType: "brief-story",
+      evidenceId: node.id || `story-v3-${index}`,
+      evidenceRefs: node.evidence_refs || [],
+    };
+  });
+}
+
+function playerScoreBriefLegacyStories(model) {
+  const review = laneReviewForSlot(model.hero.slot);
+  const position = Number(model.position);
+  const supportRole = position >= 4;
+  const checkpoints = (review?.checkpoints || []).slice().sort((left, right) => Number(left.time || 0) - Number(right.time || 0));
+  const lanePoint = checkpoints.find((point) => Number(point.time) >= 595) || checkpoints.at(-1);
+  const laneVerdict = review?.verdict === "advantage" ? "advantage"
+    : review?.verdict === "disadvantage" ? "disadvantage"
+      : review ? "even" : "missing";
+  const supportRoute = review?.support_route || {};
+  const supportOutcome = playerScoreSupportRouteOutcome(supportRoute);
+  const laneMetrics = lanePoint ? supportRole ? [
+    { label: "辅助经验差", value: signedValue(lanePoint.support_xp_diff) },
+    { label: "离线 / 核心阵亡", value: `${formatTime(supportRoute.away_seconds || 0)} / ${Number(supportRoute.core_deaths_away || 0)}` },
+  ] : [
+    { label: "核心补刀差", value: signedValue(lanePoint.last_hits_diff) },
+    { label: "核心等级差", value: lanePoint.level_diff == null ? "--" : signedValue(lanePoint.level_diff, " 级") },
+  ] : [
+    { label: "补刀 / 反补", value: `${model.hero.lh ?? "--"} / ${model.hero.denies ?? "--"}` },
+    { label: "对线置信度", value: review ? `${Number(review.confidence || 0)}%` : "--" },
+  ];
+  const laneSummary = lanePoint
+    ? supportRole
+      ? `10 分钟本路核心经验差 ${signedValue(lanePoint.core_xp_diff ?? lanePoint.xp_diff)}；你离线 ${formatTime(supportRoute.away_seconds || 0)}，期间核心阵亡 ${Number(supportRoute.core_deaths_away || 0)} 次，离线收益为${supportOutcome.summary}。`
+      : `10 分钟核心补刀差 ${signedValue(lanePoint.last_hits_diff)}，等级差 ${lanePoint.level_diff == null ? "--" : signedValue(lanePoint.level_diff, " 级")}，经验差 ${signedValue(lanePoint.core_xp_diff ?? lanePoint.xp_diff)}。`
+    : "当前 Replay 缺少 3 / 5 / 7 / 10 分钟对线检查点，因此不判断线优线劣。";
+
+  const fights = playerScoreFightsForSlot(model.hero.slot).slice().sort((left, right) => Number(left.contact_start ?? left.start) - Number(right.contact_start ?? right.start));
+  const midFights = fights.filter((fight) => {
+    const time = Number(fight.contact_start ?? fight.start);
+    return time >= 600 && time < 1200;
+  });
+  const midContributions = midFights.map((fight) => ({
+    fight,
+    contribution: fightContributions(fight).find((row) => Number(row.slot) === Number(model.hero.slot)),
+  })).filter((entry) => entry.contribution);
+  const midDamage = midContributions.reduce((sum, entry) => sum + Number(entry.contribution.damage || 0), 0);
+  const midPresence = midContributions.length
+    ? midContributions.reduce((sum, entry) => sum + Number(entry.contribution.presencePct || 0), 0) / midContributions.length : null;
+  const midPhase = model.phases.find((phase) => phase.phase === "mid_game")
+    || model.phases.find((phase) => Number(phase.start) >= 600 && Number(phase.start) < 1200);
+  const midVerdict = midPresence != null && midPresence >= 70 && midFights.length >= 2
+    ? "stable" : playerScoreBriefStatus(midPhase?.score);
+  const midSummary = midFights.length
+    ? `10-20 分钟参与 ${midFights.length} 场有效冲突，已归属伤害 ${midDamage.toLocaleString("zh-CN")}，平均战场存在率 ${midPresence == null ? "--" : `${midPresence.toFixed(0)}%`}。`
+    : "10-20 分钟没有足够的个人战斗归属，当前只展示阶段聚合事实。";
+
+  const latePhase = model.phases.find((phase) => phase.phase === "late_game")
+    || model.phases.find((phase) => Number(phase.start) >= 1200);
+  const post20Diagnostics = supportRole ? [] : farmDiagnosticsForHero(model.hero.slot).filter((diagnostic) => Number(diagnostic.time || 0) >= 1200);
+  const reviewableRoutes = post20Diagnostics.filter((diagnostic) => diagnostic.recommendation_enabled && Number(diagnostic.confidence || 0) >= 70);
+  const lateFights = fights.filter((fight) => Number(fight.contact_start ?? fight.start) >= 1200);
+  const lateWards = supportRole
+    ? WARD_RECORDS.filter((ward) => Number(ward.playerSlot) === Number(model.hero.slot) && Number(ward.placedAt || 0) >= 1200)
+    : [];
+  const lateVerdict = reviewableRoutes.length ? "issue" : playerScoreBriefStatus(latePhase?.score);
+  const lateFacts = [];
+  if (latePhase?.kills != null || latePhase?.deaths != null || latePhase?.assists != null) {
+    lateFacts.push(`阶段 K/D/A ${latePhase.kills ?? "--"}/${latePhase.deaths ?? "--"}/${latePhase.assists ?? "--"}`);
+  }
+  lateFacts.push(`参与战斗 ${lateFights.length} 场`);
+  lateFacts.push(supportRole ? `布置眼位 ${lateWards.length} 个` : `路线复核 ${reviewableRoutes.length} 个`);
+  const lateSummary = supportRole
+    ? `20 分钟后${lateFacts.join("，")}。辅助位置按战斗职责、目标前视野和团队功能复核，不把核心打钱路线作为主责。`
+    : `20 分钟后${lateFacts.join("，")}。${reviewableRoutes.length ? "存在通过视野与路线门禁的替代资源选择。" : "当前没有达到高置信度门槛的路线问题。"}`;
+
+  const firstMidFight = midFights[0];
+  const firstLateEvidence = supportRole ? lateFights[0] || lateWards[0] : reviewableRoutes[0] || lateFights[0];
+  return [
+    {
+      id: "story:legacy-lane",
+      phase: "laning",
+      range: "00:00-10:00",
+      title: "对线期",
+      verdict: laneVerdict,
+      summary: laneSummary,
+      metrics: laneMetrics,
+      time: Number(lanePoint?.time || 600),
+      confidence: playerScoreNumber(review?.confidence),
+      module: "development",
+      evidenceType: lanePoint ? "lane" : "phase",
+      evidenceId: lanePoint ? String(lanePoint.time) : model.phases.find((phase) => phase.phase === "laning")?.id,
+      evidenceRefs: [],
+    },
+    {
+      id: "story:legacy-mid",
+      phase: "mid_game",
+      range: "10:00-20:00",
+      title: "转线与节奏",
+      verdict: midVerdict,
+      summary: midSummary,
+      metrics: [
+        { label: "有效冲突", value: `${midFights.length} 场` },
+        { label: "平均在场", value: midPresence == null ? "--" : `${midPresence.toFixed(0)}%` },
+      ],
+      time: Number(firstMidFight?.contact_start ?? firstMidFight?.start ?? midPhase?.start ?? 600),
+      confidence: playerScoreNumber(midPhase?.confidence) ?? model.confidence,
+      module: firstMidFight ? "combat" : "timeline",
+      evidenceType: firstMidFight ? "combat" : "phase",
+      evidenceId: firstMidFight?.id || midPhase?.id,
+      evidenceRefs: [],
+    },
+    {
+      id: "story:legacy-late",
+      phase: "late_game",
+      range: `20:00-${formatTime(MATCH_DURATION)}`,
+      title: "中后期",
+      verdict: lateVerdict,
+      summary: lateSummary,
+      metrics: [
+        { label: "战斗片段", value: `${lateFights.length} 场` },
+        { label: supportRole ? "20+ 眼位" : "路线复核", value: `${supportRole ? lateWards.length : reviewableRoutes.length} 个` },
+      ],
+      time: Number(firstLateEvidence?.time ?? firstLateEvidence?.placedAt ?? firstLateEvidence?.contact_start ?? firstLateEvidence?.start ?? latePhase?.start ?? 1200),
+      confidence: playerScoreNumber(firstLateEvidence?.confidence) ?? playerScoreNumber(latePhase?.confidence) ?? model.confidence,
+      module: supportRole ? lateFights[0] ? "combat" : lateWards[0] ? "vision" : "timeline" : reviewableRoutes[0] ? "farm" : lateFights[0] ? "combat" : "timeline",
+      evidenceType: supportRole ? lateFights[0] ? "combat" : lateWards[0] ? "vision" : "phase" : reviewableRoutes[0] ? "farm" : lateFights[0] ? "combat" : "phase",
+      evidenceId: reviewableRoutes[0]?.id || lateFights[0]?.id || latePhase?.id,
+      evidenceRefs: [],
+    },
+  ];
+}
+
+function playerScoreBriefV3Insights(model, kind) {
+  const briefRefs = kind === "strength"
+    ? model.report?.brief?.strengths || []
+    : model.report?.brief?.priorities || [];
+  const allowedKinds = kind === "strength" ? new Set(["strength", "positive"]) : new Set(["improvement", "problem", "priority"]);
+  const sources = briefRefs.length
+    ? briefRefs.map((ref) => model.rawInsights.find((insight) => String(insight.id) === String(ref))).filter(Boolean)
+    : model.rawInsights.filter((insight) => allowedKinds.has(String(insight.kind || "")));
+  return sources.filter((insight) => kind === "strength"
+    ? Number(insight.confidence || 0) >= 70
+    : Number(insight.confidence || 0) >= 55 && (insight.evidence_refs || []).length && insight.time_start != null
+  ).slice(0, kind === "strength" ? 2 : 3).map((insight, index) => ({
+    id: insight.id || `${kind}-v3-${index}`,
+    kind,
+    category: insight.category || "timeline",
+    title: insight.title || (kind === "strength" ? "稳定行为" : "优先问题"),
+    time: playerScoreNumber(insight.time_start),
+    timeEnd: playerScoreNumber(insight.time_end),
+    location: insight.location || "",
+    fact: insight.fact || "",
+    judgment: insight.judgment || "",
+    impact: playerScoreImpactText(insight.impact),
+    action: insight.action || "",
+    confidence: playerScoreNumber(insight.confidence),
+    module: insight.jump_target?.module || playerScoreAdviceModule(insight),
+    evidenceRefs: insight.evidence_refs || [],
+    gateStatus: insight.gate_status || "passed",
+    rootCauseId: insight.root_cause_id || null,
+    rootCause: model.rootCauseById?.get(String(insight.root_cause_id || "")) || null,
+  }));
+}
+
+function playerScoreBriefLegacyStrengths(model) {
+  const strengths = [];
+  const review = laneReviewForSlot(model.hero.slot);
+  const points = (review?.checkpoints || []).slice().sort((left, right) => Number(left.time || 0) - Number(right.time || 0));
+  const first = points[0];
+  const best = points.reduce((current, point) => !current || Number(point.score) > Number(current.score) ? point : current, null);
+  if (Number(model.position) <= 3 && first && best && Number(best.time) > Number(first.time) && Number(best.score) - Number(first.score) >= 15 && Number(review.confidence || 0) >= 70) {
+    strengths.push({
+      id: "strength:lane-recovery",
+      kind: "strength",
+      category: "lane",
+      title: "对线中段追回差距",
+      time: Number(best.time),
+      fact: `${formatTime(first.time)} 到 ${formatTime(best.time)}，线况分从 ${signedValue(first.score)} 回升到 ${signedValue(best.score)}，补刀差变为 ${signedValue(best.last_hits_diff)}。`,
+      judgment: "前几分钟的劣势没有继续线性扩大。",
+      impact: "为十分钟前保留了继续对线和转线的空间。",
+      action: "保持被压制后先稳住经验和补刀，再寻找换血窗口。",
+      confidence: Number(review.confidence || 0),
+      module: "development",
+      evidenceRefs: [],
+    });
+  }
+  const supportRouteStrength = playerScoreSupportLaneStrength(model, review);
+  if (supportRouteStrength) strengths.push(supportRouteStrength);
+  const midFights = playerScoreFightsForSlot(model.hero.slot).filter((fight) => {
+    const time = Number(fight.contact_start ?? fight.start);
+    return time >= 600 && time < 1200;
+  });
+  const contributions = midFights.map((fight) => ({
+    fight,
+    row: fightContributions(fight).find((item) => Number(item.slot) === Number(model.hero.slot)),
+  })).filter((entry) => entry.row);
+  const averagePresence = contributions.length
+    ? contributions.reduce((sum, entry) => sum + Number(entry.row.presencePct || 0), 0) / contributions.length : 0;
+  if (contributions.length >= 2 && averagePresence >= 70) {
+    const damage = contributions.reduce((sum, entry) => sum + Number(entry.row.damage || 0), 0);
+    strengths.push({
+      id: "strength:mid-fight-presence",
+      kind: "strength",
+      category: "combat",
+      title: "中期保持战场参与",
+      time: Number(contributions[0].fight.contact_start ?? contributions[0].fight.start),
+      fact: `10-20 分钟参与 ${contributions.length} 场有效冲突，平均战场存在率 ${averagePresence.toFixed(0)}%，归属伤害 ${damage.toLocaleString("zh-CN")}。`,
+      judgment: "关键转线阶段没有长期脱离队伍行动。",
+      impact: "队伍在中期冲突中能够持续获得你的职责贡献。",
+      action: "继续保持关键装备完成后及时同步队伍位置。",
+      confidence: Math.min(90, Number(model.confidence || 70)),
+      module: "combat",
+      evidenceRefs: [],
+    });
+  }
+  const wards = WARD_RECORDS.filter((ward) => Number(ward.playerSlot) === Number(model.hero.slot));
+  const scored = wards.map((ward) => playerScoreNumber(ward.score)).filter((score) => score != null);
+  const wardAverage = scored.length ? scored.reduce((sum, score) => sum + score, 0) / scored.length : null;
+  if (wards.length >= 2 && wardAverage != null && wardAverage >= 60 && strengths.length < 2) {
+    strengths.push({
+      id: "strength:vision-lifecycle",
+      kind: "strength",
+      category: "vision",
+      title: "眼位生命周期有效",
+      time: Number(wards[0].placedAt || 0),
+      fact: `本场放置 ${wards.length} 个眼位，平均评分 ${wardAverage.toFixed(0)}，累计发现敌方 ${wards.reduce((sum, ward) => sum + Number(ward.detections || 0), 0)} 次。`,
+      judgment: "视野投入产生了可确认的信息收益。",
+      impact: "为队伍进入区域和判断敌方动向提供信息。",
+      action: "继续在目标刷新前布置可长期存活的入口视野。",
+      confidence: 75,
+      module: "vision",
+      evidenceRefs: [],
+    });
+  }
+  return strengths.slice(0, 2);
+}
+
+function playerScoreRoleTraining(position) {
+  return {
+    1: { id: "training:role-carry", trigger: "20 分钟后准备处理越河兵线时", action: "先确认两名敌方核心的位置和最近消失时间", successCheck: "没有信息时改收己方半区资源" },
+    2: { id: "training:role-mid", trigger: "清完中路兵线且下一波神符小于 45 秒时", action: "保留移动和技能资源向一侧符点靠近", successCheck: "神符刷新时已经占据一侧河道" },
+    3: { id: "training:role-offlane", trigger: "跳刀或首件先手装完成后", action: "先与一名能跟伤害的队友同步位置再开战", successCheck: "先手后 3 秒内至少一名队友进入战场" },
+    4: { id: "training:role-roamer", trigger: "离开线上超过 20 秒时", action: "确保路线至少创造控符、叠野、视野或有效支援其中一项", successCheck: "离线收益可以在时间线中确认" },
+    5: { id: "training:role-support", trigger: "关键目标刷新前 60 秒", action: "先布置观察守卫并携带反隐", successCheck: "开战前团队能够确认至少一个入口" },
+  }[Number(position)] || { id: "training:role-review", trigger: "进入下一段比赛阶段前", action: "先确认当前职责和队友位置", successCheck: "行动与当前职责保持一致" };
+}
+
+function playerScoreSupportRouteOutcome(route = {}) {
+  const rows = [
+    ["控符", Number(route.runes || 0)],
+    ["叠野", Number(route.stacks || 0)],
+    ["视野", Number(route.wards || 0)],
+    ["离线助攻", Number(route.away_assists || 0)],
+    ["离线击杀", Number(route.away_kills || 0)],
+  ];
+  const visible = rows.filter(([, value]) => value > 0);
+  return {
+    count: visible.reduce((sum, [, value]) => sum + value, 0),
+    summary: visible.length ? visible.map(([label, value]) => `${label} ${value}`).join("、") : "未记录控符、叠野、视野或离线击杀助攻",
+  };
+}
+
+function playerScoreSupportLaneStrength(model, review) {
+  const position = Number(model.position);
+  if (position < 4 || !review || Number(review.confidence || 0) < 70) return null;
+  const route = review.support_route || {};
+  const awaySeconds = Number(route.away_seconds || 0);
+  const coreDeathsAway = Number(route.core_deaths_away || 0);
+  const outcome = playerScoreSupportRouteOutcome(route);
+  if (awaySeconds < 30 || coreDeathsAway > 0 || outcome.count < 2) return null;
+  const corePosition = position === 4 ? 3 : 1;
+  return {
+    id: `strength:support-route-${model.hero.slot}`,
+    kind: "strength",
+    category: "lane_support_route",
+    title: position === 4 ? "游走创造有效收益" : "离线同时保住核心",
+    time: 600,
+    fact: `前 10 分钟离线 ${formatTime(awaySeconds)}，完成${outcome.summary}；${corePosition}号位在你离线期间没有阵亡。`,
+    judgment: "这段离线同时满足了可确认收益和核心安全两项条件。",
+    impact: "队伍获得了额外地图收益，且没有用核心发育作为代价。",
+    action: position === 4 ? "保持每次长离线都有控符、叠野、视野或有效支援目标。" : "保持离线前确认兵线、补给和核心退路。",
+    confidence: Number(review.confidence || 0),
+    module: "development",
+    evidenceRefs: [],
+  };
+}
+
+function playerScoreLanePriority(model, review, point) {
+  if (!review || review.verdict !== "disadvantage" || Number(review.confidence || 0) < 70 || !point) return null;
+  const position = Number(model.position);
+  const route = review.support_route || {};
+  const location = review.lane ? regionName(review.lane) : "";
+
+  if (position >= 4) {
+    const awaySeconds = Number(route.away_seconds || 0);
+    const coreDeathsAway = Number(route.core_deaths_away || 0);
+    const outcome = playerScoreSupportRouteOutcome(route);
+    if (coreDeathsAway <= 0 && !(awaySeconds >= 60 && outcome.count === 0)) return null;
+    const corePosition = position === 4 ? 3 : 1;
+    return {
+      id: `priority:lane-support-route-${model.hero.slot}`,
+      kind: "improvement",
+      category: "lane_support_route",
+      title: coreDeathsAway > 0 ? "离线收益未覆盖线上代价" : "离线缺少可确认收益",
+      time: Number(point.time || 600),
+      location,
+      fact: `前 10 分钟离线 ${formatTime(awaySeconds)}，期间${corePosition}号位阵亡 ${coreDeathsAway} 次；离线收益为${outcome.summary}。`,
+      judgment: coreDeathsAway > 0
+        ? "离线本身不是问题，但这次离线的地图收益没有覆盖核心被双人施压和阵亡的代价。"
+        : "长时间离线没有形成可确认收益，线路职责和游走目标没有完成交换。",
+      impact: `${corePosition}号位 10 分钟经验差 ${signedValue(point.core_xp_diff ?? point.xp_diff)}，队伍进入转线期时的核心等级窗口受到影响。`,
+      action: position === 4
+        ? "离开3号位前确认他能在塔前安全接线；敌方双人仍在线时，游走必须有控符、击杀或TP支援目标，否则缩短离线。"
+        : "离开1号位拉野或做视野前确认兵线、补给和退路；敌方双人持续压线时，完成动作后立即回线保护。",
+      confidence: Number(review.confidence || 0),
+      module: "development",
+      evidenceRefs: [],
+      gateStatus: "passed",
+    };
+  }
+
+  const supportCost = Number(route.core_deaths_away || 0);
+  const coreLabel = position === 2 ? "中路" : position === 1 ? "1号位" : "3号位";
+  const action = position === 2
+    ? "中路等级落后时先保经验并控稳兵线，等技能等级或神符窗口再主动换血。"
+    : position === 1
+      ? "5号位离线时减少越线换血，先保经验区和塔下兵；敌方双人压线就提前请求回线。"
+      : "4号位离线时优先保持血量和经验，敌方双人越线才退到塔前并提前沟通回线。";
+  return {
+    id: `priority:lane-core-experience-${model.hero.slot}`,
+    kind: "improvement",
+    category: "lane_core",
+    title: position === 2 ? "中路等级窗口开始落后" : "辅助离线时先稳住兵线",
+    time: Number(point.time || 600),
+    location,
+    fact: `10 分钟${coreLabel}补刀差 ${signedValue(point.last_hits_diff)}，等级差 ${point.level_diff == null ? "--" : signedValue(point.level_diff, " 级")}、经验差 ${signedValue(point.core_xp_diff ?? point.xp_diff)}${supportCost ? `；辅助离线期间阵亡 ${supportCost} 次` : ""}。`,
+    judgment: position === 2
+      ? "中路等级与经验窗口落后时，继续强换血会进一步压缩第一轮神符和支援节奏。"
+      : "辅助离线期间仍然越线争夺，会把可控的经验劣势放大为血量或阵亡损失。",
+    impact: "进入第一轮转线和战斗时，技能等级与属性窗口会被压缩。",
+    action,
+    confidence: Number(review.confidence || 0),
+    module: "development",
+    evidenceRefs: [],
+    gateStatus: "passed",
+  };
+}
+
+function playerScoreCombatDutyAction(position) {
+  return {
+    1: "进入战场前确认 BKB、主要输出技能和安全输出目标，先保证持续输出时间。",
+    2: "进场前先确定第一目标和撤离方向，把爆发技能集中到可完成减员的目标。",
+    3: "先手前确认至少一名队友能在 3 秒内跟进，再交关键控制和承伤资源。",
+    4: "根据阵容明确先手或反手职责，保留第一轮控制给关键核心或救援窗口。",
+    5: "站在核心可支援范围内，优先完成救人、反手控制和关键功能物品释放。",
+  }[Number(position)] || "进入战斗前确认自己的主要职责和技能目标。";
+}
+
+function playerScoreCombatDutySuccess(position) {
+  return Number(position) <= 2 ? "有效接触中完成主要输出窗口且关键技能有明确目标"
+    : Number(position) === 3 ? "先手后 3 秒内有队友跟进并形成有效控制或减员"
+      : Number(position) === 4 ? "首轮控制或救援命中关键目标"
+        : "核心受到先手时完成至少一次可确认的救援或反手";
+}
+
+function playerScoreTrainingFromPriority(model, priority, index) {
+  const category = String(priority.category || "");
+  const position = Number(model.position);
+  if (category.includes("lane_support")) {
+    const corePosition = position === 4 ? 3 : 1;
+    return {
+      id: `training:${priority.id || index}`,
+      trigger: position === 4 ? "准备离开3号位超过20秒时" : "准备离开1号位拉野、插眼或支援时",
+      action: priority.action,
+      successCheck: `离线期间${corePosition}号位 0 次阵亡，且每次长离线至少产生一项可确认收益`,
+    };
+  }
+  if (category.includes("lane")) {
+    return {
+      id: `training:${priority.id || index}`,
+      trigger: position === 2 ? "中路等级或经验差开始扩大时" : "辅助离线且敌方双人仍在线时",
+      action: priority.action,
+      successCheck: position === 2 ? "下一检查点等级差或经验差不再扩大" : "下一检查点核心经验差不再扩大，且辅助离线期间不再阵亡",
+    };
+  }
+  if (category.includes("farm")) {
+    return {
+      id: `training:${priority.id || index}`,
+      trigger: "进入下一轮资源循环前",
+      action: priority.action,
+      successCheck: "实际路线通过视野、敌方威胁和队友资源三项门禁",
+    };
+  }
+  if (category.includes("combat")) {
+    return {
+      id: `training:${priority.id || index}`,
+      trigger: "进入下一场有效战斗前",
+      action: priority.action,
+      successCheck: playerScoreCombatDutySuccess(position),
+    };
+  }
+  return {
+    id: `training:${priority.id || index}`,
+    trigger: "相同场景再次出现时",
+    action: priority.action,
+    successCheck: "对应证据可以在时间线中确认",
+  };
+}
+
+function playerScoreBriefLegacyPriorities(model) {
+  const priorities = [];
+  const review = laneReviewForSlot(model.hero.slot);
+  const point = (review?.checkpoints || []).slice().sort((left, right) => Number(right.time || 0) - Number(left.time || 0))[0];
+  const lanePriority = playerScoreLanePriority(model, review, point);
+  if (lanePriority) priorities.push(lanePriority);
+  const diagnostic = Number(model.position) <= 3
+    ? farmDiagnosticsForHero(model.hero.slot)
+      .filter((item) => item.recommendation_enabled && Number(item.confidence || 0) >= 70)
+      .sort((left, right) => Number(right.time || 0) - Number(left.time || 0))[0]
+    : null;
+  if (diagnostic) {
+    const actualGold = Number(diagnostic.actualGold || 0);
+    const suggestedGold = Number(diagnostic.suggestedGold || 0);
+    priorities.push({
+      id: `priority:${diagnostic.id}`,
+      kind: "improvement",
+      category: "farm_route",
+      title: "资源循环存在更优选择",
+      time: Number(diagnostic.time || 0),
+      location: diagnostic.region ? regionName(diagnostic.region) : "",
+      fact: `${formatTime(diagnostic.time)} 实际选择${farmOptionName(diagnostic.actual)}，收益 ${actualGold} 金；通过门禁的候选是${farmOptionName(diagnostic.recommendation)}，约 ${suggestedGold} 金。`,
+      judgment: diagnostic.reason || "当时存在收益更高且风险门禁通过的资源路线。",
+      impact: suggestedGold > actualGold ? `该窗口预计少转化约 ${suggestedGold - actualGold} 金。` : "该窗口的移动和资源衔接值得复核。",
+      action: `在相同视野与队友资源条件下，优先衔接${farmOptionName(diagnostic.recommendation)}。`,
+      confidence: Number(diagnostic.confidence || 0),
+      module: "farm",
+      evidenceRefs: [],
+      gateStatus: "passed",
+    });
+  }
+  const combatIssue = playerScoreFightsForSlot(model.hero.slot).map((fight) => ({
+    fight,
+    row: fightContributions(fight).find((item) => Number(item.slot) === Number(model.hero.slot)),
+  })).find((entry) => entry.row?.responsibility_gate?.status === "passed" && Number(entry.row.responsibilityScore || 0) < 55);
+  if (combatIssue) {
+    const time = Number(combatIssue.fight.contact_start ?? combatIssue.fight.start);
+    priorities.push({
+      id: `priority:${combatIssue.fight.id}`,
+      kind: "improvement",
+      category: "combat_duty",
+      title: "有效战斗中的职责完成不足",
+      time,
+      location: combatIssue.fight.location || "",
+      fact: `${formatTime(time)} 的${combatIssue.fight.title}中，在场率 ${Number(combatIssue.row.presencePct || 0)}%，伤害 ${Number(combatIssue.row.damage || 0).toLocaleString("zh-CN")}，控制 ${Number(combatIssue.row.controlSeconds || 0).toFixed(1)} 秒。`,
+      judgment: "该片段已通过技能、距离和战场机会门禁，个人职责结果仍低于本场目标区间。",
+      impact: "队伍在这次有效接触中没有获得完整的角色职责产出。",
+      action: playerScoreCombatDutyAction(model.position),
+      confidence: Number(combatIssue.row.confidence || model.confidence || 70),
+      module: "combat",
+      evidenceRefs: [],
+      gateStatus: "passed",
+    });
+  }
+  return priorities.slice(0, 3);
+}
+
+function playerScoreBriefTraining(model, priorities, strengths) {
+  const refs = Array.isArray(model.report?.brief?.training_plan) ? model.report.brief.training_plan : [];
+  const v3 = refs.length
+    ? refs.map((ref) => model.trainingPlan.find((item) => String(item.id) === String(ref))).filter(Boolean).slice(0, 3)
+    : Array.isArray(model.trainingPlan) ? model.trainingPlan.filter(Boolean).slice(0, 3) : [];
+  if (v3.length) return v3.map((item, index) => ({
+    id: item.id || `training-v3-${index}`,
+    trigger: item.trigger || "触发条件待补",
+    action: item.action || "",
+    successCheck: item.success_check || item.successCheck || "",
+  }));
+  const plans = priorities.map((priority, index) => playerScoreTrainingFromPriority(model, priority, index))
+    .filter((plan) => plan.action);
+  if (plans.length < 3) plans.push(playerScoreRoleTraining(model.position));
+  if (strengths[0] && plans.length < 3) {
+    plans.push({
+      id: `training:keep-${strengths[0].id}`,
+      trigger: "相同优势窗口再次出现时",
+      action: strengths[0].action,
+      successCheck: "继续产生同类可确认的正向证据",
+    });
+  }
+  return [...new Map(plans.map((plan) => [plan.action, plan])).values()].slice(0, 3);
+}
+
+function playerScoreBriefVerdict(model, stories) {
+  if (model.report?.brief?.verdict) return String(model.report.brief.verdict);
+  const phrase = (story) => {
+    const meta = PLAYER_SCORE_BRIEF_VERDICT_META[story?.verdict] || PLAYER_SCORE_BRIEF_VERDICT_META.missing;
+    return `${story?.title || "阶段"}${meta.label}`;
+  };
+  const text = `${phrase(stories[0])}，${phrase(stories[1])}；${phrase(stories[2])}。`;
+  return text.length <= 90 ? text : `${text.slice(0, 89).replace(/[，；。]+$/u, "")}。`;
+}
+
+function playerScoreBriefModel(model) {
+  const nativeV3 = model.model === "player-report/3.0";
+  const stories = playerScoreBriefV3Stories(model);
+  const resolvedStories = nativeV3 ? stories : stories.length ? stories : playerScoreBriefLegacyStories(model);
+  const v3Strengths = playerScoreBriefV3Insights(model, "strength");
+  const strengths = nativeV3 ? v3Strengths : v3Strengths.length ? v3Strengths : playerScoreBriefLegacyStrengths(model);
+  const v3Priorities = playerScoreBriefV3Insights(model, "improvement");
+  const priorities = nativeV3 ? v3Priorities : v3Priorities.length ? v3Priorities : playerScoreBriefLegacyPriorities(model);
+  const training = playerScoreBriefTraining(model, priorities, strengths);
+  const focus = model.report?.brief?.next_match_focus || training[0]?.action || playerScoreRoleTraining(model.position).action;
+  return {
+    verdict: playerScoreBriefVerdict(model, resolvedStories),
+    focus,
+    domains: playerScoreBriefDomains(model),
+    stories: resolvedStories,
+    strengths,
+    priorities,
+    training,
+    source: nativeV3 ? "v3" : "compat",
+  };
+}
+
+function renderPlayerScoreHeader(model) {
+  const root = document.querySelector("#player-score-header");
+  const hero = model.hero;
+  const opponent = safeHero(model.counterpartSlot);
+  const match = state.currentAnalysis?.match || {};
+  const evidence = playerScoreEvidenceLevel(model.evidenceLevel);
+  const confidence = model.confidence == null ? "--" : `${Math.round(model.confidence)}%`;
+  const score = model.canShowOverall ? Math.round(model.overallScore) : "--";
+  const grade = model.grade || (model.hasReport ? "证据不足" : "待生成");
+  const resultKnown = typeof match.radiant_win === "boolean";
+  const won = resultKnown ? (hero.team === "radiant") === match.radiant_win : null;
+  root.innerHTML = `
+    <div class="player-score-identity">
+      <img src="${heroImage(hero.token)}" alt="${escapeHtml(hero.name)}">
+      <span><small>${hero.team === "radiant" ? "天辉" : "夜魇"}${won == null ? "" : won ? " · 胜利" : " · 失败"}${hero.me ? " · 我" : ""}</small><strong>${escapeHtml(hero.name)} · ${escapeHtml(hero.player)}</strong><em>${escapeHtml(model.role.label)} · 角色置信度 ${model.roleConfidence == null ? "--" : `${Math.round(model.roleConfidence)}%`}</em></span>
+    </div>
+    <button class="player-score-counterpart" type="button" data-player-score-slot="${opponent.slot}" title="切换到对位玩家">
+      <span><small>主要对位</small><strong>${escapeHtml(opponent.name)}</strong><em>${positionLabel(opponent.position)}</em></span><img src="${heroImage(opponent.token)}" alt="${escapeHtml(opponent.name)}"><i data-lucide="arrow-left-right"></i>
+    </button>
+    <div class="player-score-headline"><small>${model.legacy ? "兼容旧报告 · 只输出有证据的行为结论" : "player-report/3.0 · 本场结论"}</small><strong>${escapeHtml(model.brief.verdict)}</strong><em>下一局：${escapeHtml(model.brief.focus)}</em></div>
+    <div class="player-score-summary">
+      <span class="player-score-overall"><small>职责完成度</small><strong>${score}</strong><b>${escapeHtml(grade)}</b></span>
+      <span><small>置信度</small><strong>${confidence}</strong></span>
+      <span><small>证据</small><strong class="${evidence.className}">${evidence.label}</strong></span>
+    </div>`;
+  installImageFallback(root, heroImage("unknown"));
+  refreshIcons(root);
+}
+
+function renderPlayerScoreRoster() {
+  const filter = state.playerScoreRosterFilter;
+  let heroes = HEROES.filter((hero) => filter === "all"
+    || filter === "me" && hero.me
+    || filter === "core" && Number(hero.position) <= 3
+    || filter === "support" && Number(hero.position) >= 4);
+  if (!heroes.some((hero) => hero.slot === state.selectedHeroSlot)) heroes = [safeHero(state.selectedHeroSlot), ...heroes];
+  document.querySelector("#player-score-roster-count").textContent = `${heroes.length} 人`;
+  document.querySelectorAll("#player-score-roster-filter [data-player-score-roster-filter]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.playerScoreRosterFilter === filter);
+  });
+  const root = document.querySelector("#player-score-roster");
+  root.innerHTML = heroes.map((hero) => {
+    const model = playerScoreModel(hero, { buildBrief: false });
+    const score = model.canShowOverall ? Math.round(model.overallScore) : "--";
+    const grade = model.grade || "-";
+    return `<button class="player-score-roster-row ${hero.slot === state.selectedHeroSlot ? "active" : ""} ${hero.me ? "me" : ""}" type="button" data-player-score-slot="${hero.slot}" title="${escapeHtml(hero.player)} · ${escapeHtml(hero.name)} · ${positionLabel(hero.position)}">
+      <img src="${heroImage(hero.token)}" alt="${escapeHtml(hero.name)}"><span><strong>${escapeHtml(hero.player)}${hero.me ? " · 我" : ""}</strong><small>${escapeHtml(hero.name)} · ${positionLabel(hero.position)}</small><em>${hero.kills}/${hero.deaths}/${hero.assists} · ${hero.lh}/${hero.denies}</em></span><b>${score}<small>${escapeHtml(grade)}</small></b>
+    </button>`;
+  }).join("") || `<div class="player-score-data-gap"><i data-lucide="users"></i><strong>该筛选没有玩家</strong></div>`;
+  installImageFallback(root, heroImage("unknown"));
+  refreshIcons(root);
+}
+
+function playerScoreDimensionHtml(dimension) {
+  const active = state.selectedPlayerScoreEvidence?.type === "dimension" && state.selectedPlayerScoreEvidence.id === dimension.key;
+  const score = dimension.score == null ? "--" : Math.round(dimension.score);
+  const confidence = dimension.confidence == null ? "待补证据" : `置信度 ${Math.round(dimension.confidence)}%`;
+  return `<button class="player-score-dimension ${dimension.status} ${active ? "active" : ""}" type="button" data-player-score-evidence-type="dimension" data-player-score-evidence-id="${dimension.key}">
+    <span class="player-score-dimension-name"><i data-lucide="${dimension.icon}"></i><span><strong>${dimension.label}</strong><small>位置权重 ${dimension.roleWeight}% · ${confidence}</small></span></span>
+    <span class="player-score-dimension-meter ${dimension.score == null ? "missing" : ""}"><i style="width:${dimension.score == null ? 0 : clamp(dimension.score, 0, 100)}%"></i></span>
+    <b>${score}</b>
+  </button>`;
+}
+
+function renderPlayerScoreOverview(model) {
+  const phaseHtml = model.phases.length ? model.phases.map((phase) => {
+    const score = phase.score == null ? "--" : Math.round(phase.score);
+    const range = `${Math.floor(Number(phase.start || 0) / 60)}-${Math.ceil(Number(phase.end || 0) / 60)}分`;
+    return `<button class="player-score-phase" type="button" data-player-score-evidence-type="phase" data-player-score-evidence-id="${escapeHtml(phase.id)}" data-player-score-time="${phase.start}"><span><small>${range}</small><strong>${PLAYER_SCORE_PHASE_SHORT_META[phase.phase] || escapeHtml(phase.phase || "阶段")}</strong></span><b>${score}</b></button>`;
+  }).join("") : `<div class="player-score-data-gap compact"><span>阶段评分尚未生成</span></div>`;
+  const strengths = model.brief.strengths.length ? model.brief.strengths.map((strength) => `<button class="player-score-strength" type="button" data-player-score-evidence-type="brief-insight" data-player-score-evidence-id="${escapeHtml(strength.id)}" data-player-score-time="${Number(strength.time || 0)}"><i data-lucide="circle-check"></i><span><strong>${escapeHtml(strength.title)}</strong><small>${strength.time == null ? "Replay 正向证据" : `${formatTime(strength.time)} · 置信度 ${Math.round(Number(strength.confidence || 0))}%`}</small></span></button>`).join("")
+    : `<div class="player-score-data-gap compact"><span>稳定优势需要更多证据</span></div>`;
+  const advice = model.brief.priorities.length ? model.brief.priorities.map((item, index) => {
+    const time = item.time == null ? "时间待补" : item.timeEnd == null ? formatTime(item.time) : `${formatTime(item.time)}-${formatTime(item.timeEnd)}`;
+    const active = state.selectedPlayerScoreEvidence?.type === "brief-insight" && state.selectedPlayerScoreEvidence.id === item.id;
+    return `<button class="player-score-advice ${item.severity || "review"} ${active ? "active" : ""}" type="button" data-player-score-evidence-type="brief-insight" data-player-score-evidence-id="${escapeHtml(item.id)}" data-player-score-time="${Number(item.time || 0)}"><span class="player-score-advice-index">${index + 1}</span><span><small>${time} · ${item.confidence == null ? "置信度待补" : `${Math.round(item.confidence)}%`}</small><strong>${escapeHtml(item.title)}</strong><em>${escapeHtml(item.action || item.judgment)}</em></span><i data-lucide="chevron-right"></i></button>`;
+  }).join("") : `<div class="player-score-data-gap compact"><span>本场没有达到高置信度门槛的行为问题</span></div>`;
+  return `<div class="player-score-overview">
+    <section class="player-score-dimension-board"><header><span><small>十项公共维度</small><strong>${escapeHtml(model.role.label)}权重</strong></span><em>缺失指标不按 0 分</em></header><div class="player-score-dimension-grid">${model.dimensions.map(playerScoreDimensionHtml).join("")}</div></section>
+    <section class="player-score-priority-board"><header><span><small>下一局训练重点</small><strong>稳定项与优先复核</strong></span><em>最多三条建议</em></header><div class="player-score-strength-list">${strengths}</div><div class="player-score-advice-list">${advice}</div></section>
+    <section class="player-score-phase-board"><header><span><small>固定检查点 + 动态阶段</small><strong>分阶段表现</strong></span></header><div>${phaseHtml}</div></section>
+  </div>`;
+}
+
+function renderPlayerScoreBrief(model) {
+  const brief = model.brief;
+  const domainHtml = brief.domains.map((domain) => {
+    const score = domain.score == null ? "--" : Math.round(domain.score);
+    const confidence = domain.confidence == null ? "证据不足" : `${Math.round(domain.confidence)}% 可信`;
+    const tone = domain.score == null ? "missing" : domain.score >= 68 ? "positive" : domain.score < 52 ? "negative" : "stable";
+    return `<button class="player-score-brief-domain ${tone}" type="button" data-player-score-open-dimension="${escapeHtml(domain.keys[0])}" title="在深度分析中查看${escapeHtml(domain.label)}"><span><i data-lucide="${domain.icon}"></i>${escapeHtml(domain.label)}</span><strong>${score}</strong><small>${confidence}</small></button>`;
+  }).join("");
+  const storyHtml = brief.stories.map((story, index) => {
+    const meta = PLAYER_SCORE_BRIEF_VERDICT_META[story.verdict] || PLAYER_SCORE_BRIEF_VERDICT_META.missing;
+    const metrics = (story.metrics || []).slice(0, 2).map((metric) => `<span><small>${escapeHtml(metric.label || "关键指标")}</small><strong>${escapeHtml(metric.value ?? "--")}</strong></span>`).join("");
+    return `<article class="player-score-story-row ${meta.className}">
+      <button class="player-score-story-main" type="button" data-player-score-evidence-type="brief-story" data-player-score-evidence-id="${escapeHtml(story.id)}" data-player-score-time="${Number(story.time || 0)}">
+        <span class="player-score-story-index">${String(index + 1).padStart(2, "0")}</span>
+        <span class="player-score-story-copy"><small>${escapeHtml(story.range)} · <b>${meta.label}</b></small><strong>${escapeHtml(story.title)}</strong><em>${escapeHtml(story.summary)}</em></span>
+        <span class="player-score-story-metrics">${metrics}</span>
+      </button>
+      <button class="icon-button quiet player-score-story-jump" type="button" data-player-score-jump="${escapeHtml(story.module)}" data-player-score-time="${Number(story.time || 0)}" title="查看对应片段"><i data-lucide="arrow-up-right"></i></button>
+    </article>`;
+  }).join("");
+  const strengthHtml = brief.strengths.length ? brief.strengths.map((item) => `<article class="player-score-brief-insight strength">
+    <button type="button" data-player-score-evidence-type="brief-insight" data-player-score-evidence-id="${escapeHtml(item.id)}" data-player-score-time="${Number(item.time || 0)}"><i data-lucide="circle-check"></i><span><small>${item.time == null ? "本场稳定行为" : `${formatTime(item.time)} · ${Math.round(Number(item.confidence || 0))}%`}</small><strong>${escapeHtml(item.title)}</strong><em>${escapeHtml(item.fact)}</em></span></button>
+    <button class="text-command" type="button" data-player-score-jump="${escapeHtml(item.module)}" data-player-score-time="${Number(item.time || 0)}">查看片段</button>
+  </article>`).join("") : `<div class="player-score-brief-empty"><i data-lucide="circle-dashed"></i><span><strong>正向证据还不够集中</strong><small>报告不会只按最高分或比赛胜负补写优点。</small></span></div>`;
+  const priorityHtml = brief.priorities.length ? brief.priorities.map((item, index) => `<article class="player-score-brief-insight priority">
+    <button type="button" data-player-score-evidence-type="brief-insight" data-player-score-evidence-id="${escapeHtml(item.id)}" data-player-score-time="${Number(item.time || 0)}"><span class="player-score-priority-number">${index + 1}</span><span><small>${item.time == null ? "行为时间待补" : `${formatTime(item.time)}${item.location ? ` · ${escapeHtml(item.location)}` : ""}`} · ${Math.round(Number(item.confidence || 0))}%</small><strong>${escapeHtml(item.title)}</strong><em>${escapeHtml(item.fact)}</em><b>${escapeHtml(item.action)}</b></span></button>
+    <button class="text-command" type="button" data-player-score-jump="${escapeHtml(item.module)}" data-player-score-time="${Number(item.time || 0)}">查看证据</button>
+  </article>`).join("") : `<div class="player-score-brief-empty"><i data-lucide="shield-check"></i><span><strong>没有高置信度行为问题</strong><small>当前只展示可确认事实，不用低分维度凑满三条建议。</small></span></div>`;
+  const trainingHtml = brief.training.map((item, index) => `<li><span>${index + 1}</span><p><small>${escapeHtml(item.trigger)}</small><strong>${escapeHtml(item.action)}</strong><em>完成标准：${escapeHtml(item.successCheck || "对应证据可以在下一局复核")}</em></p></li>`).join("");
+  const protocol = brief.source === "v3" ? "V3 结构化报告" : "兼容旧报告 · 行为结论按证据门槛生成";
+  return `<div class="player-score-brief">
+    <header class="player-score-brief-lead">
+      <div class="player-score-brief-verdict"><span><i data-lucide="file-check-2"></i>${escapeHtml(protocol)}</span><h2>${escapeHtml(brief.verdict)}</h2><p><b>下一局优先</b>${escapeHtml(brief.focus)}</p></div>
+      <div class="player-score-brief-domains">${domainHtml}</div>
+    </header>
+    <div class="player-score-brief-columns">
+      <section class="player-score-story-board">
+        <header><span><small>按时间讲清比赛过程</small><strong>三段比赛故事</strong></span><em>点击章节查看证据</em></header>
+        <div>${storyHtml}</div>
+      </section>
+      <div class="player-score-brief-review">
+        <section class="player-score-brief-section strengths"><header><span><small>有具体事实的正向行为</small><strong>本场优点</strong></span><em>${brief.strengths.length} 项</em></header><div>${strengthHtml}</div></section>
+        <section class="player-score-brief-section priorities"><header><span><small>按可改进价值排序</small><strong>主要问题</strong></span><em>${brief.priorities.length} 项</em></header><div>${priorityHtml}</div></section>
+        <section class="player-score-training"><header><span><small>下一局可以直接执行</small><strong>训练清单</strong></span></header><ol>${trainingHtml}</ol></section>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderPlayerScoreLane(model) {
+  const review = laneReviewForSlot(model.hero.slot);
+  if (!review) return `<div class="player-score-data-gap"><i data-lucide="git-compare-arrows"></i><strong>缺少对线检查点</strong><span>需要重新解析以生成 3 / 5 / 7 / 10 分钟补刀、经验、等级与净值差。</span></div>`;
+  const opponent = safeHero(model.counterpartSlot);
+  const verdict = LANE_VERDICT_META[review.verdict] || LANE_VERDICT_META.even;
+  const points = [180, 300, 420, 600].map((time) => (review.checkpoints || []).find((point) => Math.abs(Number(point.time) - time) <= 5) || { time, missing: true });
+  const checkpointHtml = points.map((point) => {
+    const meta = point.missing ? { label: "待补数据", tone: "missing" } : LANE_VERDICT_META[point.verdict] || LANE_VERDICT_META.even;
+    const score = point.missing ? "--" : signedValue(point.score);
+    return `<button class="player-score-lane-checkpoint ${meta.tone}" type="button" data-player-score-evidence-type="lane" data-player-score-evidence-id="${Number(point.time)}" data-player-score-time="${Number(point.time)}"><time>${formatTime(point.time)}</time><span><strong>${meta.label}</strong><small>补刀差 ${point.missing ? "--" : signedValue(point.last_hits_diff)} · 等级差 ${point.level_diff == null ? "--" : signedValue(point.level_diff)}</small><em>经验 ${point.xp_diff == null ? "--" : signedValue(point.xp_diff)} · 净值 ${point.networth_diff == null ? "--" : signedValue(point.networth_diff)}</em></span><b>${score}</b></button>`;
+  }).join("");
+  const route = review.support_route || {};
+  const support = review.own_support_slot == null ? null : safeHero(review.own_support_slot);
+  return `<div class="player-score-lane-view">
+    <header class="player-score-matchup"><span><img src="${heroImage(model.hero.token)}" alt="${escapeHtml(model.hero.name)}"><strong>${escapeHtml(model.hero.name)}</strong><small>${positionLabel(model.hero.position)}</small></span><b>VS</b><span><img src="${heroImage(opponent.token)}" alt="${escapeHtml(opponent.name)}"><strong>${escapeHtml(opponent.name)}</strong><small>${positionLabel(opponent.position)}</small></span><em class="${verdict.tone}">${verdict.label} ${signedValue(review.score)}</em></header>
+    <div class="player-score-lane-metrics"><span><small>核心补 / 反补差</small><strong>${signedValue(review.core?.last_hits_diff)} / ${signedValue(review.core?.denies_diff)}</strong></span><span><small>核心等级 / 经验差</small><strong>${signedValue(review.core?.level_diff, " 级")} / ${signedValue(review.core?.xp_diff)}</strong></span><span><small>双人总经验差</small><strong>${signedValue(review.lane_pair?.xp_diff)}</strong></span><span><small>双人净值差</small><strong>${signedValue(review.lane_pair?.networth_diff)}</strong></span></div>
+    <section class="player-score-lane-checkpoints"><header><strong>3 / 5 / 7 / 10 分钟检查点</strong><small>点击时间点查看证据</small></header><div>${checkpointHtml}</div></section>
+    <section class="player-score-support-review"><header><strong>${support ? `${positionLabel(support.position)} ${escapeHtml(support.name)} · 离线价值` : "单人线职责"}</strong><small>置信度 ${Number(review.confidence || 0)}%</small></header>${support ? `<div><span><small>在路</small><strong>${Number(route.lane_presence_pct || 0).toFixed(1)}%</strong></span><span><small>离线</small><strong>${formatTime(route.away_seconds || 0)}</strong></span><span><small>核心单吃经验</small><strong>${formatTime(route.core_solo_xp_seconds || 0)}</strong></span><span><small>离线收益</small><strong>叠野 ${Number(route.stacks || 0)} · 控符 ${Number(route.runes || 0)} · 助攻 ${Number(route.away_assists || 0)}</strong></span></div><p>${escapeHtml(route.interpretation || "辅助路线影响仍需复核")}</p>` : `<p>中路按补刀、反补、等级节点、经验与线上阵亡评估，不套用边路经验分摊模型。</p>`}</section>
+  </div>`;
+}
+
+function renderPlayerScoreFarm(model) {
+  const cells = farmCellsForHero(model.hero.slot);
+  const diagnostics = farmDiagnosticsForHero(model.hero.slot).slice().sort((left, right) => Number(left.time || 0) - Number(right.time || 0));
+  if (!cells.length && !diagnostics.length) return `<div class="player-score-data-gap"><i data-lucide="route-off"></i><strong>缺少逐单位资源与路线数据</strong><span>不会在没有兵线、营地状态和连续可见性时生成最优路线建议。</span></div>`;
+  const total = cells.reduce((sum, cell) => sum + Number(cell.gold || 0), 0);
+  const lane = cells.filter((cell) => farmCellGroup(cell) === "lane").reduce((sum, cell) => sum + Number(cell.gold || 0), 0);
+  const neutral = cells.filter((cell) => farmCellGroup(cell) === "neutral").reduce((sum, cell) => sum + Number(cell.gold || 0), 0);
+  const maxGold = Math.max(1, ...cells.map((cell) => Number(cell.gold || 0)));
+  const heat = cells.filter((cell) => cell.coordinate_valid !== false && Number.isFinite(Number(cell.x)) && Number.isFinite(Number(cell.y))).slice(0, 120)
+    .map((cell) => `<span class="player-score-farm-heat ${farmCellGroup(cell)}" style="left:${Number(cell.x)}%;top:${Number(cell.y)}%;--heat:${clamp(Number(cell.gold || 0) / maxGold, 0.18, 1)}" title="${escapeHtml(cell.region || "未知区域")} · ${Number(cell.gold || 0)} 金"></span>`).join("");
+  const snapshots = snapshotsFor(model.hero.slot);
+  const sampleStep = Math.max(1, Math.ceil(snapshots.length / 160));
+  const route = snapshots.filter((point, index) => index % sampleStep === 0 && point.coordinate_valid !== false && Number.isFinite(Number(point.x)) && Number.isFinite(Number(point.y)))
+    .map((point) => `${Number(point.x).toFixed(2)},${Number(point.y).toFixed(2)}`).join(" ");
+  const currentPosition = positionAtTime(state.currentTime, model.hero.slot);
+  const currentMarker = currentPosition ? `<img class="player-score-current-hero" src="${heroImage(model.hero.token)}" alt="${escapeHtml(model.hero.name)}" style="left:${currentPosition.x}%;top:${currentPosition.y}%">` : "";
+  const diagnosticHtml = diagnostics.slice(0, 7).map((diagnostic) => {
+    const meta = farmDecisionMeta(diagnostic.decision);
+    const delta = Math.max(0, Number(diagnostic.suggestedGold || 0) - Number(diagnostic.actualGold || 0));
+    return `<button class="player-score-farm-row ${diagnostic.decision || "review"}" type="button" data-player-score-evidence-type="farm" data-player-score-evidence-id="${escapeHtml(diagnostic.id)}" data-player-score-time="${Number(diagnostic.time || 0)}"><time>${formatTime(diagnostic.time)}</time><span><strong>${escapeHtml(farmDiagnosticTitle(diagnostic.title))}</strong><small>${escapeHtml(farmOptionName(diagnostic.actual))} → ${escapeHtml(farmOptionName(diagnostic.recommendation))}</small><em>${escapeHtml(diagnostic.reason || "打开证据栏查看路线门禁")}</em></span><b>${diagnostic.recommendation_enabled && delta > 0 ? `+${delta}g` : meta.label}</b></button>`;
+  }).join("") || `<div class="player-score-data-gap compact"><span>没有满足路线审计条件的窗口</span></div>`;
+  return `<div class="player-score-farm-view">
+    <section class="player-score-farm-map"><header><span><small>真实 Dota 地图</small><strong>空间收益与移动路线</strong></span><button class="text-command" type="button" data-player-score-jump="farm">打开完整打钱分析</button></header><div class="player-score-map-canvas"><img src="/assets/dota-map-740.webp" alt="Dota 2 打钱地图"><svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><polyline points="${route}"></polyline></svg>${heat}${currentMarker}</div></section>
+    <section class="player-score-farm-summary"><header><span><small>收入来源</small><strong>本场资源构成</strong></span></header><div><span><small>已归因总收益</small><strong>${total.toLocaleString("zh-CN")}</strong></span><span><small>兵线</small><strong>${lane.toLocaleString("zh-CN")} · ${total ? Math.round(lane / total * 100) : 0}%</strong></span><span><small>野区</small><strong>${neutral.toLocaleString("zh-CN")} · ${total ? Math.round(neutral / total * 100) : 0}%</strong></span><span><small>路线复核窗口</small><strong>${diagnostics.length}</strong></span></div></section>
+    <section class="player-score-farm-diagnostics"><header><span><small>事实与候选分开</small><strong>路线复核</strong></span><em>${diagnostics.filter((item) => item.recommendation_enabled).length} 条通过门禁</em></header><div>${diagnosticHtml}</div></section>
+  </div>`;
+}
+
+function renderPlayerScoreTempo(model) {
+  const facts = model.hero.facts || {};
+  const fights = playerScoreFightsForSlot(model.hero.slot);
+  const events = playerScoreEventsForHero(model.hero).filter((event) => {
+    const text = `${event.type || ""} ${event.text || ""}`;
+    return /TP|传送|神符|防御塔|肉山|高地|支援|目标/u.test(text);
+  }).slice(0, 80);
+  const storyRows = model.brief.stories.map((story) => {
+    const meta = PLAYER_SCORE_BRIEF_VERDICT_META[story.verdict] || PLAYER_SCORE_BRIEF_VERDICT_META.missing;
+    return `<button class="player-score-domain-story ${meta.className}" type="button" data-player-score-evidence-type="brief-story" data-player-score-evidence-id="${escapeHtml(story.id)}" data-player-score-time="${Number(story.time || 0)}"><time>${escapeHtml(story.range)}</time><span><small>${meta.label}</small><strong>${escapeHtml(story.title)}</strong><em>${escapeHtml(story.summary)}</em></span><i data-lucide="chevron-right"></i></button>`;
+  }).join("");
+  const eventRows = events.map((event) => `<button class="player-score-domain-event" type="button" data-player-score-evidence-type="timeline" data-player-score-evidence-id="${escapeHtml(event.scoreId)}" data-player-score-time="${Number(event.time || 0)}"><time>${formatTime(event.time)}</time><span><strong>${escapeHtml(event.text || event.type || "地图事件")}</strong><small>${escapeHtml(event.location || "未知区域")} · ${escapeHtml(event.evidence || "事实")}</small></span><b>${escapeHtml(event.value || "")}</b></button>`).join("")
+    || `<div class="player-score-data-gap compact"><span>没有可归属到该玩家的目标或移动事件</span></div>`;
+  return `<div class="player-score-domain-view">
+    <section class="player-score-domain-summary">
+      <span><small>TP 使用</small><strong>${Number(facts.teleport_uses || 0)} 次</strong></span>
+      <span><small>神符拾取</small><strong>${Number(facts.aggregate_rune_pickups || facts.rune_pickups || 0)} 次</strong></span>
+      <span><small>参与战斗</small><strong>${fights.length} 场</strong></span>
+      <span><small>建筑伤害</small><strong>${Number(model.hero.tower_damage || facts.tower_damage || 0).toLocaleString("zh-CN")}</strong></span>
+      <button class="text-command" type="button" data-player-score-jump="map">打开地图轨迹</button>
+    </section>
+    <section class="player-score-domain-stories"><header><span><small>固定区间 + 动态阶段</small><strong>地图节奏过程</strong></span><em>事实不等同于好坏</em></header><div>${storyRows}</div></section>
+    <section class="player-score-domain-events"><header><span><small>TP、神符与目标</small><strong>可归属事件</strong></span><em>${events.length} 条</em></header><div>${eventRows}</div></section>
+  </div>`;
+}
+
+function playerScoreFightsForSlot(slot) {
+  return COMBAT_SEGMENTS.filter((fight) => (fight.participants || []).map(Number).includes(Number(slot))
+    || (fight.contributions || []).some((row) => Number(row.slot) === Number(slot)));
+}
+
+function renderPlayerScoreCombat(model) {
+  const fights = playerScoreFightsForSlot(model.hero.slot);
+  if (!fights.length) return `<div class="player-score-data-gap"><i data-lucide="shield-off"></i><strong>没有可归属的战斗片段</strong><span>参与者证据不足时不评价到场、技能职责或战场存在率。</span></div>`;
+  const rows = fights.map((fight) => {
+    const contribution = fightContributions(fight).find((row) => Number(row.slot) === Number(model.hero.slot));
+    const gate = contribution?.responsibility_gate;
+    const gateMeta = responsibilityGateMeta(gate);
+    const contactStart = Number(fight.contact_start ?? fight.start);
+    const contactEnd = Number(fight.contact_end ?? fight.end);
+    const score = contribution && (!gate || gate.status === "passed") && Number(model.roleConfidence || 0) >= 65
+      ? Math.round(Number(contribution.responsibilityScore || 0)) : "--";
+    return `<button class="player-score-combat-row" type="button" data-player-score-evidence-type="combat" data-player-score-evidence-id="${escapeHtml(fight.id)}" data-player-score-time="${contactStart}">
+      <time>${formatTime(contactStart)}<small>${Math.max(0, contactEnd - contactStart).toFixed(1)} 秒</small></time><span><strong>${escapeHtml(fight.title)}</strong><small>${escapeHtml(fight.result || "战斗结果待确认")}</small><em>${contribution ? `伤害 ${Number(contribution.damage || 0).toLocaleString("zh-CN")} · 在场 ${Number(contribution.presencePct || 0)}% · 到场 +${Number(contribution.arrivalDelay || 0)}s` : "缺少个人贡献归属"}</em></span><span class="player-score-combat-gate ${gate ? gateMeta.className : "insufficient"}"><small>${gate ? gateMeta.label : "职责证据不足"}</small><strong>${score}</strong></span><i data-lucide="chevron-right"></i>
+    </button>`;
+  }).join("");
+  const contributions = fights.map((fight) => fightContributions(fight).find((row) => Number(row.slot) === Number(model.hero.slot))).filter(Boolean);
+  const totalDamage = contributions.reduce((sum, row) => sum + Number(row.damage || 0), 0);
+  const averagePresence = contributions.length ? contributions.reduce((sum, row) => sum + Number(row.presencePct || 0), 0) / contributions.length : null;
+  const passedGates = contributions.filter((row) => row.responsibility_gate?.status === "passed").length;
+  const teamfights = fights.filter((fight) => fight.kind === "teamfight").length;
+  return `<div class="player-score-combat-view">
+    <section class="player-score-combat-summary"><span><small>有效参与片段</small><strong>${fights.length}</strong></span><span><small>团战 / 小规模</small><strong>${teamfights} / ${fights.length - teamfights}</strong></span><span><small>已归属英雄伤害</small><strong>${totalDamage.toLocaleString("zh-CN")}</strong></span><span><small>平均战场存在率</small><strong>${averagePresence == null ? "--" : `${averagePresence.toFixed(1)}%`}</strong></span><span><small>职责门禁通过</small><strong>${passedGates} / ${contributions.length}</strong></span><button class="text-command" type="button" data-player-score-jump="combat">打开战斗团战</button></section>
+    <section class="player-score-combat-list"><header><span><small>战前 10 秒至收尾</small><strong>逐场职责审计</strong></span><em>点击查看硬门禁与个人贡献</em></header><div>${rows}</div></section>
+  </div>`;
+}
+
+function renderPlayerScoreVision(model) {
+  const wards = WARD_RECORDS.filter((ward) => Number(ward.playerSlot) === Number(model.hero.slot))
+    .slice().sort((left, right) => Number(left.placedAt || 0) - Number(right.placedAt || 0));
+  const validWards = wards.filter((ward) => ward.coordinate_valid !== false && Number.isFinite(Number(ward.x)) && Number.isFinite(Number(ward.y)));
+  const observers = wards.filter((ward) => ward.type === "observer").length;
+  const sentries = wards.filter((ward) => ward.type === "sentry").length;
+  const totalLife = wards.reduce((sum, ward) => sum + Math.max(0, Number(ward.endedAt || 0) - Number(ward.placedAt || 0)), 0);
+  const detections = wards.reduce((sum, ward) => sum + Number(ward.detections || ward.detectionEvents?.length || 0), 0);
+  const scoredWards = wards.map((ward) => playerScoreNumber(ward.score)).filter((score) => score != null);
+  const averageScore = scoredWards.length ? scoredWards.reduce((sum, score) => sum + score, 0) / scoredWards.length : null;
+  const selectedId = state.selectedPlayerScoreEvidence?.type === "ward"
+    ? String(state.selectedPlayerScoreEvidence.id) : String(state.selectedWardId || "");
+  const selectedWard = wards.find((ward) => String(ward.id) === selectedId) || null;
+  const activeCount = validWards.filter((ward) => wardIsActive(ward)).length;
+  const ranges = validWards.map((ward) => {
+    const size = wardRangeDiameter(ward);
+    const timeState = wardIsActive(ward) ? "active" : state.currentTime < Number(ward.placedAt || 0) ? "future" : "expired";
+    const selected = String(ward.id) === selectedId;
+    return `<span class="ward-vision-circle player-score-ward-range ${ward.team} ${ward.type} ${timeState} ${selected ? "selected" : ""}" data-player-score-ward-range-id="${escapeHtml(ward.id)}" style="left:${Number(ward.x)}%;top:${Number(ward.y)}%;width:${size}%;height:${size}%"></span>`;
+  }).join("");
+  const markers = validWards.map((ward) => {
+    const type = wardTypeMeta(ward.type);
+    const owner = safeHero(ward.playerSlot);
+    const timeState = wardIsActive(ward) ? "active" : state.currentTime < Number(ward.placedAt || 0) ? "future" : "expired";
+    const selected = String(ward.id) === selectedId;
+    return `<button class="ward-map-pin player-score-ward-pin ${ward.team} ${ward.type} ${timeState} ${selected ? "selected" : ""}" type="button" data-player-score-ward-id="${escapeHtml(ward.id)}" data-player-score-evidence-type="ward" data-player-score-evidence-id="${escapeHtml(ward.id)}" data-player-score-time="${Number(ward.placedAt || 0)}" style="left:${Number(ward.x)}%;top:${Number(ward.y)}%" title="${formatTime(ward.placedAt)} · ${escapeHtml(type.name)} · ${escapeHtml(ward.region || "未知区域")}"><img src="${itemImage(type.item)}" alt="${escapeHtml(type.name)}"><img class="ward-owner-avatar" src="${heroImage(owner.token)}" alt="${escapeHtml(owner.name)}"></button>`;
+  }).join("");
+  const detectionMarkers = (selectedWard?.detectionEvents || []).map((detection) => {
+    const position = positionAtTime(detection.time, detection.heroSlot);
+    if (!position) return "";
+    const enemy = safeHero(detection.heroSlot);
+    const timeState = Math.abs(state.currentTime - Number(detection.time || 0)) <= 12 ? "current" : Number(detection.time || 0) <= state.currentTime ? "seen" : "future";
+    return `<button class="ward-detection-pin player-score-ward-detection ${timeState}" type="button" data-player-score-ward-detection-time="${Number(detection.time || 0)}" data-player-score-evidence-type="ward" data-player-score-evidence-id="${escapeHtml(selectedWard.id)}" data-player-score-time="${Number(detection.time || 0)}" style="left:${Number(position.x)}%;top:${Number(position.y)}%" title="${formatTime(detection.time)} · 发现 ${escapeHtml(enemy.name)}"><img src="${heroImage(enemy.token)}" alt="${escapeHtml(enemy.name)}"></button>`;
+  }).join("");
+  const rows = wards.map((ward) => {
+    const type = wardTypeMeta(ward.type);
+    const life = Math.max(0, Number(ward.endedAt || 0) - Number(ward.placedAt || 0));
+    const purpose = ward.purpose === "offense" ? "进攻眼" : ward.purpose === "defense" ? "防守眼" : "用途待判定";
+    return `<button class="player-score-ward-row ${String(ward.id) === selectedId ? "active" : ""}" type="button" data-player-score-evidence-type="ward" data-player-score-evidence-id="${escapeHtml(ward.id)}" data-player-score-time="${Number(ward.placedAt || 0)}"><time>${formatTime(ward.placedAt)}</time><span><strong>${escapeHtml(type.name)} · ${escapeHtml(ward.region || "未知区域")}</strong><small>${purpose} · 存活 ${formatTime(life)}</small><em>发现 ${Number(ward.detections || ward.detectionEvents?.length || 0)} 次 · ${escapeHtml(ward.endReason || "结束原因待确认")}</em></span><b>${ward.score == null ? "--" : Math.round(Number(ward.score))}</b></button>`;
+  }).join("") || `<div class="player-score-data-gap compact"><span>该玩家没有可归属的眼位生命周期</span></div>`;
+  return `<div class="player-score-vision-view">
+    <section class="player-score-vision-map"><header><span><small>个人视野网络</small><strong>${escapeHtml(model.hero.name)} · 眼位位置</strong></span><button class="text-command" type="button" data-player-score-jump="vision">打开完整视野分析</button></header><div class="ward-map-shell player-score-map-shell"><div id="player-score-vision-map-canvas" class="map-canvas ward-map-canvas player-score-map-canvas player-score-ward-map-canvas"><img src="/assets/dota-map-740.webp" alt="Dota 2 眼位地图"><div class="ward-range-layer player-score-ward-range-layer">${ranges}</div><div class="ward-map-markers player-score-ward-marker-layer">${markers}${detectionMarkers}</div><span class="player-score-vision-map-status"><strong id="player-score-vision-time">${formatTime(state.currentTime)}</strong><small id="player-score-vision-active">当前存活 ${activeCount} · 可定位 ${validWards.length}/${wards.length}</small></span></div></div></section>
+    <section class="player-score-vision-summary"><span><small>假眼 / 真眼</small><strong>${observers} / ${sentries}</strong></span><span><small>累计存活</small><strong>${formatTime(totalLife)}</strong></span><span><small>发现敌方</small><strong>${detections} 次</strong></span><span><small>眼位均分</small><strong>${averageScore == null ? "--" : averageScore.toFixed(1)}</strong></span></section>
+    <section class="player-score-ward-list"><header><span><small>位置、生命周期与发现</small><strong>个人眼位清单</strong></span><em>${wards.length} 个</em></header><div>${rows}</div></section>
+  </div>`;
+}
+
+function renderPlayerScoreExecution(model) {
+  const facts = model.hero.facts || {};
+  const fights = playerScoreFightsForSlot(model.hero.slot);
+  const contributions = fights.map((fight) => ({
+    fight,
+    row: fightContributions(fight).find((item) => Number(item.slot) === Number(model.hero.slot)),
+  })).filter((entry) => entry.row);
+  const averageArrival = contributions.length
+    ? contributions.reduce((sum, entry) => sum + Number(entry.row.arrivalDelay || 0), 0) / contributions.length : null;
+  const gated = contributions.filter((entry) => entry.row.responsibility_gate?.status === "passed");
+  const events = playerScoreEventsForHero(model.hero).filter((event) => ["item", "combat"].includes(event.category)).slice(0, 100);
+  const rows = events.map((event) => `<button class="player-score-domain-event" type="button" data-player-score-evidence-type="timeline" data-player-score-evidence-id="${escapeHtml(event.scoreId)}" data-player-score-time="${Number(event.time || 0)}"><time>${formatTime(event.time)}</time><span><strong>${escapeHtml(event.text || event.type || "操作事件")}</strong><small>${escapeHtml(event.location || "未知区域")} · ${escapeHtml(event.evidence || "事实")}</small></span><b>${escapeHtml(event.value || "")}</b></button>`).join("")
+    || `<div class="player-score-data-gap compact"><span>没有可归属的技能或物品事件</span></div>`;
+  return `<div class="player-score-execution-view">
+    <section class="player-score-execution-summary">
+      <span><i data-lucide="mouse-pointer-2"></i><small>APM 事实</small><strong>${formatPlayerReportValue(facts.actions_per_min, "per_minute")}</strong><em>不直接代表操作好坏</em></span>
+      <span><i data-lucide="sparkles"></i><small>技能使用</small><strong>${Number(facts.ability_casts || 0)} 次</strong><em>需结合合理目标和机会</em></span>
+      <span><i data-lucide="package-open"></i><small>物品使用</small><strong>${Number(facts.item_uses || 0)} 次</strong><em>含 ${Number(facts.teleport_uses || 0)} 次 TP</em></span>
+      <span><i data-lucide="timer"></i><small>平均到场</small><strong>${averageArrival == null ? "--" : `+${averageArrival.toFixed(1)}s`}</strong><em>${contributions.length} 场可归属战斗</em></span>
+      <span><i data-lucide="shield-check"></i><small>职责门禁</small><strong>${gated.length} / ${contributions.length}</strong><em>通过后才评价技能职责</em></span>
+      <span><i data-lucide="activity"></i><small>控制时长</small><strong>${formatPlayerReportValue(facts.control_seconds, "seconds")}</strong><em>仅展示 Replay 可观测事实</em></span>
+    </section>
+    <section class="player-score-execution-events"><header><span><small>技能、物品与响应</small><strong>可观测执行事件</strong></span><em>${events.length} 条</em></header><div>${rows}</div></section>
+    <footer class="player-score-execution-caveat"><i data-lucide="info"></i><span>Replay 无法可靠观察鼠标精度、镜头移动、语音沟通和心理状态；本页不会用高 APM 直接得出“操作好”的结论。</span><button class="text-command" type="button" data-player-score-jump="timeline">打开完整时间轴</button></footer>
+  </div>`;
+}
+
+function playerScoreReportDimensionFacts(model, dimension) {
+  const evidenceFacts = (dimension?.evidence || []).slice(0, 3).map((evidence) => ({
+    label: PLAYER_EVIDENCE_META[evidence.key]?.[0] || evidence.key || "指标",
+    value: playerEvidenceText(evidence),
+  })).filter((fact) => fact.value != null && fact.value !== "");
+  if (evidenceFacts.length) return evidenceFacts;
+  return playerScoreFallbackDimensionFacts(model, dimension?.key).slice(0, 3).map(([label, value]) => ({ label, value }));
+}
+
+function playerScoreReportFactLine(model, dimension) {
+  const facts = playerScoreReportDimensionFacts(model, dimension);
+  return facts.length ? facts.map((fact) => `${fact.label} ${fact.value}`).join("；") : "当前回放没有足够的个人行为证据";
+}
+
+function playerScoreReportStrengths(model) {
+  const dimensions = [];
+  model.strengths.forEach((strength) => {
+    const dimension = model.dimensions.find((item) => item.key === strength.dimensionKey);
+    if (dimension?.score != null && !dimensions.some((item) => item.key === dimension.key)) dimensions.push(dimension);
+  });
+  const ranked = model.dimensions.filter((dimension) => dimension.score != null).sort((left, right) => right.score - left.score);
+  ranked.filter((dimension) => Number(dimension.score) >= 65).forEach((dimension) => {
+    if (dimensions.length < 3 && !dimensions.some((item) => item.key === dimension.key)) dimensions.push(dimension);
+  });
+  if (!dimensions.length && Number(ranked[0]?.score) >= 60) dimensions.push(ranked[0]);
+  return dimensions.slice(0, 3);
+}
+
+function playerScoreReportImprovements(model) {
+  if (model.advice.length) return model.advice.slice(0, 3).map((advice) => ({
+    id: advice.id,
+    evidenceType: "advice",
+    title: advice.title,
+    score: null,
+    fact: advice.fact || "当前结论来自本场评分模型，行为级事实仍需在右侧证据栏复核。",
+    judgment: advice.judgment || "这是本场优先级较高的改进项。",
+    action: advice.action || "打开对应模块，回看发生前后的时间窗口。",
+    confidence: advice.confidence,
+    legacy: advice.legacy,
+  }));
+  return model.dimensions.filter((dimension) => dimension.score != null && Number(dimension.score) < 75).sort((left, right) => left.score - right.score).slice(0, 3).map((dimension) => ({
+    id: dimension.key,
+    evidenceType: "dimension",
+    title: dimension.label,
+    score: dimension.score,
+    fact: playerScoreReportFactLine(model, dimension),
+    judgment: `${dimension.label}是当前有效评分中相对较低的一项，需要结合具体时间窗口判断原因。`,
+    action: `前往${dimension.label}对应模块，优先复核可改变结果的决策。`,
+    confidence: dimension.confidence,
+    legacy: false,
+  }));
+}
+
+function playerScoreReportActions(model, improvements) {
+  const actions = [model.summary.nextMatchFocus, ...improvements.map((item) => item.action)].filter(Boolean);
+  const roleReview = {
+    1: "按每波兵线记录线野衔接、危险线豁免与关键装备前的死亡成本。",
+    2: "复核清线后第一移动、神符窗口和边路支援是否转化为目标。",
+    3: "复核先手时机、危险线处理和替核心占据高风险区域的收益。",
+    4: "复核离线路线是否同时创造视野、符点、叠野或有效支援价值。",
+    5: "复核保人距离、关键技能留取和目标区域的视野准备是否到位。",
+  }[Number(model.position)] || "按时间轴复核本场最低评分维度的关键决策。";
+  actions.push(roleReview);
+  return [...new Set(actions.map((action) => String(action).trim()).filter(Boolean))].slice(0, 3);
+}
+
+function renderPlayerScoreTextReport(model) {
+  const hero = model.hero;
+  const available = model.dimensions.filter((dimension) => dimension.score != null);
+  const missing = model.dimensions.filter((dimension) => dimension.score == null);
+  const strengths = playerScoreReportStrengths(model);
+  const improvements = playerScoreReportImprovements(model);
+  const actions = playerScoreReportActions(model, improvements);
+  const overall = model.canShowOverall ? `${Math.round(model.overallScore)} 分 · ${model.grade || "已评分"}` : "综合分暂不展示";
+  const reportLead = `${escapeHtml(hero.name)}本场承担${escapeHtml(model.role.label)}。${escapeHtml(model.summary.headline)} 当前有 ${available.length}/10 个维度具备评分证据，${missing.length ? `${missing.length} 个维度因字段或门禁不足未参与综合分。` : "十个维度均有可用证据。"}`;
+  const factStrip = [
+    ["K / D / A", `${hero.kills ?? "--"} / ${hero.deaths ?? "--"} / ${hero.assists ?? "--"}`],
+    ["补刀 / 反补", `${hero.lh ?? "--"} / ${hero.denies ?? "--"}`],
+    ["GPM / XPM", `${hero.gpm ?? "--"} / ${hero.xpm ?? "--"}`],
+    ["英雄伤害", playerScoreNumber(hero.damage ?? hero.facts?.hero_damage) == null ? "--" : Number(hero.damage ?? hero.facts?.hero_damage).toLocaleString("zh-CN")],
+  ].map(([label, value]) => `<span><small>${label}</small><strong>${value}</strong></span>`).join("");
+  const strengthHtml = strengths.length ? strengths.map((dimension, index) => {
+    const facts = playerScoreReportDimensionFacts(model, dimension);
+    const scoreText = dimension.score == null ? "--" : Math.round(dimension.score);
+    const assessment = Number(dimension.score) >= 75
+      ? `这是本场相对明确的优势项，${dimension.brief}的整体结果较稳定。`
+      : `这是当前可用维度中相对更稳定的一项，但仍不应脱离具体时间窗口解读。`;
+    return `<button class="player-score-report-row strength" type="button" data-player-score-evidence-type="dimension" data-player-score-evidence-id="${escapeHtml(dimension.key)}"><span class="player-score-report-index">${String(index + 1).padStart(2, "0")}</span><span><small>程序推导 · ${escapeHtml(dimension.label)}</small><strong>${escapeHtml(assessment)}</strong><em><b>回放事实</b>${facts.length ? facts.map((fact) => `${escapeHtml(fact.label)} ${escapeHtml(fact.value)}`).join("；") : "证据不足，暂不作强结论"}</em></span><span class="player-score-report-score"><small>维度分</small><strong>${scoreText}</strong></span><i data-lucide="chevron-right"></i></button>`;
+  }).join("") : `<div class="player-score-report-empty">当前没有达到证据门槛的优势项，报告不会凭比赛胜负补写优点。</div>`;
+  const improvementHtml = improvements.length ? improvements.map((item, index) => {
+    const evidenceLabel = item.legacy || Number(item.confidence || 0) < 70 ? "待复核" : "程序推导";
+    return `<button class="player-score-report-row improve" type="button" data-player-score-evidence-type="${escapeHtml(item.evidenceType)}" data-player-score-evidence-id="${escapeHtml(item.id)}"><span class="player-score-report-index">${String(index + 1).padStart(2, "0")}</span><span><small>${evidenceLabel} · ${escapeHtml(item.title)}</small><strong>${escapeHtml(item.judgment)}</strong><em><b>本场事实</b>${escapeHtml(item.fact)}</em><em><b>下一步</b>${escapeHtml(item.action)}</em></span><span class="player-score-report-score"><small>${item.confidence == null ? "评分" : "置信度"}</small><strong>${item.score == null ? item.confidence == null ? "--" : `${Math.round(item.confidence)}%` : Math.round(item.score)}</strong></span><i data-lucide="chevron-right"></i></button>`;
+  }).join("") : `<div class="player-score-report-empty">当前没有通过证据门槛的明确缺点；建议先补齐行为级解析字段。</div>`;
+  const phaseHtml = model.phases.length ? model.phases.map((phase) => {
+    const label = PLAYER_SCORE_PHASE_META[phase.phase] || phase.phase || "比赛阶段";
+    const score = phase.score == null ? "--" : Math.round(phase.score);
+    const phaseFacts = [];
+    if (phase.kills != null || phase.deaths != null || phase.assists != null) phaseFacts.push(`K/D/A ${phase.kills ?? "--"}/${phase.deaths ?? "--"}/${phase.assists ?? "--"}`);
+    if (phase.last_hits != null) phaseFacts.push(`补刀 ${Number(phase.last_hits).toLocaleString("zh-CN")}`);
+    if (phase.networth_gain != null) phaseFacts.push(`经济增长 ${Number(phase.networth_gain).toLocaleString("zh-CN")}`);
+    if (phase.damage_dealt != null) phaseFacts.push(`英雄伤害 ${Number(phase.damage_dealt).toLocaleString("zh-CN")}`);
+    const details = phaseFacts.join(" · ") || "阶段事实字段不足，暂不作行为判断";
+    return `<button class="player-score-report-phase" type="button" data-player-score-evidence-type="phase" data-player-score-evidence-id="${escapeHtml(phase.id)}" data-player-score-time="${Number(phase.start || 0)}"><time>${formatTime(phase.start)}-${formatTime(phase.end)}</time><span><strong>${escapeHtml(label)}</strong><small>${escapeHtml(details)}</small></span><b>${score}</b><i data-lucide="chevron-right"></i></button>`;
+  }).join("") : `<div class="player-score-report-empty">当前分析包没有分阶段个人归因，无法判断优势或问题发生在哪个阶段。</div>`;
+  const rawCaveats = Array.isArray(model.caveats) ? model.caveats : model.caveats ? [model.caveats] : [];
+  const caveats = [
+    ...rawCaveats.map((caveat) => typeof caveat === "string" ? caveat : caveat?.message || caveat?.label).filter(Boolean),
+    ...(missing.length ? [`未评分维度：${missing.map((dimension) => dimension.label).join("、")}`] : []),
+    "评分只比较本场位置职责与可观测行为，不直接按胜负、英雄难度或段位加减分。",
+  ];
+  return `<article class="player-score-text-report">
+    <header class="player-score-report-lead"><span><small>本场文字结论</small><strong>${overall}</strong></span><p>${reportLead}</p><em>评分置信度 ${model.confidence == null ? "--" : `${Math.round(model.confidence)}%`} · 角色置信度 ${model.roleConfidence == null ? "--" : `${Math.round(model.roleConfidence)}%`}</em></header>
+    <div class="player-score-report-facts">${factStrip}</div>
+    <section class="player-score-report-section"><header><span><small>相对稳定项</small><strong>本场优点</strong></span><em>${strengths.length} 项</em></header><div>${strengthHtml}</div></section>
+    <section class="player-score-report-section"><header><span><small>优先改变的决策</small><strong>主要不足</strong></span><em>${improvements.length} 项</em></header><div>${improvementHtml}</div></section>
+    <section class="player-score-report-section phases"><header><span><small>表现发生在什么时候</small><strong>分阶段复盘</strong></span><em>${model.phases.length} 段</em></header><div>${phaseHtml}</div></section>
+    <section class="player-score-report-actions"><header><small>下一局只盯三件事</small><strong>训练重点</strong></header><ol>${actions.map((action) => `<li>${escapeHtml(action)}</li>`).join("")}</ol></section>
+    <footer class="player-score-report-caveats"><i data-lucide="info"></i><span>${caveats.map((caveat) => escapeHtml(caveat)).join(" · ")}</span></footer>
+  </article>`;
+}
+
+function playerScoreEventsForHero(hero) {
+  return TIMELINE_EVENTS.map((event, index) => ({ ...event, scoreId: event.id || `timeline-${index}` })).filter((event) => {
+    const actorSlot = playerScoreNumber(event.raw?.actor_slot);
+    const targetSlot = playerScoreNumber(event.raw?.target_slot);
+    if (actorSlot != null || targetSlot != null) return actorSlot === hero.slot || targetSlot === hero.slot;
+    return event.actor === hero.name || String(event.text || "").includes(hero.name);
+  });
+}
+
+function renderPlayerScoreTimelineTab(model) {
+  const events = playerScoreEventsForHero(model.hero);
+  if (!events.length) return `<div class="player-score-data-gap"><i data-lucide="list-x"></i><strong>缺少可归属的个人事件</strong><span>完整时间线保留事实事件，不会用团队事件填充个人行为。</span></div>`;
+  const rows = events.slice(0, 500).map((event) => `<button class="player-score-event-row" type="button" data-player-score-evidence-type="timeline" data-player-score-evidence-id="${escapeHtml(event.scoreId)}" data-player-score-time="${Number(event.time || 0)}"><time>${formatTime(event.time)}</time><span class="player-score-event-kind ${escapeHtml(event.category)}"><i data-lucide="${escapeHtml(event.icon || "activity")}"></i>${escapeHtml(event.type || "事件")}</span><span><strong>${escapeHtml(event.text || "Replay 事件")}</strong><small>${escapeHtml(event.location || "未知区域")} · ${escapeHtml(event.evidence || "事实")}</small></span><b>${escapeHtml(event.value || "")}</b></button>`).join("");
+  const categoryCounts = events.reduce((counts, event) => ({ ...counts, [event.category]: (counts[event.category] || 0) + 1 }), {});
+  return `<div class="player-score-events-view"><header><span><small>个人事件</small><strong>${events.length.toLocaleString("zh-CN")} 条</strong></span><div><em>发育 ${categoryCounts.farm || 0}</em><em>战斗 ${categoryCounts.combat || 0}</em><em>装备 ${categoryCounts.item || 0}</em><em>视野 ${categoryCounts.vision || 0}</em><button class="text-command" type="button" data-player-score-jump="timeline">打开全场时间轴</button></div></header><div class="player-score-event-table"><div class="player-score-event-head"><span>时间</span><span>类型</span><span>事件</span><span>数值</span></div>${rows}</div></div>`;
+}
+
+function playerScoreTimelineMarkers(model) {
+  const markers = [];
+  model.phases.forEach((phase) => markers.push({ id: `phase-${phase.id}`, time: phase.start, type: "lane", label: PLAYER_SCORE_PHASE_META[phase.phase] || phase.phase || "阶段" }));
+  playerScoreFightsForSlot(model.hero.slot).forEach((fight) => markers.push({ id: `fight-${fight.id}`, time: Number(fight.contact_start ?? fight.start), type: "combat", label: fight.title }));
+  WARD_RECORDS.filter((ward) => Number(ward.playerSlot) === Number(model.hero.slot)).forEach((ward) => markers.push({ id: `ward-${ward.id}`, time: Number(ward.placedAt || 0), type: "vision", label: `${wardTypeMeta(ward.type).name} · ${ward.region}` }));
+  ITEM_EVENTS.filter((event) => Number(event.time || 0) >= 0).forEach((event, index) => markers.push({ id: `item-${index}`, time: Number(event.time || 0), type: "item", label: `${event.action || "装备"} ${itemName(event.key)}` }));
+  model.advice.filter((item) => item.timeStart != null).forEach((item) => markers.push({ id: `advice-${item.id}`, time: item.timeStart, type: "advice", label: item.title }));
+  model.brief.strengths.filter((item) => item.time != null).forEach((item) => markers.push({ id: `brief-strength-${item.id}`, time: item.time, type: "advice", label: item.title }));
+  model.brief.priorities.filter((item) => item.time != null).forEach((item) => markers.push({ id: `brief-priority-${item.id}`, time: item.time, type: "advice", label: item.title }));
+  const unique = new Map();
+  markers.filter((marker) => Number.isFinite(marker.time)).forEach((marker) => {
+    const key = `${marker.type}:${Math.round(marker.time)}:${marker.label}`;
+    if (!unique.has(key)) unique.set(key, marker);
+  });
+  return [...unique.values()].sort((left, right) => left.time - right.time);
+}
+
+function renderPlayerScoreTimeline(model) {
+  const root = document.querySelector("#player-score-timeline");
+  if (!root) return;
+  const duration = Math.max(1, MATCH_DURATION);
+  const phaseBands = model.phases.map((phase, index) => {
+    const left = clamp(phase.start / duration * 100, 0, 100);
+    const width = clamp((phase.end - phase.start) / duration * 100, 0, 100 - left);
+    return `<span class="player-score-phase-band phase-${index % 4}" style="left:${left}%;width:${width}%" title="${escapeHtml(PLAYER_SCORE_PHASE_META[phase.phase] || phase.phase || "阶段")}"></span>`;
+  }).join("");
+  const markers = playerScoreTimelineMarkers(model).slice(0, 140).map((marker) => `<button class="player-score-timeline-marker ${marker.type}" type="button" data-player-score-time="${marker.time}" style="left:${clamp(marker.time / duration * 100, 0, 100)}%" title="${formatTime(marker.time)} · ${escapeHtml(marker.label)}"></button>`).join("");
+  root.innerHTML = `<div class="player-score-timeline-track">${phaseBands}${markers}<span id="player-score-timeline-playhead" class="player-score-timeline-playhead" style="left:${clamp(state.currentTime / duration * 100, 0, 100)}%"></span></div><div class="player-score-timeline-scale"><span>00:00</span><span>10:00</span><span>20:00</span><span>${formatTime(duration)}</span></div>`;
+  document.querySelector("#player-score-timeline-current").textContent = formatTime(state.currentTime);
+}
+
+function playerScoreEvidenceFact(label, value, tone = "") {
+  const displayValue = value == null || value === "" ? "--" : value;
+  return `<div class="player-score-evidence-fact ${tone}"><small>${escapeHtml(label)}</small><strong>${escapeHtml(displayValue)}</strong></div>`;
+}
+
+function playerScoreRootCauseHtml(rootCause) {
+  if (!rootCause) return "";
+  const consequenceMeta = {
+    death: { label: "阵亡", icon: "skull" },
+    item_delay: { label: "装备延误", icon: "hourglass" },
+    objective_loss: { label: "目标损失", icon: "landmark" },
+    vision_gap: { label: "视野缺口", icon: "eye-off" },
+  };
+  const statusMeta = {
+    fact: "Replay 事实",
+    derived: "程序关联",
+    estimated: "区间估算",
+    gated: "门禁通过",
+    partial: "部分证据",
+  };
+  const consequences = (rootCause.consequences || []).map((consequence) => {
+    const meta = consequenceMeta[consequence.type] || { label: consequence.label || "比赛后果", icon: "circle-dot" };
+    const status = statusMeta[consequence.evidence_status] || "程序推导";
+    const contextOnly = consequence.personal_penalty_applied === false ? " · 仅作上下文" : "";
+    return `<div class="player-score-root-consequence ${escapeHtml(consequence.type || "derived")}">
+      <i data-lucide="${meta.icon}"></i>
+      <span><small>${escapeHtml(status)}${contextOnly}${consequence.time == null ? "" : ` · ${formatTime(consequence.time)}`}</small><strong>${escapeHtml(consequence.label || meta.label)}</strong><em>${escapeHtml(consequence.fact || "该后果已有结构化证据，但尚无文字摘要。")}</em></span>
+    </div>`;
+  }).join("");
+  const cap = rootCause.impact_cap || {};
+  const rawPenalty = playerScoreNumber(cap.raw_negative_overall);
+  const cappedPenalty = playerScoreNumber(cap.capped_negative_overall);
+  const limit = playerScoreNumber(cap.overall_penalty_cap) ?? 6;
+  const capApplied = cap.applied === true;
+  const capText = rawPenalty == null || cappedPenalty == null
+    ? "当前根因没有可计入的负向评分影响"
+    : capApplied
+      ? `封顶前 -${rawPenalty.toFixed(2)} → 计入 -${cappedPenalty.toFixed(2)}`
+      : `归因影响 -${cappedPenalty.toFixed(2)} · 单因上限 -${limit.toFixed(2)}`;
+  const dimensions = Object.entries(rootCause.dimension_impacts || {}).filter(([, value]) => Number(value) < 0)
+    .map(([key, value]) => `<span>${escapeHtml(PLAYER_SCORE_DIMENSION_META[key]?.label || key)} <b>${signedValue(value)}</b></span>`).join("");
+  return `<section class="player-score-root-cause">
+    <header><span><small>同一根因，只扣一次</small><strong>后果链</strong></span><em>${Number(rootCause.consequence_count || 0)} 项</em></header>
+    ${consequences ? `<div class="player-score-root-consequences">${consequences}</div>` : `<p>当前根因没有关联到额外后果。</p>`}
+    <div class="player-score-root-cap ${capApplied ? "capped" : ""}"><span><small>跨维度归因</small><strong>${escapeHtml(capText)}</strong></span><i data-lucide="${capApplied ? "shield-check" : "shield"}"></i></div>
+    ${dimensions ? `<div class="player-score-root-dimensions">${dimensions}</div>` : ""}
+  </section>`;
+}
+
+function playerScoreSelectedEvidence(model) {
+  const selected = state.selectedPlayerScoreEvidence;
+  if (selected?.type === "brief-story") {
+    const item = model.brief.stories.find((story) => String(story.id) === String(selected.id));
+    if (item) return { type: "brief-story", item };
+  }
+  if (selected?.type === "brief-insight") {
+    const item = [...model.brief.strengths, ...model.brief.priorities].find((insight) => String(insight.id) === String(selected.id));
+    if (item) return { type: "brief-insight", item };
+  }
+  if (selected?.type === "behavior-insight") {
+    const source = model.rawInsights.find((insight) => String(insight.id) === String(selected.id));
+    if (source) {
+      return {
+        type: "behavior-insight",
+        item: {
+          ...source,
+          time: playerScoreNumber(source.time_start ?? source.jump_target?.time),
+          timeEnd: playerScoreNumber(source.time_end),
+          module: source.jump_target?.module || playerScoreAdviceModule(source),
+          impact: playerScoreImpactText(source.impact),
+          evidenceRefs: source.evidence_refs || [],
+          rootCauseId: source.root_cause_id || null,
+          rootCause: model.rootCauseById?.get(String(source.root_cause_id || "")) || null,
+        },
+      };
+    }
+  }
+  if (selected?.type === "dimension") {
+    const item = model.dimensions.find((dimension) => dimension.key === selected.id);
+    if (item) return { type: "dimension", item };
+  }
+  if (selected?.type === "advice") {
+    const item = model.advice.find((advice) => advice.id === selected.id);
+    if (item) return { type: "advice", item };
+  }
+  if (selected?.type === "phase") {
+    const item = model.phases.find((phase) => phase.id === selected.id);
+    if (item) return { type: "phase", item };
+  }
+  if (selected?.type === "lane") {
+    const item = (laneReviewForSlot(model.hero.slot)?.checkpoints || []).find((point) => Number(point.time) === Number(selected.id));
+    if (item) return { type: "lane", item };
+  }
+  if (selected?.type === "farm") {
+    const item = farmDiagnosticsForHero(model.hero.slot).find((diagnostic) => String(diagnostic.id) === String(selected.id));
+    if (item) return { type: "farm", item };
+  }
+  if (selected?.type === "combat") {
+    const item = COMBAT_SEGMENTS.find((fight) => String(fight.id) === String(selected.id));
+    if (item) return { type: "combat", item };
+  }
+  if (selected?.type === "ward") {
+    const item = WARD_RECORDS.find((ward) => String(ward.id) === String(selected.id));
+    if (item) return { type: "ward", item };
+  }
+  if (selected?.type === "timeline") {
+    const item = playerScoreEventsForHero(model.hero).find((event) => String(event.scoreId) === String(selected.id));
+    if (item) return { type: "timeline", item };
+  }
+  const fallback = state.playerScoreMode === "brief"
+    ? model.brief.priorities[0] || model.brief.stories[0] || model.brief.strengths[0]
+    : model.advice[0] || [...model.dimensions].filter((dimension) => dimension.score != null).sort((left, right) => left.score - right.score)[0] || model.dimensions[0];
+  const type = state.playerScoreMode === "brief"
+    ? model.brief.priorities.includes(fallback) || model.brief.strengths.includes(fallback) ? "brief-insight" : "brief-story"
+    : fallback?.id && model.advice.includes(fallback) ? "advice" : "dimension";
+  state.selectedPlayerScoreEvidence = fallback ? { type, id: fallback.id || fallback.key } : null;
+  return fallback ? { type, item: fallback } : null;
+}
+
+function renderPlayerScoreEvidence(model) {
+  const root = document.querySelector("#player-score-evidence-body");
+  const title = document.querySelector("#player-score-evidence-title");
+  const stateTag = document.querySelector("#player-score-evidence-state");
+  const selected = playerScoreSelectedEvidence(model);
+  if (!selected) {
+    title.textContent = "评分证据";
+    stateTag.textContent = "证据不足";
+    stateTag.className = "evidence-tag insufficient";
+    root.innerHTML = `<div class="player-score-data-gap compact"><span>选择一项评分或事件查看证据</span></div>`;
+    return;
+  }
+  const { type, item } = selected;
+  let status = playerScoreEvidenceLevel("derived");
+  let heading = "评分证据";
+  let body = "";
+  let module = "timeline";
+  let time = null;
+  if (type === "brief-story") {
+    const verdict = PLAYER_SCORE_BRIEF_VERDICT_META[item.verdict] || PLAYER_SCORE_BRIEF_VERDICT_META.missing;
+    heading = item.title;
+    module = item.module || "timeline";
+    time = Number(item.time || 0);
+    status = playerScoreEvidenceLevel(Number(item.confidence || 0) >= 85 ? "full" : Number(item.confidence || 0) >= 70 ? "derived" : "partial");
+    const metrics = (item.metrics || []).map((metric) => playerScoreEvidenceFact(metric.label || "关键指标", metric.value ?? "--", "fact")).join("");
+    const refs = (item.evidenceRefs || []).map((ref) => `<code>${escapeHtml(ref)}</code>`).join("");
+    body = `<section class="player-score-evidence-score"><span><small>阶段判断</small><strong>${verdict.label}</strong></span><span><small>时间</small><strong>${escapeHtml(item.range)}</strong></span><span><small>置信度</small><strong>${item.confidence == null ? "--" : `${Math.round(item.confidence)}%`}</strong></span></section><section><header>比赛过程</header><p>${escapeHtml(item.summary)}</p></section>${metrics ? `<section><header>关键事实</header><div class="player-score-evidence-facts">${metrics}</div></section>` : ""}${refs ? `<section><header>证据引用</header><div class="player-score-evidence-refs">${refs}</div></section>` : ""}`;
+  } else if (type === "brief-insight" || type === "behavior-insight") {
+    heading = item.title;
+    module = item.module || "timeline";
+    time = item.time;
+    const confidence = Number(item.confidence || 0);
+    status = playerScoreEvidenceLevel(confidence >= 85 ? "full" : confidence >= 70 ? "derived" : "partial");
+    const refs = (item.evidenceRefs || []).map((ref) => `<code>${escapeHtml(ref)}</code>`).join("");
+    const rootCause = item.rootCause || model.rootCauseById?.get(String(item.rootCauseId || ""));
+    body = `<section class="player-score-evidence-flow">${playerScoreEvidenceFact("时间与位置", `${item.time == null ? "时间待补" : formatTime(item.time)}${item.location ? ` · ${item.location}` : ""}`, "fact")}${playerScoreEvidenceFact("Replay 事实", item.fact || "事实摘要待补", "fact")}${playerScoreEvidenceFact("判断", item.judgment || (item.kind === "strength" ? "这是本场可确认的正向行为。" : "该行为通过当前证据门槛。"), "derived")}${playerScoreEvidenceFact("影响", item.impact || "影响范围尚未量化", "impact")}${playerScoreEvidenceFact(item.kind === "strength" ? "继续保持" : "下一次动作", item.action || "打开对应模块复核", "action")}</section>${playerScoreRootCauseHtml(rootCause)}${refs ? `<section><header>证据引用</header><div class="player-score-evidence-refs">${refs}</div></section>` : ""}`;
+  } else if (type === "dimension") {
+    heading = item.label;
+    status = playerScoreEvidenceLevel(item.score == null ? "missing" : item.source?.confidence >= 85 ? "full" : "derived");
+    module = item.module;
+    const fallbackFacts = playerScoreFallbackDimensionFacts(model, item.key);
+    const facts = item.evidence.length ? item.evidence.map((evidence) => playerScoreEvidenceFact(PLAYER_EVIDENCE_META[evidence.key]?.[0] || evidence.key || "指标", playerEvidenceText(evidence))).join("")
+      : `${fallbackFacts.map(([label, value]) => playerScoreEvidenceFact(label, value, "fact")).join("")}${playerScoreEvidenceFact("评分状态", "事实可展示，但当前分析包没有足够门禁生成该维度分", "missing")}`;
+    const missing = (item.missing || []).map((key) => `<span>${escapeHtml(PLAYER_SCORE_MISSING_META[key] || key)}</span>`).join("");
+    const behaviorComponents = item.behaviorComponents.filter((component) => component?.insight_id).map((component) => {
+      const insight = model.rawInsights.find((candidate) => String(candidate.id) === String(component.insight_id));
+      const rootCause = model.rootCauseById?.get(String(component.root_cause_id || insight?.root_cause_id || ""));
+      const impact = playerScoreNumber(component.impact);
+      const timeStart = playerScoreNumber(component.time_start ?? insight?.time_start ?? component.jump_target?.time);
+      const gateStatus = component.gate_status || insight?.gate_status || "passed";
+      const consequenceCount = Number(rootCause?.consequence_count || component.consequence_types?.length || 0);
+      const gateText = rootCause?.impact_cap?.applied
+        ? `同因 ${consequenceCount} 项后果 · 综合扣分已封顶`
+        : consequenceCount
+          ? `同因 ${consequenceCount} 项后果 · 只计一次`
+          : gateStatus === "passed" ? "已通过行为门禁" : `门禁 ${gateStatus}`;
+      return `<button class="player-score-behavior-component ${impact == null ? "neutral" : impact >= 0 ? "positive" : "negative"}" type="button" data-player-score-evidence-type="behavior-insight" data-player-score-evidence-id="${escapeHtml(component.insight_id)}" data-player-score-time="${timeStart ?? 0}">
+        <span><small>${timeStart == null ? "全场聚合" : formatTime(timeStart)}${component.location ? ` · ${escapeHtml(component.location)}` : ""}</small><strong>${escapeHtml(component.title || insight?.title || "行为证据")}</strong><em>${escapeHtml(gateText)}</em></span>
+        <b class="${impact != null && impact >= 0 ? "positive" : "negative"}">${impact == null ? "--" : signedValue(impact)}</b><i data-lucide="chevron-right"></i>
+      </button>`;
+    }).join("");
+    body = `<section class="player-score-evidence-score"><span><small>维度分</small><strong>${item.score == null ? "--" : Math.round(item.score)}</strong></span><span><small>位置权重</small><strong>${item.roleWeight}%</strong></span><span><small>置信度</small><strong>${item.confidence == null ? "--" : `${Math.round(item.confidence)}%`}</strong></span></section>${behaviorComponents ? `<section><header>行为加减分</header><div class="player-score-behavior-components">${behaviorComponents}</div></section>` : ""}<section><header>使用事实</header><div class="player-score-evidence-facts">${facts}</div></section>${missing ? `<section><header>缺失字段与门禁</header><div class="player-score-evidence-missing">${missing}</div></section>` : ""}<section><header>评分说明</header><p>${escapeHtml(item.score == null ? "缺失指标不会按 0 分处理，本维度从有效分母移除并降低报告置信度。" : `${item.brief}。当前分数来自 ${item.sourceKey || item.key}，不直接受比赛胜负影响。`)}</p>${item.scoreImpact == null ? "" : `<small>对综合分影响 ${signedValue(item.scoreImpact)}</small>`}</section>`;
+  } else if (type === "advice") {
+    heading = item.title;
+    status = playerScoreEvidenceLevel(item.legacy || Number(item.confidence || 0) < 70 ? "partial" : Number(item.confidence || 0) >= 85 ? "full" : "derived");
+    module = item.module;
+    time = item.timeStart;
+    const refs = (item.evidence_refs || []).map((ref) => `<code>${escapeHtml(ref)}</code>`).join("") || `<span>旧版报告未保存行为级证据引用</span>`;
+    const missing = (item.missing || []).map((value) => `<span>${escapeHtml(value)}</span>`).join("");
+    body = `<section class="player-score-evidence-flow">${playerScoreEvidenceFact("事实", item.fact || "事实摘要待补", "fact")}${playerScoreEvidenceFact("判断", item.judgment || "只保留高价值复核", "derived")}${playerScoreEvidenceFact("影响", item.impactText, "impact")}${playerScoreEvidenceFact("下一步动作", item.action || "打开对应模块复核", "action")}</section>${playerScoreRootCauseHtml(item.rootCause)}<section><header>证据引用</header><div class="player-score-evidence-refs">${refs}</div></section>${missing ? `<section><header>缺失字段</header><div class="player-score-evidence-missing">${missing}</div></section>` : ""}`;
+  } else if (type === "phase") {
+    heading = PLAYER_SCORE_PHASE_META[item.phase] || item.phase || "阶段表现";
+    module = item.phase === "laning" ? "development" : "timeline";
+    time = item.start;
+    status = playerScoreEvidenceLevel(item.score == null ? "missing" : "derived");
+    body = `<section class="player-score-evidence-score"><span><small>阶段分</small><strong>${item.score == null ? "--" : Math.round(item.score)}</strong></span><span><small>时间</small><strong>${formatTime(item.start)}-${formatTime(item.end)}</strong></span><span><small>置信度</small><strong>${item.confidence == null ? "--" : `${Math.round(item.confidence)}%`}</strong></span></section><section><header>阶段事实</header><div class="player-score-evidence-facts">${playerScoreEvidenceFact("K / D / A", `${Number(item.kills || 0)} / ${Number(item.deaths || 0)} / ${Number(item.assists || 0)}`)}${playerScoreEvidenceFact("补刀", String(Number(item.last_hits || 0)))}${playerScoreEvidenceFact("经济增长", Number(item.networth_gain || 0).toLocaleString("zh-CN"))}${playerScoreEvidenceFact("英雄伤害", Number(item.damage_dealt || 0).toLocaleString("zh-CN"))}</div></section>`;
+  } else if (type === "lane") {
+    heading = `${formatTime(item.time)} 对线检查点`;
+    module = "development";
+    time = Number(item.time);
+    status = playerScoreEvidenceLevel("derived");
+    body = `<section class="player-score-evidence-score"><span><small>线况分</small><strong>${signedValue(item.score)}</strong></span><span><small>补刀差</small><strong>${signedValue(item.last_hits_diff)}</strong></span><span><small>等级差</small><strong>${item.level_diff == null ? "--" : signedValue(item.level_diff)}</strong></span></section><section><header>对位事实</header><div class="player-score-evidence-facts">${playerScoreEvidenceFact("经验差", item.xp_diff == null ? "--" : signedValue(item.xp_diff))}${playerScoreEvidenceFact("净值差", item.networth_diff == null ? "--" : signedValue(item.networth_diff))}${playerScoreEvidenceFact("判定", (LANE_VERDICT_META[item.verdict] || LANE_VERDICT_META.even).label)}</div></section>`;
+  } else if (type === "farm") {
+    const meta = farmDecisionMeta(item.decision);
+    heading = farmDiagnosticTitle(item.title);
+    module = "farm";
+    time = Number(item.time);
+    status = playerScoreEvidenceLevel(item.recommendation_enabled ? Number(item.confidence || 0) >= 85 ? "full" : "gated" : "partial");
+    body = `<section class="player-score-evidence-flow">${playerScoreEvidenceFact("Replay 实际", `${farmOptionName(item.actual)} · ${Number(item.actualGold || 0)} 金`, "fact")}${playerScoreEvidenceFact("程序判断", `${meta.label} · ${escapeHtml(item.reason || "路线事实待复核")}`, "derived")}${playerScoreEvidenceFact("候选影响", item.recommendation_enabled ? `${farmOptionName(item.recommendation)} · ${Number(item.suggestedGold || 0)} 金` : "候选路线门禁未通过", "impact")}${playerScoreEvidenceFact("门禁", item.recommendation_enabled ? `通过 · 置信度 ${Number(item.confidence || 0)}%` : routeBlockerName(item.route_blocker) || "证据不足", "action")}</section>`;
+  } else if (type === "combat") {
+    const contribution = fightContributions(item).find((row) => Number(row.slot) === Number(model.hero.slot));
+    const gate = contribution?.responsibility_gate;
+    const gateMeta = responsibilityGateMeta(gate);
+    heading = item.title;
+    module = "combat";
+    time = Number(item.contact_start ?? item.start);
+    status = playerScoreEvidenceLevel(gate?.status === "passed" ? "gated" : "partial");
+    body = contribution ? `<section class="player-score-evidence-score"><span><small>职责分</small><strong>${gate?.status === "passed" ? Math.round(Number(contribution.responsibilityScore || 0)) : "--"}</strong></span><span><small>在场率</small><strong>${Number(contribution.presencePct || 0)}%</strong></span><span><small>到场</small><strong>+${Number(contribution.arrivalDelay || 0)}s</strong></span></section><section><header>个人贡献</header><div class="player-score-evidence-facts">${playerScoreEvidenceFact("伤害 / 占比", `${Number(contribution.damage || 0).toLocaleString("zh-CN")} / ${Number(contribution.teamDamageShare || 0).toFixed(1)}%`)}${playerScoreEvidenceFact("技能 / 物品", `${Number(contribution.abilityCasts || 0)} / ${Number(contribution.itemUses || 0)}`)}${playerScoreEvidenceFact("控制 / 治疗", `${Number(contribution.controlSeconds || 0).toFixed(1)} 秒 / ${Number(contribution.healing || 0)}`)}${playerScoreEvidenceFact("职责硬门禁", gate ? gateMeta.label : "证据不足", gateMeta.className)}</div></section>` : `<section><p>该战斗有参与者事实，但没有可归属到当前玩家的贡献与职责门禁。</p></section>`;
+  } else if (type === "ward") {
+    const wardType = wardTypeMeta(item.type);
+    const life = Math.max(0, Number(item.endedAt || 0) - Number(item.placedAt || 0));
+    heading = `${wardType.name} · ${item.region}`;
+    module = "vision";
+    time = Number(item.placedAt || 0);
+    status = playerScoreEvidenceLevel(item.score == null ? "partial" : "derived");
+    body = `<section class="player-score-evidence-score"><span><small>眼位评分</small><strong>${item.score == null ? "--" : Math.round(Number(item.score))}</strong></span><span><small>存活</small><strong>${formatTime(life)}</strong></span><span><small>发现</small><strong>${Number(item.detections || item.detectionEvents?.length || 0)} 次</strong></span></section><section><header>生命周期</header><div class="player-score-evidence-facts">${playerScoreEvidenceFact("放置时间", formatTime(item.placedAt))}${playerScoreEvidenceFact("结束时间", formatTime(item.endedAt))}${playerScoreEvidenceFact("用途", item.purpose === "offense" ? "进攻眼" : item.purpose === "defense" ? "防守眼" : "待判定")}${playerScoreEvidenceFact("结束原因", item.endReason || "待确认")}</div></section>`;
+  } else {
+    heading = item.text || "个人事件";
+    module = item.category === "farm" ? "farm" : item.category === "vision" ? "vision" : item.category === "item" ? "build" : item.category === "combat" ? "combat" : "timeline";
+    time = Number(item.time || 0);
+    status = playerScoreEvidenceLevel(item.evidence === "事实" ? "full" : "derived");
+    body = `<section class="player-score-evidence-flow">${playerScoreEvidenceFact("时间", formatTime(item.time), "fact")}${playerScoreEvidenceFact("事件", item.text || "Replay 事件", "fact")}${playerScoreEvidenceFact("数值", item.value || "--", "impact")}${playerScoreEvidenceFact("位置", item.location || "未知区域", "derived")}</section>`;
+  }
+  title.textContent = heading;
+  stateTag.textContent = status.label;
+  stateTag.className = `evidence-tag ${status.className}`;
+  root.innerHTML = `${body}<footer><button class="command-button secondary" type="button" data-player-score-jump="${escapeHtml(module)}" ${time == null ? "" : `data-player-score-time="${time}"`}><i data-lucide="external-link"></i><span>前往对应模块</span></button></footer>`;
+  refreshIcons(root);
+}
+
+function renderPlayerScoreContent(model) {
+  const root = document.querySelector("#player-score-content");
+  const section = state.playerScoreSection;
+  const mode = state.playerScoreMode === "deep" ? "deep" : "brief";
+  const panel = document.querySelector(".player-score-main-panel");
+  const tabs = document.querySelector("#player-score-sections");
+  panel?.classList.toggle("brief-mode", mode === "brief");
+  panel?.classList.toggle("deep-mode", mode === "deep");
+  tabs?.classList.toggle("hidden", mode !== "deep");
+  document.querySelectorAll("#player-score-modes [data-player-score-mode]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.playerScoreMode === mode);
+  });
+  const modeMeta = document.querySelector("#player-score-mode-meta span");
+  if (modeMeta) modeMeta.textContent = mode === "brief"
+    ? model.brief.source === "v3" ? "结构化结论与证据来自同一份 Replay" : "兼容旧报告，仅展示达到证据门槛的结论"
+    : `${model.dimensions.filter((dimension) => dimension.score != null).length}/10 个维度可评分 · 缺失指标不按 0 分`;
+  document.querySelectorAll("#player-score-sections [data-player-score-section]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.playerScoreSection === section);
+  });
+  const needsUpgrade = !model.hasReport || model.legacy || state.currentAnalysis?.upgrade_required;
+  const upgrade = needsUpgrade && section === "overview"
+    ? `<div class="player-score-upgrade-banner"><i data-lucide="scan-search"></i><span><strong>${model.hasReport ? "当前是旧版玩家报告" : "当前分析包没有玩家评分报告"}</strong><small>现有事实仍可查看；重新解析后生成按位置门禁的简报、证据与训练计划。</small></span>${state.currentMatch ? `<button class="command-button secondary" type="button" data-player-score-reparse><i data-lucide="rotate-cw"></i><span>升级分析</span></button>` : ""}</div>`
+    : "";
+  if (mode === "brief") {
+    root.innerHTML = `${upgrade}${renderPlayerScoreBrief(model)}`;
+    installImageFallback(root, heroImage("unknown"));
+    refreshIcons(root);
+    return;
+  }
+  const renderer = {
+    overview: renderPlayerScoreOverview,
+    lane: renderPlayerScoreLane,
+    farm: renderPlayerScoreFarm,
+    tempo: renderPlayerScoreTempo,
+    combat: renderPlayerScoreCombat,
+    vision: renderPlayerScoreVision,
+    execution: renderPlayerScoreExecution,
+    timeline: renderPlayerScoreTimelineTab,
+  }[section] || renderPlayerScoreOverview;
+  root.innerHTML = `${upgrade}${renderer(model)}`;
+  installImageFallback(root, heroImage("unknown"));
+  refreshIcons(root);
+}
+
+function renderPlayerScore() {
+  if (!document.querySelector("#detail-player-score")) return;
+  const model = playerScoreModel();
+  renderPlayerScoreHeader(model);
+  renderPlayerScoreRoster();
+  renderPlayerScoreContent(model);
+  renderPlayerScoreEvidence(model);
+  renderPlayerScoreTimeline(model);
+}
+
+function syncPlayerScoreTime() {
+  const playhead = document.querySelector("#player-score-timeline-playhead");
+  if (playhead) playhead.style.left = `${clamp(state.currentTime / Math.max(1, MATCH_DURATION) * 100, 0, 100)}%`;
+  const current = document.querySelector("#player-score-timeline-current");
+  if (current) current.textContent = formatTime(state.currentTime);
+  const marker = document.querySelector("#player-score-content .player-score-current-hero");
+  if (marker) {
+    const position = positionAtTime(state.currentTime, state.selectedHeroSlot);
+    if (position) {
+      marker.style.left = `${position.x}%`;
+      marker.style.top = `${position.y}%`;
+    }
+  }
+  const visionMap = document.querySelector("#player-score-vision-map-canvas");
+  if (visionMap) {
+    const wards = WARD_RECORDS.filter((ward) => Number(ward.playerSlot) === Number(state.selectedHeroSlot));
+    const wardById = new Map(wards.map((ward) => [String(ward.id), ward]));
+    const selectedId = state.selectedPlayerScoreEvidence?.type === "ward" ? String(state.selectedPlayerScoreEvidence.id) : String(state.selectedWardId || "");
+    visionMap.querySelectorAll("[data-player-score-ward-id]").forEach((element) => {
+      const ward = wardById.get(String(element.dataset.playerScoreWardId));
+      if (!ward) return;
+      const timeState = wardIsActive(ward) ? "active" : state.currentTime < Number(ward.placedAt || 0) ? "future" : "expired";
+      element.classList.remove("active", "future", "expired");
+      element.classList.add(timeState);
+      element.classList.toggle("selected", String(ward.id) === selectedId);
+    });
+    visionMap.querySelectorAll("[data-player-score-ward-range-id]").forEach((element) => {
+      const ward = wardById.get(String(element.dataset.playerScoreWardRangeId));
+      if (!ward) return;
+      const timeState = wardIsActive(ward) ? "active" : state.currentTime < Number(ward.placedAt || 0) ? "future" : "expired";
+      element.classList.remove("active", "future", "expired", "inactive");
+      element.classList.add(timeState, timeState === "active" ? "active" : "inactive");
+      element.classList.toggle("selected", String(ward.id) === selectedId);
+    });
+    visionMap.querySelectorAll("[data-player-score-ward-detection-time]").forEach((element) => {
+      const time = Number(element.dataset.playerScoreWardDetectionTime || 0);
+      const timeState = Math.abs(state.currentTime - time) <= 12 ? "current" : time <= state.currentTime ? "seen" : "future";
+      element.classList.remove("current", "seen", "future");
+      element.classList.add(timeState);
+    });
+    const current = visionMap.querySelector("#player-score-vision-time");
+    const active = visionMap.querySelector("#player-score-vision-active");
+    if (current) current.textContent = formatTime(state.currentTime);
+    if (active) {
+      const drawable = wards.filter((ward) => ward.coordinate_valid !== false && Number.isFinite(Number(ward.x)) && Number.isFinite(Number(ward.y)));
+      active.textContent = `当前存活 ${drawable.filter((ward) => wardIsActive(ward)).length} · 可定位 ${drawable.length}/${wards.length}`;
+    }
+  }
+}
+
+function jumpFromPlayerScore(moduleName, time) {
+  const view = moduleName === "lane" ? "development" : moduleName;
+  const selected = state.selectedPlayerScoreEvidence;
+  if (view === "combat" && selected?.type === "combat") state.selectedCombatId = selected.id;
+  if (view === "farm" && selected?.type === "farm") state.selectedFarmDiagnosticId = selected.id;
+  if (view === "vision" && selected?.type === "ward") state.selectedWardId = selected.id;
+  if (view === "development") setDevelopmentSideView("lane");
+  if (REAL_ANALYSIS_VIEWS.has(view)) setDetailView(view);
+  if (Number.isFinite(Number(time))) updateCurrentTime(Number(time), { syncSegment: false });
 }
 
 function renderCoverage() {
@@ -3497,6 +5771,7 @@ function updatePlayheadMs(value, options = {}) {
   syncWardTime();
   syncFarmTime();
   syncCombatPhasePlayhead();
+  syncPlayerScoreTime();
 
   const currentSegment = SEGMENTS.find((segment) => state.currentTime >= segment.start && state.currentTime <= segment.end);
   if (currentSegment && options.syncSegment !== false) {
@@ -3513,6 +5788,7 @@ function updateCurrentTime(value, options = {}) {
 function selectHero(slot) {
   state.selectedHeroSlot = Number(slot);
   state.selectedCombatPlayerSlot = state.selectedHeroSlot;
+  state.selectedPlayerScoreEvidence = null;
   if (state.currentAnalysis) hydrateSelectedHeroModules(state.selectedHeroSlot);
   const hero = safeHero(state.selectedHeroSlot);
   renderHeroStrip();
@@ -3525,912 +5801,23 @@ function selectHero(slot) {
   renderMapMarkers();
   renderBuild();
   renderCombat();
+  if (state.detailView === "player-score") renderPlayerScore();
   if (state.detailView === "development") ensureChart();
   updateCurrentTime(state.currentTime, { syncSegment: false });
   if (state.detailView === "farm") renderFarmAnalysis();
 }
 
-function formatGoldenTime(milliseconds) {
-  const value = Math.round(Number(milliseconds) || 0);
-  const sign = value < 0 ? "-" : "";
-  const absolute = Math.abs(value);
-  const minutes = Math.floor(absolute / 60000);
-  const seconds = Math.floor((absolute % 60000) / 1000);
-  const millis = absolute % 1000;
-  return `${sign}${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(millis).padStart(3, "0")}`;
-}
-
-function parseGoldenTimeInput(value) {
-  const normalized = String(value || "").trim().replace("：", ":").replace(",", ".");
-  if (!normalized) return null;
-  if (!normalized.includes(":")) {
-    const seconds = Number(normalized);
-    return Number.isFinite(seconds) ? Math.round(seconds * 1000) : null;
-  }
-  const match = normalized.match(/^(-)?(\d+):([0-5]?\d)(?:\.(\d{1,3}))?$/);
-  if (!match) return null;
-  const sign = match[1] ? -1 : 1;
-  const minutes = Number(match[2]);
-  const seconds = Number(match[3]);
-  const millis = Number(String(match[4] || "0").padEnd(3, "0"));
-  return sign * (minutes * 60_000 + seconds * 1000 + millis);
-}
-
-function goldenDurationMs() {
-  return Math.max(1, Number(state.golden.analysis?.match?.duration || 1) * 1000);
-}
-
-function goldenPlayers() {
-  return [...(state.golden.analysis?.match?.players || [])]
-    .sort((a, b) => Number(a.player_slot) - Number(b.player_slot))
-    .map((player, slot) => {
-      const meta = heroMeta(player.hero_id);
-      return {
-        slot,
-        team: Number(player.player_slot) < 128 ? "radiant" : "dire",
-        token: meta.token,
-        name: meta.name,
-        player: player.personaname || player.name || "匿名玩家",
-      };
-    });
-}
-
-function goldenSelectedEvent() {
-  return state.golden.document?.events?.find((event) => event.id === state.golden.selectedEventId) || null;
-}
-
-function goldenSnapshotAt(slot, milliseconds = state.golden.currentTimeMs) {
-  const rows = state.golden.analysis?.modules?.snapshots?.[String(slot)] || [];
-  if (!rows.length) return null;
-  const second = Math.round(Number(milliseconds) / 1000);
-  let low = 0;
-  let high = rows.length - 1;
-  let best = rows[0];
-  while (low <= high) {
-    const middle = Math.floor((low + high) / 2);
-    const current = rows[middle];
-    if (Math.abs(Number(current.second) - second) < Math.abs(Number(best.second) - second)) best = current;
-    if (Number(current.second) < second) low = middle + 1;
-    else if (Number(current.second) > second) high = middle - 1;
-    else return current;
-  }
-  return best;
-}
-
-function buildGoldenDensity(analysis) {
-  const durationSeconds = Math.max(1, Number(analysis?.match?.duration || 1));
-  const density = Array.from({ length: Math.ceil(durationSeconds) + 1 }, () => 0);
-  const weights = { hero_death: 9, damage: 3, control: 3, ability_use: 2, item_use: 1, heal: 1 };
-  for (const event of analysis?.modules?.timeline?.events || []) {
-    if (!isGoldenRawCombatEvent(event)) continue;
-    const second = clamp(Number(event.time) || 0, 0, durationSeconds);
-    const index = Math.min(density.length - 1, Math.floor(second));
-    const valueWeight = event.kind === "damage" ? Math.min(5, Math.log10(Math.max(10, Number(event.value) || 10))) : 0;
-    density[index] += (weights[event.kind] || 1) + valueWeight;
-  }
-  return density;
-}
-
-function buildGoldenDensityPeaks(density) {
-  if (!density?.length) return [];
-  const radius = 3;
-  const smoothed = density.map((_, index) => {
-    let sum = 0;
-    for (let cursor = Math.max(0, index - radius); cursor <= Math.min(density.length - 1, index + radius); cursor++) sum += density[cursor];
-    return sum;
-  });
-  const positive = smoothed.filter((value) => value > 0).sort((a, b) => a - b);
-  if (!positive.length) return [];
-  const threshold = positive[Math.floor((positive.length - 1) * 0.72)];
-  const candidates = [];
-  for (let index = 1; index < smoothed.length - 1; index++) {
-    if (smoothed[index] < threshold || smoothed[index] < smoothed[index - 1] || smoothed[index] < smoothed[index + 1]) continue;
-    candidates.push({ second: index, score: smoothed[index] });
-  }
-  const separated = [];
-  for (const candidate of candidates) {
-    const previous = separated.at(-1);
-    if (!previous || candidate.second - previous.second >= 15) separated.push(candidate);
-    else if (candidate.score > previous.score) separated[separated.length - 1] = candidate;
-  }
-  return separated.map((candidate) => candidate.second * 1000);
-}
-
-function goldenDensityRange() {
-  const duration = goldenDurationMs();
-  const windowSeconds = Number(state.golden.densityWindowSeconds) || 0;
-  if (!windowSeconds) return { start: 0, end: duration };
-  const radius = windowSeconds * 1000;
-  let start = Math.max(0, state.golden.currentTimeMs - radius);
-  let end = Math.min(duration, state.golden.currentTimeMs + radius);
-  const expected = Math.min(duration, radius * 2);
-  if (end - start < expected) {
-    if (start === 0) end = Math.min(duration, expected);
-    else start = Math.max(0, duration - expected);
-  }
-  return { start, end };
-}
-
-function goldenRawCombatEvents(startMs, endMs) {
-  return (state.golden.analysis?.modules?.timeline?.events || []).filter((event) => {
-    const timeMs = Number(event.time) * 1000;
-    return isGoldenRawCombatEvent(event) && timeMs >= startMs && timeMs <= endMs;
-  });
-}
-
-function goldenEventValidation(event) {
-  if (!event) return [];
-  const review = Number(event.review_start_ms);
-  const start = Number(event.contact_start_ms);
-  const peak = Number(event.peak_ms);
-  const end = Number(event.contact_end_ms);
-  const participants = [...new Set((event.participants || []).map(Number).filter((slot) => Number.isInteger(slot) && slot >= 0 && slot < 10))];
-  const radiant = participants.filter((slot) => slot < 5).length;
-  const dire = participants.length - radiant;
-  const combat = event.label !== "non_combat";
-  const center = event.center;
-  const hasCenter = Number.isFinite(Number(center?.map_x)) && Number.isFinite(Number(center?.map_y));
-  return [
-    { key: "time", label: "时间顺序", passed: review <= start && start <= peak && peak <= end },
-    { key: "review", label: "回溯 ≤10秒", passed: !combat || start - review <= 10_000 },
-    { key: "participants", label: "参与者", passed: !combat || participants.length >= 2 },
-    { key: "teams", label: "双方交互", passed: !combat || (radiant > 0 && dire > 0) },
-    { key: "center", label: "战场圆心", passed: !combat || hasCenter },
-    { key: "teamfight", label: "团战门槛", passed: event.label !== "teamfight" || (participants.length >= 5 && radiant >= 2 && dire >= 2 && !(radiant === 2 && dire === 2)) },
-  ];
-}
-
-function goldenEventIssues(event) {
-  return goldenEventValidation(event).filter((check) => !check.passed);
-}
-
-function renderGoldenLayoutState() {
-  const workspace = document.querySelector("#golden-workspace");
-  const signalList = document.querySelector("#golden-signal-list");
-  const evaluationPanel = document.querySelector("#golden-evaluation-panel");
-  workspace.classList.toggle("map-focused", state.golden.mapFocused);
-  signalList.classList.toggle("collapsed", !state.golden.signalsExpanded);
-  evaluationPanel.classList.toggle("collapsed", !state.golden.evaluationExpanded);
-
-  const mapButton = document.querySelector("#golden-map-focus");
-  mapButton.innerHTML = `<i data-lucide="${state.golden.mapFocused ? "minimize-2" : "maximize-2"}"></i>`;
-  mapButton.title = state.golden.mapFocused ? "恢复三栏工作区" : "放大地图工作区";
-  const signalButton = document.querySelector("#golden-toggle-signals");
-  signalButton.innerHTML = `<i data-lucide="${state.golden.signalsExpanded ? "chevron-up" : "chevron-down"}"></i>`;
-  signalButton.title = state.golden.signalsExpanded ? "收起原始事件列表" : "展开原始事件列表";
-  const evaluationButton = document.querySelector("#golden-toggle-evaluation");
-  evaluationButton.innerHTML = `<i data-lucide="${state.golden.evaluationExpanded ? "chevron-down" : "chevron-up"}"></i>`;
-  evaluationButton.title = state.golden.evaluationExpanded ? "收起评测面板" : "展开评测面板";
-  refreshIcons(mapButton);
-  refreshIcons(signalButton);
-  refreshIcons(evaluationButton);
-}
-
-function renderGoldenValidation(event) {
-  const validation = document.querySelector("#golden-validation");
-  validation.innerHTML = goldenEventValidation(event).map((check) => `<span class="${check.passed ? "" : "invalid"}" title="${check.passed ? "已满足" : "需要完善"}">${check.label}</span>`).join("");
-}
-
-function goldenDensityTimeFromPointer(event) {
-  const rect = event.currentTarget.getBoundingClientRect();
-  const ratio = clamp((event.clientX - rect.left) / Math.max(1, rect.width), 0, 1);
-  const range = goldenDensityRange();
-  return Math.round(range.start + ratio * (range.end - range.start));
-}
-
-function updateGoldenDensityTooltip(event) {
-  const tooltip = document.querySelector("#golden-density-tooltip");
-  const rect = event.currentTarget.getBoundingClientRect();
-  const timeMs = goldenDensityTimeFromPointer(event);
-  const second = Math.max(0, Math.round(timeMs / 1000));
-  const intensity = Number(state.golden.density?.[second]) || 0;
-  const left = clamp(event.clientX - rect.left, 46, Math.max(46, rect.width - 46));
-  tooltip.value = `${formatGoldenTime(timeMs)} · 强度 ${intensity.toFixed(1)}`;
-  tooltip.textContent = tooltip.value;
-  tooltip.style.left = `${left}px`;
-  tooltip.classList.remove("hidden");
-}
-
-function setGoldenDensityWindow(seconds) {
-  state.golden.densityWindowSeconds = Number(seconds) || 0;
-  renderGoldenDensity();
-  renderGoldenWindowTrack(goldenSelectedEvent());
-}
-
-function jumpGoldenPeak(direction) {
-  const peaks = state.golden.densityPeaks || [];
-  const target = direction > 0
-    ? peaks.find((time) => time > state.golden.currentTimeMs + 250)
-    : [...peaks].reverse().find((time) => time < state.golden.currentTimeMs - 250);
-  if (target != null) setGoldenTime(target);
-}
-
-function renderGoldenMatchOptions() {
-  const select = document.querySelector("#golden-match-select");
-  const current = state.golden.matchId;
-  select.innerHTML = `<option value="">选择本地比赛</option>${state.golden.matches.map((match) => {
-    const annotation = match.annotation || {};
-    const status = annotation.status === "not_started" ? "未开始" : annotation.status === "draft" ? "草稿" : annotation.status === "adjudicated" ? "已仲裁" : "已完成";
-    return `<option value="${match.match_id}">${match.match_id} · ${escapeHtml(match.patch_name || "版本未知")} · ${formatTime(match.duration || 0)} · ${status}</option>`;
-  }).join("")}`;
-  select.value = state.golden.matches.some((match) => String(match.match_id) === String(current)) ? current : "";
-  renderGoldenSlotStatus();
-}
-
-function renderGoldenSlotStatus() {
-  const match = state.golden.matches.find((item) => String(item.match_id) === String(state.golden.matchId));
-  const slots = match?.annotation_slots || {};
-  const slotsHtml = Object.entries(GOLDEN_ANNOTATOR_META).map(([key, label]) => {
-    const status = slots[key]?.status || "not_started";
-    const statusLabel = status === "not_started" ? "未开始" : status === "draft" ? "草稿" : status === "complete" ? "完成" : "仲裁";
-    return `<span class="${status}">${label} · ${statusLabel}</span>`;
-  }).join("");
-  const model = state.golden.model;
-  const modelHtml = model
-    ? `<span class="${model.status === "active" ? "complete" : ""}" title="跨比赛留一验证，不使用当前比赛自身标签">全局学习 · ${Number(model.training_matches || 0)} 场 / ${Number(model.samples || 0)} 样本</span>`
-    : "";
-  document.querySelector("#golden-slot-status").innerHTML = `${slotsHtml}${modelHtml}`;
-}
-
-async function loadGoldenMatches({ reloadSelected = false, silent = false } = {}) {
-  try {
-    const payload = await apiFetch(`/qa/goldens?annotator=${encodeURIComponent(state.golden.annotator)}`, { timeout: 20000 });
-    state.golden.matches = payload.matches || [];
-    state.golden.model = payload.learning_model || null;
-    renderGoldenMatchOptions();
-    if (reloadSelected && state.golden.matchId) await loadGoldenMatch(state.golden.matchId);
-  } catch (error) {
-    if (!silent) showToast("无法读取黄金样本", error.message || "请检查本地解析器", "circle-alert");
-  }
-}
-
-async function loadGoldenMatch(matchId) {
-  const id = String(matchId || "");
-  state.golden.matchId = id;
-  state.golden.loading = Boolean(id);
-  state.golden.evaluation = null;
-  state.golden.evaluationScope = "match";
-  renderGoldenMatchOptions();
-  if (!id) {
-    state.golden.analysis = null;
-    state.golden.document = null;
-    state.golden.selectedEventId = null;
-    renderGoldenWorkspace();
-    return;
-  }
-  document.querySelector("#golden-empty").classList.remove("hidden");
-  document.querySelector("#golden-empty strong").textContent = "正在读取本地分析包";
-  document.querySelector("#golden-empty small").textContent = `比赛 ${id} · 标注文件与模型摘要保持隔离`;
-  document.querySelector("#golden-workspace").classList.add("hidden");
-  try {
-    const annotator = encodeURIComponent(state.golden.annotator);
-    const [analysis, annotationDocument] = await Promise.all([
-      apiFetch(`/matches/${id}/analysis`, { timeout: 30000 }),
-      apiFetch(`/qa/goldens/${id}?annotator=${annotator}`, { timeout: 15000 }),
-    ]);
-    await fetchAnalysisModules(analysis, id, ["combat", "timeline"]);
-    normalizeAnalysisSnapshots(analysis);
-    state.golden.analysis = analysis;
-    state.golden.document = annotationDocument;
-    state.golden.blind = true;
-    state.golden.density = buildGoldenDensity(analysis);
-    state.golden.densityPeaks = buildGoldenDensityPeaks(state.golden.density);
-    state.golden.currentTimeMs = Math.min(goldenDurationMs(), Number(annotationDocument.events?.[0]?.contact_start_ms || 0));
-    state.golden.selectedEventId = annotationDocument.events?.[0]?.id || null;
-    state.golden.dirty = false;
-    document.querySelector("#golden-time-slider").max = String(goldenDurationMs());
-    document.querySelector("#golden-time-slider").value = String(state.golden.currentTimeMs);
-    document.querySelector("#golden-blind-toggle").checked = state.golden.blind;
-    renderGoldenWorkspace();
-    if (state.golden.annotator === "adjudicated") await renderGoldenAdjudicationDiff();
-  } catch (error) {
-    state.golden.analysis = null;
-    state.golden.document = null;
-    document.querySelector("#golden-empty strong").textContent = "标注工作台读取失败";
-    document.querySelector("#golden-empty small").textContent = error.message || "请确认比赛拥有完整本地分析";
-    showToast("标注工作台读取失败", error.message, "circle-alert");
-  } finally {
-    state.golden.loading = false;
-  }
-}
-
-function renderGoldenWorkspace() {
-  const ready = Boolean(state.golden.analysis && state.golden.document);
-  document.querySelector("#golden-empty").classList.toggle("hidden", ready);
-  document.querySelector("#golden-workspace").classList.toggle("hidden", !ready);
-  document.querySelector("#golden-evaluation-panel").classList.toggle("hidden", !ready);
-  if (!ready) return;
-  const match = state.golden.analysis.match || {};
-  document.querySelector("#golden-stage-title").textContent = `比赛 ${match.match_id} · ${match.patch_name || "版本未知"}`;
-  document.querySelector("#golden-document-status").textContent = state.golden.document.status === "adjudicated" ? "仲裁完成" : state.golden.document.status === "complete" ? "标注完成" : "草稿";
-  document.querySelector("#golden-status-select").value = state.golden.document.status || "draft";
-  document.querySelector("#golden-status-select").querySelector('option[value="adjudicated"]').disabled = state.golden.annotator !== "adjudicated";
-  document.querySelector("#golden-save span").textContent = state.golden.document.status === "draft" ? "保存草稿" : "保存标注";
-  document.querySelector("#golden-run-evaluation").disabled = state.golden.document.status === "draft";
-  renderGoldenLayoutState();
-  renderGoldenEventList();
-  renderGoldenStage();
-  renderGoldenInspector();
-  renderGoldenEvaluation();
-  refreshIcons(document.querySelector("#page-goldens"));
-}
-
-function renderGoldenEventList() {
-  const events = [...(state.golden.document?.events || [])].sort((a, b) => Number(a.contact_start_ms) - Number(b.contact_start_ms));
-  document.querySelector("#golden-event-count").textContent = String(events.length);
-  const issueCount = events.filter((event) => goldenEventIssues(event).length).length;
-  document.querySelector("#golden-issue-count").textContent = String(issueCount);
-  const list = document.querySelector("#golden-event-list");
-  list.innerHTML = events.length ? events.map((event) => {
-    const meta = GOLDEN_LABEL_META[event.label] || GOLDEN_LABEL_META.non_combat;
-    const participants = event.participants?.length || 0;
-    const duration = Math.max(0, Number(event.contact_end_ms || 0) - Number(event.contact_start_ms || 0));
-    const issues = goldenEventIssues(event);
-    const status = issues.length
-      ? `<em class="issue" title="${escapeHtml(issues.map((issue) => issue.label).join("、"))}">${issues.length}</em>`
-      : `<em class="${event.confidence || "medium"}" title="标注完整"></em>`;
-    return `<button class="golden-event-row ${event.id === state.golden.selectedEventId ? "active" : ""}" type="button" data-golden-event-id="${escapeHtml(event.id)}"><time>${formatGoldenTime(event.contact_start_ms).slice(0, 5)}</time><span><strong>${meta.label}</strong><small>${participants} 人 · ${(duration / 1000).toFixed(1)} 秒${event.tags?.length ? ` · ${event.tags.map((tag) => GOLDEN_TAG_META[tag] || tag).slice(0, 2).join("/")}` : ""}</small></span>${status}</button>`;
-  }).join("") : `<div class="golden-inspector-empty">从全场时间轴发现第一段英雄交互</div>`;
-}
-
-function renderGoldenStage() {
-  const time = clamp(Number(state.golden.currentTimeMs) || 0, 0, goldenDurationMs());
-  state.golden.currentTimeMs = time;
-  document.querySelector("#golden-time-slider").value = String(time);
-  document.querySelector("#golden-current-time").textContent = formatGoldenTime(time);
-  document.querySelector("#golden-map-time").textContent = formatGoldenTime(time).slice(0, 5);
-  const players = goldenPlayers();
-  const selected = goldenSelectedEvent();
-  const selectedParticipants = new Set((selected?.participants || []).map(Number));
-  const heroes = document.querySelector("#golden-map-heroes");
-  heroes.innerHTML = players.map((player) => {
-    const snapshot = goldenSnapshotAt(player.slot, time);
-    const x = Number(snapshot?.x);
-    const y = Number(snapshot?.y);
-    if (snapshot?.coordinate_valid === false || !Number.isFinite(x) || !Number.isFinite(y)) return "";
-    const inactive = Number(snapshot.life_state) !== 0 ? "inactive" : "";
-    const participantState = selectedParticipants.size ? selectedParticipants.has(player.slot) ? "selected" : "deemphasized" : "";
-    return `<img class="golden-map-hero ${player.team} ${inactive} ${participantState}" src="${heroImage(player.token)}" alt="${escapeHtml(player.name)}" title="${escapeHtml(player.name)} · ${escapeHtml(snapshot.region || "未知区域")}" style="left:${x}%;top:${y}%">`;
-  }).join("");
-
-  const windowStart = time - 5000;
-  const windowEnd = time + 5000;
-  const signals = goldenRawCombatEvents(windowStart, windowEnd).slice(0, 40);
-  document.querySelector("#golden-signal-count").textContent = `${signals.length} 条`;
-  document.querySelector("#golden-map-signals").innerHTML = signals.filter((event) => event.coordinate_valid !== false
-    && Number.isFinite(Number(event.x)) && Number.isFinite(Number(event.y))).map((event) => `<span class="golden-map-signal" style="left:${Number(event.x)}%;top:${Number(event.y)}%"></span>`).join("");
-  document.querySelector("#golden-signal-list").innerHTML = signals.length ? signals.slice(0, 18).map((event) => {
-    const actor = players[Number(event.actor_slot)]?.name || "系统";
-    const target = players[Number(event.target_slot)]?.name;
-    const key = event.key ? abilityName(event.key) : event.kind === "damage" ? "英雄伤害" : event.kind === "control" ? "控制" : event.kind || "战斗事件";
-    const value = event.value == null ? "" : ` · ${Number(event.value).toLocaleString("zh-CN")}`;
-    return `<div class="golden-signal-row"><time>${formatTime(event.time)}</time><strong>${escapeHtml(event.kind || "事件")}</strong><span>${escapeHtml(actor)}${target ? ` → ${escapeHtml(target)}` : ""} · ${escapeHtml(key)}${value}</span></div>`;
-  }).join("") : `<div class="golden-inspector-empty">当前前后 5 秒没有战斗日志</div>`;
-
-  const center = selected?.center;
-  const pin = document.querySelector("#golden-center-pin");
-  const ring = document.querySelector("#golden-center-radius");
-  const hasCenter = Number.isFinite(Number(center?.map_x)) && Number.isFinite(Number(center?.map_y));
-  pin.classList.toggle("hidden", !hasCenter);
-  ring.style.display = hasCenter ? "block" : "none";
-  if (hasCenter) {
-    pin.style.left = `${Number(center.map_x)}%`;
-    pin.style.top = `${Number(center.map_y)}%`;
-    ring.setAttribute("cx", String(Number(center.map_x)));
-    ring.setAttribute("cy", String(Number(center.map_y)));
-    ring.setAttribute("r", String(clamp(Number(selected.radius_world || 700) / 163.84, 1.2, 18)));
-    document.querySelector("#golden-map-region").textContent = center.region ? regionName(center.region) : `${Number(center.map_x).toFixed(1)}, ${Number(center.map_y).toFixed(1)}`;
-  } else {
-    document.querySelector("#golden-map-region").textContent = selected ? "点击地图标记主战场" : "尚未选择片段";
-  }
-  renderGoldenDensity();
-  renderGoldenWindowTrack(selected);
-  renderGoldenPredictions();
-  installImageFallback(heroes, heroImage("unknown"));
-  refreshIcons(pin);
-}
-
-function renderGoldenDensity() {
-  const canvas = document.querySelector("#golden-density-canvas");
-  const width = Math.max(1, canvas.clientWidth);
-  const height = Math.max(1, canvas.clientHeight);
-  const pixelRatio = Math.min(2, window.devicePixelRatio || 1);
-  const targetWidth = Math.round(width * pixelRatio);
-  const targetHeight = Math.round(height * pixelRatio);
-  if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
-    canvas.width = targetWidth;
-    canvas.height = targetHeight;
-  }
-  const context = canvas.getContext("2d");
-  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-  context.clearRect(0, 0, width, height);
-  const density = state.golden.density || [];
-  const range = goldenDensityRange();
-  const span = Math.max(1, range.end - range.start);
-  const plotHeight = Math.max(18, height - 16);
-  const firstSecond = Math.max(0, Math.floor(range.start / 1000));
-  const lastSecond = Math.min(density.length - 1, Math.ceil(range.end / 1000));
-  const pixelValues = Array.from({ length: Math.max(1, Math.floor(width)) }, () => 0);
-  for (let second = firstSecond; second <= lastSecond; second++) {
-    const x = clamp(Math.floor(((second * 1000) - range.start) / span * pixelValues.length), 0, pixelValues.length - 1);
-    pixelValues[x] += Number(density[second]) || 0;
-  }
-  const maximum = Math.max(1, ...pixelValues);
-
-  context.fillStyle = "#0f1113";
-  context.fillRect(0, 0, width, height);
-  const visibleSeconds = span / 1000;
-  const tickSeconds = visibleSeconds <= 70 ? 10 : visibleSeconds <= 150 ? 15 : visibleSeconds <= 900 ? 60 : visibleSeconds <= 2700 ? 300 : 600;
-  const firstTick = Math.ceil(range.start / 1000 / tickSeconds) * tickSeconds;
-  context.font = "8px ui-monospace, SFMono-Regular, Consolas, monospace";
-  context.textBaseline = "bottom";
-  for (let second = firstTick; second * 1000 <= range.end; second += tickSeconds) {
-    const x = (second * 1000 - range.start) / span * width;
-    context.fillStyle = "rgba(255,255,255,0.08)";
-    context.fillRect(Math.round(x), 0, 1, plotHeight);
-    context.fillStyle = "rgba(163,170,176,0.78)";
-    const label = formatTime(second);
-    const labelWidth = context.measureText(label).width;
-    context.fillText(label, clamp(x - labelWidth / 2, 2, width - labelWidth - 2), height - 2);
-  }
-
-  pixelValues.forEach((value, index) => {
-    if (value <= 0) return;
-    const intensity = value / maximum;
-    const barHeight = Math.max(2, intensity * (plotHeight - 12));
-    context.fillStyle = intensity > 0.66 ? "rgba(223,91,97,0.9)" : intensity > 0.32 ? "rgba(216,164,71,0.78)" : "rgba(94,159,214,0.56)";
-    context.fillRect(index, plotHeight - barHeight, 1.2, barHeight);
-  });
-
-  for (const event of state.golden.document?.events || []) {
-    const eventTime = Number(event.contact_start_ms);
-    if (eventTime < range.start || eventTime > range.end) continue;
-    const x = (eventTime - range.start) / span * width;
-    context.fillStyle = event.id === state.golden.selectedEventId ? "#ffffff" : "rgba(216,164,71,0.78)";
-    context.beginPath();
-    context.moveTo(x, 11);
-    context.lineTo(x - 3, 4);
-    context.lineTo(x + 3, 4);
-    context.closePath();
-    context.fill();
-  }
-
-  const playheadX = clamp((state.golden.currentTimeMs - range.start) / span * width, 0, width);
-  context.fillStyle = "rgba(255,255,255,0.92)";
-  context.fillRect(Math.round(playheadX), 0, 1, plotHeight);
-
-  const peaksInRange = (state.golden.densityPeaks || []).filter((time) => time >= range.start && time <= range.end).length;
-  document.querySelector("#golden-density-summary").textContent = state.golden.densityWindowSeconds
-    ? `局部 ±${state.golden.densityWindowSeconds} 秒 · ${formatGoldenTime(range.start).slice(0, 5)}–${formatGoldenTime(range.end).slice(0, 5)}`
-    : `全场 · ${state.golden.densityPeaks.length} 个高峰`;
-  document.querySelectorAll("[data-golden-density-window]").forEach((button) => {
-    button.classList.toggle("active", Number(button.dataset.goldenDensityWindow) === Number(state.golden.densityWindowSeconds));
-  });
-  document.querySelector("#golden-prev-peak").disabled = !(state.golden.densityPeaks || []).some((time) => time < state.golden.currentTimeMs - 250);
-  document.querySelector("#golden-next-peak").disabled = !(state.golden.densityPeaks || []).some((time) => time > state.golden.currentTimeMs + 250);
-  canvas.setAttribute("aria-label", `原始战斗事件密度，当前范围 ${peaksInRange} 个高峰`);
-}
-
-function renderGoldenWindowTrack(event) {
-  const range = goldenDensityRange();
-  const span = Math.max(1, range.end - range.start);
-  const setTrack = (selector, start, end) => {
-    const element = document.querySelector(selector);
-    const visibleStart = Math.max(Number(start), range.start);
-    const visibleEnd = Math.min(Number(end), range.end);
-    if (!event || !Number.isFinite(visibleStart) || !Number.isFinite(visibleEnd) || visibleEnd < visibleStart) {
-      element.style.display = "none";
-      return;
-    }
-    const left = clamp((visibleStart - range.start) / span * 100, 0, 100);
-    const right = clamp((visibleEnd - range.start) / span * 100, 0, 100);
-    element.style.left = `${left}%`;
-    element.style.width = `${Math.max(0, right - left)}%`;
-    element.style.display = "block";
-  };
-  setTrack("#golden-review-window", event?.review_start_ms, event?.contact_end_ms);
-  setTrack("#golden-contact-window", event?.contact_start_ms, event?.contact_end_ms);
-  const peak = document.querySelector("#golden-peak-marker");
-  const peakTime = Number(event?.peak_ms);
-  const visiblePeak = event && Number.isFinite(peakTime) && peakTime >= range.start && peakTime <= range.end;
-  peak.style.display = visiblePeak ? "block" : "none";
-  peak.style.left = `${clamp((peakTime - range.start) / span * 100, 0, 100)}%`;
-}
-
-function renderGoldenPredictions() {
-  const strip = document.querySelector("#golden-prediction-strip");
-  const badge = document.querySelector("#golden-stage-badge");
-  strip.classList.toggle("hidden", state.golden.blind);
-  badge.textContent = state.golden.blind ? "原始事实 · 模型隐藏" : "模型对照已显示";
-  badge.className = `evidence-tag ${state.golden.blind ? "fact" : "derived"}`;
-  if (state.golden.blind) return;
-  const current = state.golden.currentTimeMs / 1000;
-  const predictions = (state.golden.analysis?.modules?.combat?.fights || [])
-    .filter((fight) => Number(fight.contact_start ?? fight.start) <= current + 12 && Number(fight.contact_end ?? fight.end) >= current - 12)
-    .slice(0, 8);
-  strip.innerHTML = predictions.length ? predictions.map((fight) => {
-    const normalizedKind = GOLDEN_MODEL_LABEL_ALIASES[fight.kind] || fight.kind;
-    const meta = GOLDEN_LABEL_META[normalizedKind] || { label: fight.kind || "未知" };
-    return `<span><strong>${formatTime(fight.contact_start ?? fight.start)} · ${meta.label}</strong> · ${fight.participants?.length || 0} 人 · ${regionName(fight.region)}</span>`;
-  }).join("　") : "当前窗口没有模型预测片段";
-}
-
-function renderGoldenInspector() {
-  const event = goldenSelectedEvent();
-  document.querySelector("#golden-inspector-empty").classList.toggle("hidden", Boolean(event));
-  document.querySelector("#golden-inspector-form").classList.toggle("hidden", !event);
-  document.querySelector("#golden-delete-event").disabled = !event;
-  document.querySelector("#golden-duplicate-event").disabled = !event;
-  document.querySelector("#golden-suggest-center").disabled = !event || !(event.participants || []).length;
-  if (!event) {
-    document.querySelector("#golden-inspector-title").textContent = "尚未选择片段";
-    document.querySelector("#golden-validation").innerHTML = "";
-    return;
-  }
-  const meta = GOLDEN_LABEL_META[event.label] || GOLDEN_LABEL_META.non_combat;
-  document.querySelector("#golden-inspector-title").textContent = `${formatGoldenTime(event.contact_start_ms).slice(0, 5)} · ${meta.label}`;
-  document.querySelectorAll("[data-golden-label]").forEach((button) => button.classList.toggle("active", button.dataset.goldenLabel === event.label));
-  document.querySelector("#golden-review-start").value = formatGoldenTime(event.review_start_ms);
-  document.querySelector("#golden-contact-start").value = formatGoldenTime(event.contact_start_ms);
-  document.querySelector("#golden-peak-time").value = formatGoldenTime(event.peak_ms);
-  document.querySelector("#golden-contact-end").value = formatGoldenTime(event.contact_end_ms);
-  document.querySelector("#golden-confidence").value = event.confidence || "medium";
-  document.querySelector("#golden-event-notes").value = event.notes || "";
-  document.querySelector("#golden-radius-slider").value = String(event.radius_world || 700);
-  document.querySelector("#golden-radius-value").textContent = String(event.radius_world || 700);
-  renderGoldenValidation(event);
-
-  const participants = new Set((event.participants || []).map(Number));
-  const players = goldenPlayers();
-  const radiant = [...participants].filter((slot) => slot < 5).length;
-  const dire = participants.size - radiant;
-  document.querySelector("#golden-participant-summary").textContent = `${participants.size} 人 · ${radiant}v${dire}`;
-  const grid = document.querySelector("#golden-participant-grid");
-  grid.innerHTML = players.map((player) => `<button class="golden-participant ${player.team} ${participants.has(player.slot) ? "active" : ""}" type="button" data-golden-participant="${player.slot}" title="${escapeHtml(player.name)} · ${escapeHtml(player.player)}"><img src="${heroImage(player.token)}" alt="${escapeHtml(player.name)}"><small>P${player.slot % 5 + 1}</small></button>`).join("");
-  installImageFallback(grid, heroImage("unknown"));
-  const tags = new Set(event.tags || []);
-  document.querySelector("#golden-tag-grid").innerHTML = Object.entries(GOLDEN_TAG_META).map(([key, label]) => `<label><input type="checkbox" data-golden-tag="${key}" ${tags.has(key) ? "checked" : ""}><span>${label}</span></label>`).join("");
-}
-
-function renderGoldenEvaluation() {
-  const grid = document.querySelector("#golden-metric-grid");
-  const scopeBadge = document.querySelector("#golden-evaluation-scope");
-  const evaluation = state.golden.evaluation;
-  const learning = evaluation?.learning_model || state.golden.model;
-  const learningMetric = () => {
-    if (!learning) return "";
-    const validation = learning.cross_match_validation || {};
-    const evaluable = Number(validation.evaluable_samples || 0);
-    const accuracy = evaluable ? `${(Number(validation.accuracy || 0) * 100).toFixed(1)}%` : "待更多比赛";
-    const status = learning.status === "active" ? "已启用" : learning.status === "bootstrap" ? "引导期" : "无样本";
-    return `<div class="golden-metric ${learning.status === "active" ? "pass" : ""}"><small>跨场学习 · ${status}</small><strong>${Number(learning.samples || 0)} 样本</strong><em>${Number(learning.training_matches || 0)} 场 · 留一准确率 ${accuracy}</em></div>`;
-  };
-  if (!evaluation) {
-    const frozen = state.golden.document?.status !== "draft";
-    scopeBadge.textContent = frozen ? "标签已冻结" : "等待标签冻结";
-    scopeBadge.className = `evidence-tag ${frozen ? "fact" : "derived"}`;
-    grid.innerHTML = `<div class="golden-metric"><small>评测状态</small><strong>--</strong><em>${frozen ? "可运行本场诊断或全库验收" : "草稿不计入发布门槛"}</em></div>${learningMetric()}`;
-    return;
-  }
-  const corpus = evaluation.scope === "corpus";
-  scopeBadge.textContent = corpus ? `全库 · ${evaluation.matches_evaluated || 0} 场` : `本场 · ${evaluation.annotation_status || "已冻结"}`;
-  scopeBadge.className = `evidence-tag ${evaluation.provisional ? "derived" : "fact"}`;
-  const gates = evaluation.gates || {};
-  const rows = [
-    ...(corpus ? [["黄金样本场次", gates.corpus_size, (value) => `${Math.round(value)} 场`]] : []),
-    ["团战精确率", gates.teamfight_precision, (value) => `${(value * 100).toFixed(1)}%`],
-    ["团战召回率", gates.teamfight_recall, (value) => `${(value * 100).toFixed(1)}%`],
-    ["线上误报", gates.lane_false_positive, (value) => `${(value * 100).toFixed(1)}%`],
-    ["2v2 升级", gates.two_versus_two_upgrades, (value) => `${Math.round(value)} 次`],
-    ["参与者 F1", gates.participant_macro_f1, (value) => `${(value * 100).toFixed(1)}%`],
-    ["圆心中位误差", gates.center_median_error, (value) => `${Math.round(value)} u`],
-  ];
-  grid.innerHTML = rows.map(([label, gate, formatter]) => {
-    const evaluable = gate?.evaluable;
-    const value = evaluable ? formatter(Number(gate.actual)) : "--";
-    const target = gate ? `${gate.operator} ${gate.target}` : "无样本";
-    return `<div class="golden-metric ${evaluable ? gate.passed ? "pass" : "fail" : ""}"><small>${label}</small><strong>${value}</strong><em>${evaluable ? `门槛 ${target} · ${gate.samples} 样本` : "样本不足"}</em></div>`;
-  }).join("") + learningMetric();
-}
-
-async function renderGoldenAdjudicationDiff() {
-  const panel = document.querySelector("#golden-adjudication-diff");
-  panel.classList.remove("active");
-  if (!state.golden.matchId || state.golden.annotator !== "adjudicated") return;
-  try {
-    const [primary, secondary] = await Promise.all([
-      apiFetch(`/qa/goldens/${state.golden.matchId}?annotator=primary`, { timeout: 10000 }),
-      apiFetch(`/qa/goldens/${state.golden.matchId}?annotator=secondary`, { timeout: 10000 }),
-    ]);
-    const primaryEvents = primary.events || [];
-    const secondaryEvents = secondary.events || [];
-    let labelDifferences = 0;
-    for (const left of primaryEvents) {
-      const nearest = secondaryEvents.reduce((best, right) => Math.abs(Number(right.contact_start_ms) - Number(left.contact_start_ms)) < Math.abs(Number(best?.contact_start_ms ?? Infinity) - Number(left.contact_start_ms)) ? right : best, null);
-      if (!nearest || Math.abs(Number(nearest.contact_start_ms) - Number(left.contact_start_ms)) > 8000 || nearest.label !== left.label) labelDifferences++;
-    }
-    panel.innerHTML = `<span>标注员 A：<strong>${primaryEvents.length}</strong> 段 · ${primary.status || "未开始"}</span><span>标注员 B：<strong>${secondaryEvents.length}</strong> 段 · ${secondary.status || "未开始"}</span><span>待仲裁差异：<strong>${labelDifferences + Math.max(0, secondaryEvents.length - primaryEvents.length)}</strong></span><span class="spacer"></span><button class="command-button secondary" type="button" data-golden-seed="primary" ${primaryEvents.length ? "" : "disabled"}>从 A 导入</button><button class="command-button secondary" type="button" data-golden-seed="secondary" ${secondaryEvents.length ? "" : "disabled"}>从 B 导入</button>`;
-    panel.classList.add("active");
-  } catch {
-    panel.innerHTML = "读取双标差异失败";
-    panel.classList.add("active");
-  }
-}
-
-async function seedGoldenAdjudication(source) {
-  if (state.golden.annotator !== "adjudicated" || !state.golden.matchId) return;
-  try {
-    const sourceDocument = await apiFetch(`/qa/goldens/${state.golden.matchId}?annotator=${encodeURIComponent(source)}`, { timeout: 10000 });
-    const events = JSON.parse(JSON.stringify(sourceDocument.events || []));
-    if (!events.length) throw new Error("该标注员还没有可导入片段");
-    state.golden.document.events = events;
-    state.golden.document.status = "draft";
-    state.golden.selectedEventId = events[0].id;
-    state.golden.currentTimeMs = Number(events[0].contact_start_ms) || 0;
-    state.golden.dirty = true;
-    state.golden.evaluation = null;
-    renderGoldenWorkspace();
-    await renderGoldenAdjudicationDiff();
-    showToast("已导入仲裁底稿", `${GOLDEN_ANNOTATOR_META[source]} · ${events.length} 个片段`, "copy-check");
-  } catch (error) {
-    showToast("无法导入底稿", error.message || "请先完成双人标注", "circle-alert");
-  }
-}
-
-function setGoldenTime(milliseconds) {
-  state.golden.currentTimeMs = clamp(Math.round(Number(milliseconds) || 0), 0, goldenDurationMs());
-  renderGoldenStage();
-}
-
-function selectGoldenEvent(eventId, { movePlayhead = true } = {}) {
-  const event = state.golden.document?.events?.find((item) => item.id === eventId);
-  if (!event) return;
-  state.golden.selectedEventId = eventId;
-  if (movePlayhead) state.golden.currentTimeMs = Number(event.contact_start_ms) || 0;
-  renderGoldenEventList();
-  renderGoldenStage();
-  renderGoldenInspector();
-  refreshIcons(document.querySelector(".golden-inspector-panel"));
-}
-
-function addGoldenEvent() {
-  if (!state.golden.document) return;
-  const now = state.golden.currentTimeMs;
-  const end = Math.min(goldenDurationMs(), now + 12_000);
-  const id = `gold-${Date.now().toString(36)}`;
-  const event = {
-    id,
-    label: "trade",
-    review_start_ms: Math.max(-180_000, now - 10_000),
-    contact_start_ms: now,
-    contact_end_ms: end,
-    peak_ms: Math.min(end, now + 4_000),
-    participants: [],
-    nearby_slots: [],
-    tags: [],
-    confidence: "medium",
-    radius_world: 700,
-    notes: "",
-  };
-  state.golden.document.events = [...(state.golden.document.events || []), event];
-  state.golden.selectedEventId = id;
-  state.golden.dirty = true;
-  renderGoldenWorkspace();
-}
-
-function deleteGoldenEvent() {
-  const id = state.golden.selectedEventId;
-  if (!id || !state.golden.document) return;
-  const events = state.golden.document.events || [];
-  const index = events.findIndex((event) => event.id === id);
-  state.golden.document.events = events.filter((event) => event.id !== id);
-  state.golden.selectedEventId = state.golden.document.events[Math.max(0, index - 1)]?.id || null;
-  state.golden.dirty = true;
-  renderGoldenWorkspace();
-}
-
-function updateGoldenEvent(change, { renderInspector = true } = {}) {
-  const event = goldenSelectedEvent();
-  if (!event) return;
-  Object.assign(event, change);
-  state.golden.dirty = true;
-  renderGoldenEventList();
-  renderGoldenStage();
-  if (renderInspector) renderGoldenInspector();
-}
-
-function suggestGoldenParticipants() {
-  const event = goldenSelectedEvent();
-  if (!event) return;
-  const start = Number(event.review_start_ms);
-  const end = Number(event.contact_end_ms);
-  const scores = new Map();
-  for (const signal of goldenRawCombatEvents(start, end)) {
-    const weight = signal.kind === "hero_death" ? 4 : signal.kind === "control" ? 2 : 1;
-    for (const key of ["actor_slot", "target_slot"]) {
-      const slot = Number(signal[key]);
-      if (Number.isInteger(slot) && slot >= 0 && slot < 10) scores.set(slot, (scores.get(slot) || 0) + weight);
-    }
-  }
-  const participants = [...scores.entries()]
-    .filter(([, score]) => score > 0)
-    .map(([slot]) => slot)
-    .sort((a, b) => a - b);
-  if (!participants.length) {
-    showToast("没有提取到参与者", "当前时间窗口缺少带玩家槽位的原始战斗事件", "circle-alert");
-    return;
-  }
-  updateGoldenEvent({ participants });
-  showToast("已从原始事件提取", `${participants.length} 位候选参与者，仍需人工核对`, "users-round");
-}
-
-function goldenMedian(values) {
-  const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
-  if (!sorted.length) return null;
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
-}
-
-function suggestGoldenCenter() {
-  const event = goldenSelectedEvent();
-  if (!event) return;
-  const snapshots = (event.participants || []).map((slot) => goldenSnapshotAt(Number(slot), Number(event.peak_ms))).filter((snapshot) => {
-    return snapshot?.coordinate_valid !== false && Number.isFinite(Number(snapshot?.x)) && Number.isFinite(Number(snapshot?.y));
-  });
-  const mapX = goldenMedian(snapshots.map((snapshot) => Number(snapshot.x)));
-  const mapY = goldenMedian(snapshots.map((snapshot) => Number(snapshot.y)));
-  if (!Number.isFinite(mapX) || !Number.isFinite(mapY)) {
-    showToast("无法建议主战场圆心", "参与者峰值时刻没有有效位置快照", "circle-alert");
-    return;
-  }
-  const regionCounts = new Map();
-  for (const snapshot of snapshots) {
-    const region = snapshot.region || snapshot.location;
-    if (region) regionCounts.set(region, (regionCounts.get(region) || 0) + 1);
-  }
-  const region = [...regionCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
-  updateGoldenEvent({ center: { map_x: Number(mapX.toFixed(2)), map_y: Number(mapY.toFixed(2)), ...(region ? { region } : {}) } });
-  showToast("已建议主战场圆心", `采用 ${snapshots.length} 位参与者峰值位置的中位数`, "locate-fixed");
-}
-
-function setGoldenBoundary(field) {
-  if (!goldenSelectedEvent()) return;
-  updateGoldenEvent({ [field]: state.golden.currentTimeMs });
-}
-
-function duplicateGoldenEvent() {
-  const source = goldenSelectedEvent();
-  if (!source || !state.golden.document) return;
-  const copy = JSON.parse(JSON.stringify(source));
-  copy.id = `gold-${Date.now().toString(36)}`;
-  copy.confidence = "medium";
-  copy.notes = copy.notes ? `${copy.notes}（复制待核对）` : "复制片段，待核对";
-  state.golden.document.events = [...(state.golden.document.events || []), copy];
-  state.golden.selectedEventId = copy.id;
-  state.golden.currentTimeMs = Number(copy.contact_start_ms) || 0;
-  state.golden.dirty = true;
-  renderGoldenWorkspace();
-  showToast("已复制当前片段", "时间、参与者和圆心已保留，请调整差异项", "copy-plus");
-}
-
-function nextIncompleteGoldenEvent() {
-  const events = [...(state.golden.document?.events || [])].sort((a, b) => Number(a.contact_start_ms) - Number(b.contact_start_ms));
-  const incomplete = events.filter((event) => goldenEventIssues(event).length);
-  if (!incomplete.length) {
-    showToast("当前片段均已完整", "可以冻结标签并运行本场诊断", "list-checks");
-    return;
-  }
-  const currentIndex = incomplete.findIndex((event) => event.id === state.golden.selectedEventId);
-  const target = incomplete[(currentIndex + 1 + incomplete.length) % incomplete.length];
-  selectGoldenEvent(target.id);
-  showToast("已跳到待完善片段", goldenEventIssues(target).map((issue) => issue.label).join("、"), "list-checks");
-}
-
-function toggleGoldenMapFocus() {
-  state.golden.mapFocused = !state.golden.mapFocused;
-  renderGoldenLayoutState();
-  window.requestAnimationFrame(() => renderGoldenDensity());
-}
-
-function toggleGoldenSignals() {
-  state.golden.signalsExpanded = !state.golden.signalsExpanded;
-  renderGoldenLayoutState();
-  window.requestAnimationFrame(() => renderGoldenDensity());
-}
-
-function toggleGoldenEvaluation() {
-  state.golden.evaluationExpanded = !state.golden.evaluationExpanded;
-  renderGoldenLayoutState();
-  window.requestAnimationFrame(() => renderGoldenDensity());
-}
-
-async function saveGoldenDocument({ silent = false } = {}) {
-  if (!state.golden.document || !state.golden.matchId) return false;
-  state.golden.document.status = document.querySelector("#golden-status-select").value;
-  state.golden.document.blind_mode = state.golden.annotator !== "adjudicated";
-  if (state.golden.document.status !== "draft") {
-    const incomplete = [...(state.golden.document.events || [])]
-      .sort((a, b) => Number(a.contact_start_ms) - Number(b.contact_start_ms))
-      .find((event) => goldenEventIssues(event).length);
-    if (incomplete) {
-      selectGoldenEvent(incomplete.id);
-      showToast("还有片段未完善", goldenEventIssues(incomplete).map((issue) => issue.label).join("、"), "circle-alert");
-      return false;
-    }
-  }
-  try {
-    const saved = await apiFetch(`/qa/goldens/${state.golden.matchId}?annotator=${encodeURIComponent(state.golden.annotator)}`, {
-      method: "PUT",
-      timeout: 20000,
-      body: state.golden.document,
-    });
-    state.golden.document = saved;
-    state.golden.dirty = false;
-    if (!silent) showToast("黄金样本已保存", `${GOLDEN_ANNOTATOR_META[state.golden.annotator]} · ${saved.event_count || 0} 个片段`, "save");
-    await loadGoldenMatches({ silent: true });
-    renderGoldenWorkspace();
-    return true;
-  } catch (error) {
-    showToast("标注未保存", error.message || "请检查时间、参与者和地图圆心", "circle-alert");
-    return false;
-  }
-}
-
-async function runGoldenEvaluation() {
-  if (state.golden.dirty && !await saveGoldenDocument({ silent: true })) return;
-  if (state.golden.document?.status === "draft") {
-    showToast("草稿不能进入评测", "先完成整场盲标并把文档状态改为标注完成", "lock-keyhole");
-    return;
-  }
-  try {
-    state.golden.evaluation = await apiFetch(`/qa/goldens/${state.golden.matchId}/evaluate?annotator=${encodeURIComponent(state.golden.annotator)}`, {
-      method: "POST",
-      timeout: 30000,
-      body: {},
-    });
-    state.golden.evaluationScope = "match";
-    renderGoldenEvaluation();
-    showToast("评测完成", `匹配 ${state.golden.evaluation.matched_events || 0} 个战斗片段`, "flask-conical");
-  } catch (error) {
-    showToast("评测失败", error.message || "请先保存至少一个片段", "circle-alert");
-  }
-}
-
-async function runGoldenBenchmark() {
-  try {
-    state.golden.evaluation = await apiFetch("/qa/goldens/evaluate?annotator=adjudicated", {
-      method: "POST",
-      timeout: 120000,
-      body: {},
-    });
-    state.golden.evaluationScope = "corpus";
-    renderGoldenEvaluation();
-    const count = state.golden.evaluation.matches_evaluated || 0;
-    showToast("全库验收完成", `${count} 场已仲裁比赛进入发布门槛`, "gauge");
-  } catch (error) {
-    showToast("全库验收失败", error.message || "请确认已有仲裁完成的黄金样本", "circle-alert");
-  }
-}
-
-function updateGoldenTimeField(field, input) {
-  const milliseconds = parseGoldenTimeInput(input.value);
-  if (!Number.isFinite(milliseconds)) {
-    input.classList.add("invalid");
-    input.setAttribute("aria-invalid", "true");
-    showToast("时间格式不正确", "请使用 分:秒.毫秒，例如 08:04.250", "circle-alert");
-    input.focus();
-    input.select();
-    return;
-  }
-  input.classList.remove("invalid");
-  input.removeAttribute("aria-invalid");
-  input.value = formatGoldenTime(milliseconds);
-  updateGoldenEvent({ [field]: milliseconds }, { renderInspector: false });
-}
 
 function renderDetailView(view) {
   if (view === "development") window.requestAnimationFrame(() => ensureChart());
-  if (view === "farm") window.requestAnimationFrame(renderFarmAnalysis);
+  if (view === "farm") window.requestAnimationFrame(() => {
+    const diagnostic = farmDiagnosticsInSelectedWindow().find((item) => item.id === state.selectedFarmDiagnosticId)
+      || farmDiagnosticsInSelectedWindow()[0];
+    if (diagnostic && state.farmTimeWindow === "post20" && state.currentTime < 1200) {
+      updateCurrentTime(diagnostic.time, { syncSegment: false });
+    }
+    renderFarmAnalysis();
+  });
   if (view === "vision") window.requestAnimationFrame(renderWardAnalysis);
   if (view === "map") window.requestAnimationFrame(() => { renderMapMarkers(); updateMap(); });
   if (view === "build") window.requestAnimationFrame(renderBuild);
@@ -4447,6 +5834,7 @@ function renderDetailView(view) {
     renderCombat();
   });
   if (view === "timeline") window.requestAnimationFrame(filterTimelineEvents);
+  if (view === "player-score") window.requestAnimationFrame(renderPlayerScore);
 }
 
 async function ensureAnalysisModulesForView(view) {
@@ -4484,6 +5872,9 @@ function setDetailView(view) {
   state.detailView = view;
   document.querySelectorAll("[data-detail-view]").forEach((button) => button.classList.toggle("active", button.dataset.detailView === view));
   document.querySelectorAll("[data-detail-panel]").forEach((panel) => panel.classList.toggle("active", panel.dataset.detailPanel === view));
+  window.requestAnimationFrame(() => {
+    document.querySelector(`[data-detail-view="${view}"]`)?.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
+  });
   renderDetailView(view);
   void ensureAnalysisModulesForView(view);
   syncTopbarActions();
@@ -4492,6 +5883,8 @@ function setDetailView(view) {
 
 function setPage(page) {
   state.page = page;
+  setDetailMoreOpen(false);
+  if (window.innerWidth < 1280 && !state.sidebarCollapsed) setSidebarCollapsed(true, { persist: false });
   document.querySelectorAll("[data-page-panel]").forEach((panel) => panel.classList.toggle("active", panel.dataset.pagePanel === page));
   const navPage = page === "detail" ? "matches" : page;
   document.querySelectorAll("[data-page]").forEach((button) => button.classList.toggle("active", button.dataset.page === navPage));
@@ -4505,7 +5898,6 @@ function setPage(page) {
     matches: ["比赛", state.matchesStatus === "ready" ? `账号 ${state.accountId} · OpenDota 最近比赛` : "等待连接账号"],
     replays: ["Replay 库", "本地回放与分析包"],
     tasks: ["解析任务", "单任务队列"],
-    goldens: ["黄金样本", "QA-01 · 团战盲标与模型验收"],
     settings: ["设置", "本地应用配置"],
   };
   if (detailMode) {
@@ -4520,7 +5912,6 @@ function setPage(page) {
   if (detailMode && state.detailView === "development" && !state.currentAnalysis) {
     window.requestAnimationFrame(() => ensureChart());
   }
-  if (page === "goldens" && !state.golden.matches.length) loadGoldenMatches({ silent: true });
   refreshIcons();
 }
 
@@ -4541,9 +5932,6 @@ function syncTopbarActions() {
   if (state.page === "detail") {
     importButton.innerHTML = `<i data-lucide="rotate-cw"></i><span>重新解析</span>`;
     searchButton.classList.toggle("hidden", !["timeline"].includes(state.detailView));
-  } else if (state.page === "goldens") {
-    importButton.classList.add("hidden");
-    searchButton.classList.add("hidden");
   } else {
     importButton.innerHTML = `<i data-lucide="file-plus-2"></i><span>导入 Replay</span>`;
   }
@@ -4617,7 +6005,10 @@ function applyAnalysisToProduct(analysis, match) {
   document.querySelector("#detail-duration").textContent = formatTime(MATCH_DURATION);
   document.querySelector("#detail-mode").textContent = match.mode;
   document.querySelector("#detail-start-time").textContent = match.date;
-  document.querySelector("#detail-patch").textContent = analysis.match?.patch_name || (analysis.match?.patch ? `ID ${analysis.match.patch}` : "--");
+  document.querySelector("#detail-start-time-more").textContent = match.date;
+  const patchLabel = analysis.match?.patch_name || (analysis.match?.patch ? `ID ${analysis.match.patch}` : "--");
+  document.querySelector("#detail-patch").textContent = patchLabel;
+  document.querySelector("#detail-patch-more").textContent = patchLabel;
   document.querySelector("#detail-data-source").textContent = `本地 Replay · ${Number(analysis.valid_json_objects || 0).toLocaleString("zh-CN")} 条事件`;
   MATCH_START_MS = Math.min(0, Number(analysis.timeline?.game_start_ms || 0));
   document.querySelector("#global-time-slider").min = String(MATCH_START_MS);
@@ -4645,6 +6036,7 @@ function applyAnalysisToProduct(analysis, match) {
   renderCombat();
   filterTimelineEvents();
   renderScoreboard();
+  renderPlayerScore();
   renderCoverage();
   renderReplays();
   setPage("detail");
@@ -4897,147 +6289,21 @@ function importReplay(file) {
   showToast("Replay 已加入队列", `${name} · 等待解析`, "file-check-2");
 }
 
-function bindGoldenEvents() {
-  document.querySelector("#golden-match-select").addEventListener("change", (event) => loadGoldenMatch(event.target.value));
-  document.querySelector("#golden-annotator-select").addEventListener("change", async (event) => {
-    state.golden.annotator = event.target.value;
-    await loadGoldenMatches({ silent: true });
-    if (state.golden.matchId) await loadGoldenMatch(state.golden.matchId);
-  });
-  document.querySelector("#golden-reload").addEventListener("click", () => loadGoldenMatches({ reloadSelected: true }));
-  document.querySelector("#golden-blind-toggle").addEventListener("change", (event) => {
-    state.golden.blind = event.target.checked;
-    renderGoldenPredictions();
-  });
-  document.querySelector("#golden-save").addEventListener("click", () => saveGoldenDocument());
-  document.querySelector("#golden-add-event").addEventListener("click", addGoldenEvent);
-  document.querySelector("#golden-next-incomplete").addEventListener("click", nextIncompleteGoldenEvent);
-  document.querySelector("#golden-duplicate-event").addEventListener("click", duplicateGoldenEvent);
-  document.querySelector("#golden-delete-event").addEventListener("click", deleteGoldenEvent);
-  document.querySelector("#golden-suggest-participants").addEventListener("click", suggestGoldenParticipants);
-  document.querySelector("#golden-suggest-center").addEventListener("click", suggestGoldenCenter);
-  document.querySelector("#golden-map-focus").addEventListener("click", toggleGoldenMapFocus);
-  document.querySelector("#golden-toggle-signals").addEventListener("click", toggleGoldenSignals);
-  document.querySelector("#golden-toggle-evaluation").addEventListener("click", toggleGoldenEvaluation);
-  document.querySelector("#golden-event-list").addEventListener("click", (event) => {
-    const row = event.target.closest("[data-golden-event-id]");
-    if (row) selectGoldenEvent(row.dataset.goldenEventId);
-  });
-  document.querySelector("#golden-time-slider").addEventListener("input", (event) => setGoldenTime(event.target.value));
-  document.querySelector("#golden-density-canvas").addEventListener("click", (event) => {
-    setGoldenTime(goldenDensityTimeFromPointer(event));
-  });
-  document.querySelector("#golden-density-canvas").addEventListener("mousemove", updateGoldenDensityTooltip);
-  document.querySelector("#golden-density-canvas").addEventListener("mouseleave", () => document.querySelector("#golden-density-tooltip").classList.add("hidden"));
-  document.querySelector("#golden-density-mode").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-golden-density-window]");
-    if (button) setGoldenDensityWindow(button.dataset.goldenDensityWindow);
-  });
-  document.querySelector("#golden-prev-peak").addEventListener("click", () => jumpGoldenPeak(-1));
-  document.querySelector("#golden-next-peak").addEventListener("click", () => jumpGoldenPeak(1));
-  document.querySelector("#golden-step-back").addEventListener("click", () => setGoldenTime(state.golden.currentTimeMs - 1000));
-  document.querySelector("#golden-step-forward").addEventListener("click", () => setGoldenTime(state.golden.currentTimeMs + 1000));
-  document.querySelector("#golden-map").addEventListener("click", (event) => {
-    const selected = goldenSelectedEvent();
-    if (!selected) {
-      showToast("先新建交互片段", "地图圆心必须归属于一个人工标签", "crosshair");
-      return;
-    }
-    const rect = event.currentTarget.getBoundingClientRect();
-    const mapX = clamp((event.clientX - rect.left) / rect.width * 100, 0, 100);
-    const mapY = clamp((event.clientY - rect.top) / rect.height * 100, 0, 100);
-    updateGoldenEvent({ center: { map_x: Number(mapX.toFixed(2)), map_y: Number(mapY.toFixed(2)) } });
-  });
-  document.querySelector("#golden-label-control").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-golden-label]");
-    if (button) updateGoldenEvent({ label: button.dataset.goldenLabel });
-  });
-  const timeFields = {
-    "#golden-review-start": "review_start_ms",
-    "#golden-contact-start": "contact_start_ms",
-    "#golden-peak-time": "peak_ms",
-    "#golden-contact-end": "contact_end_ms",
-  };
-  Object.entries(timeFields).forEach(([selector, field]) => {
-    document.querySelector(selector).addEventListener("change", (event) => updateGoldenTimeField(field, event.target));
-  });
-  document.querySelector(".golden-boundary-actions").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-golden-set-boundary]");
-    if (button) setGoldenBoundary(button.dataset.goldenSetBoundary);
-  });
-  document.querySelector("#golden-participant-grid").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-golden-participant]");
-    const selected = goldenSelectedEvent();
-    if (!button || !selected) return;
-    const slot = Number(button.dataset.goldenParticipant);
-    const participants = new Set((selected.participants || []).map(Number));
-    if (participants.has(slot)) participants.delete(slot); else participants.add(slot);
-    updateGoldenEvent({ participants: [...participants].sort((a, b) => a - b) });
-  });
-  document.querySelector("#golden-tag-grid").addEventListener("change", (event) => {
-    const input = event.target.closest("[data-golden-tag]");
-    const selected = goldenSelectedEvent();
-    if (!input || !selected) return;
-    const tags = new Set(selected.tags || []);
-    if (input.checked) tags.add(input.dataset.goldenTag); else tags.delete(input.dataset.goldenTag);
-    updateGoldenEvent({ tags: [...tags] });
-  });
-  document.querySelector("#golden-radius-slider").addEventListener("input", (event) => {
-    document.querySelector("#golden-radius-value").textContent = event.target.value;
-    updateGoldenEvent({ radius_world: Number(event.target.value) }, { renderInspector: false });
-  });
-  document.querySelector("#golden-confidence").addEventListener("change", (event) => updateGoldenEvent({ confidence: event.target.value }));
-  document.querySelector("#golden-status-select").addEventListener("change", (event) => {
-    if (!state.golden.document) return;
-    state.golden.document.status = event.target.value;
-    state.golden.dirty = true;
-    document.querySelector("#golden-document-status").textContent = event.target.value === "adjudicated" ? "仲裁完成" : event.target.value === "complete" ? "标注完成" : "草稿";
-    document.querySelector("#golden-run-evaluation").disabled = event.target.value === "draft";
-    state.golden.evaluation = null;
-    renderGoldenEvaluation();
-  });
-  document.querySelector("#golden-event-notes").addEventListener("input", (event) => {
-    const selected = goldenSelectedEvent();
-    if (!selected) return;
-    selected.notes = event.target.value;
-    state.golden.dirty = true;
-  });
-  document.querySelector("#golden-run-evaluation").addEventListener("click", runGoldenEvaluation);
-  document.querySelector("#golden-run-benchmark").addEventListener("click", runGoldenBenchmark);
-  document.querySelector("#golden-adjudication-diff").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-golden-seed]");
-    if (button) seedGoldenAdjudication(button.dataset.goldenSeed);
-  });
-  window.addEventListener("resize", () => {
-    if (state.page === "goldens" && state.golden.analysis) renderGoldenDensity();
-  });
-  window.addEventListener("keydown", (event) => {
-    if (state.page === "goldens" && event.ctrlKey && event.key.toLowerCase() === "s") {
-      event.preventDefault();
-      saveGoldenDocument();
-      return;
-    }
-    if (state.page !== "goldens" || event.ctrlKey || event.metaKey || event.altKey) return;
-    const target = event.target;
-    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || target?.isContentEditable) return;
-    if (event.key.toLowerCase() === "a") {
-      event.preventDefault();
-      addGoldenEvent();
-    } else if (event.key === "[") {
-      event.preventDefault();
-      jumpGoldenPeak(-1);
-    } else if (event.key === "]") {
-      event.preventDefault();
-      jumpGoldenPeak(1);
-    } else if (event.key.toLowerCase() === "f") {
-      event.preventDefault();
-      toggleGoldenMapFocus();
-    }
-  });
-}
 
 function bindEvents() {
-  bindGoldenEvents();
+  document.querySelector("#sidebar-toggle").addEventListener("click", () => {
+    setSidebarCollapsed(!state.sidebarCollapsed);
+  });
+  document.querySelector("#sidebar-backdrop").addEventListener("click", () => {
+    setSidebarCollapsed(true);
+  });
+  document.querySelector("#detail-more-toggle").addEventListener("click", (event) => {
+    event.stopPropagation();
+    const open = event.currentTarget.getAttribute("aria-expanded") !== "true";
+    setDetailMoreOpen(open);
+  });
+  document.querySelector("#detail-more-popover").addEventListener("click", (event) => event.stopPropagation());
+  document.addEventListener("click", () => setDetailMoreOpen(false));
   document.querySelector("#account-lookup-form").addEventListener("submit", (event) => {
     event.preventDefault();
     loadMatches(document.querySelector("#account-id-input").value);
@@ -5150,6 +6416,14 @@ function bindEvents() {
     button.classList.toggle("active", state.wardLayers[layer]);
     renderWardMap();
   }));
+  setupWardMapInteractions();
+  document.querySelector("#ward-side-tabs").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-ward-side-view]");
+    if (button) setWardSideView(button.dataset.wardSideView);
+  });
+  document.querySelector("#ward-timeline-toggle").addEventListener("click", () => {
+    setWardTimelineCollapsed(!state.wardTimelineCollapsed);
+  });
   document.querySelector("#ward-team-filter").addEventListener("click", (event) => {
     const button = event.target.closest("[data-ward-team]");
     if (!button) return;
@@ -5183,8 +6457,17 @@ function bindEvents() {
     const button = event.target.closest("[data-farm-window]");
     if (!button) return;
     state.farmTimeWindow = button.dataset.farmWindow;
-    document.querySelectorAll("#farm-time-filter button").forEach((item) => item.classList.toggle("active", item === button));
-    renderFarmMap();
+    const diagnostics = farmDiagnosticsInSelectedWindow();
+    const preferred = diagnostics.find((diagnostic) => diagnostic.recommendation_enabled)
+      || diagnostics.find((diagnostic) => diagnostic.diagnostic_class === "anomaly")
+      || diagnostics[0];
+    state.selectedFarmDiagnosticId = preferred?.id || null;
+    if (preferred) updateCurrentTime(preferred.time, { syncSegment: false });
+    renderFarmAnalysis();
+  });
+  document.querySelector("#farm-compact-tabs").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-farm-compact-view]");
+    if (button) setFarmCompactView(button.dataset.farmCompactView);
   });
   document.querySelector("#farm-source-filter").addEventListener("change", (event) => {
     state.farmSource = event.target.value;
@@ -5210,6 +6493,10 @@ function bindEvents() {
   document.querySelector("#farm-diagnosis-list").addEventListener("click", (event) => {
     const row = event.target.closest("[data-farm-diagnostic-id]");
     if (row) selectFarmDiagnostic(row.dataset.farmDiagnosticId);
+  });
+  document.querySelector("#farm-diagnosis-inspector").addEventListener("click", (event) => {
+    const unit = event.target.closest("[data-farm-unit-time]");
+    if (unit) updateCurrentTime(Number(unit.dataset.farmUnitTime), { syncSegment: false });
   });
   document.querySelector("#farm-heat-layer").addEventListener("click", (event) => {
     const point = event.target.closest("[data-farm-heat-time]");
@@ -5239,6 +6526,10 @@ function bindEvents() {
     const target = event.target.closest("[data-build-time-ms]");
     if (target) updatePlayheadMs(target.dataset.buildTimeMs);
   });
+  document.querySelector("#build-compact-tabs").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-build-compact-view]");
+    if (button) setBuildCompactView(button.dataset.buildCompactView);
+  });
   document.querySelector("#combat-list").addEventListener("click", (event) => {
     const row = event.target.closest("[data-combat-id]");
     if (!row) return;
@@ -5252,6 +6543,14 @@ function bindEvents() {
   document.querySelector("#combat-filter").addEventListener("change", (event) => {
     state.combatFilter = event.target.value;
     renderCombat();
+  });
+  document.querySelector("#combat-compact-tabs").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-combat-compact-view]");
+    if (button) setCombatCompactView(button.dataset.combatCompactView);
+  });
+  document.querySelector("#combat-map-expand").addEventListener("click", () => {
+    const panel = document.querySelector("#detail-combat");
+    setCombatMapExpanded(!panel.classList.contains("map-expanded"));
   });
   document.querySelector("#combat-phase-strip").addEventListener("click", (event) => {
     const phase = event.target.closest("[data-combat-phase]");
@@ -5267,11 +6566,14 @@ function bindEvents() {
       state.selectedCombatPlayerSlot = Number(player.dataset.combatPlayerSlot);
       state.combatInspectorView = "audit";
       renderSelectedCombat();
+      if (window.innerWidth < 1280) setCombatCompactView("audit");
     });
   });
   document.querySelector("#combat-inspector-tabs").addEventListener("click", (event) => {
     const button = event.target.closest("[data-combat-inspector]");
-    if (button) setCombatInspectorView(button.dataset.combatInspector);
+    if (!button) return;
+    if (window.innerWidth < 1280) setCombatCompactView(button.dataset.combatInspector);
+    else setCombatInspectorView(button.dataset.combatInspector);
   });
   document.querySelector("#combat-event-stream").addEventListener("click", (event) => {
     const row = event.target.closest("[data-combat-time-ms]");
@@ -5299,8 +6601,95 @@ function bindEvents() {
     if (row) selectHero(row.dataset.playerSlot);
   });
   document.querySelector("#player-report-panel").addEventListener("click", (event) => {
+    const view = event.target.closest("[data-player-report-view]");
+    if (view) {
+      setPlayerReportView(view.dataset.playerReportView);
+      return;
+    }
     const reparse = event.target.closest("[data-player-report-reparse]");
     if (reparse && state.currentMatch) startAutomaticParse(state.currentMatch, true);
+  });
+  document.querySelector("#player-score-evidence-toggle").addEventListener("click", () => {
+    setPlayerScoreEvidenceOpen(!state.playerScoreEvidenceOpen);
+  });
+  document.querySelector("#player-score-evidence-close").addEventListener("click", () => {
+    setPlayerScoreEvidenceOpen(false);
+  });
+  document.querySelector("#player-score-evidence-backdrop").addEventListener("click", () => {
+    setPlayerScoreEvidenceOpen(false);
+  });
+  document.querySelector("#detail-player-score").addEventListener("click", (event) => {
+    const filter = event.target.closest("[data-player-score-roster-filter]");
+    if (filter) {
+      state.playerScoreRosterFilter = filter.dataset.playerScoreRosterFilter;
+      renderPlayerScoreRoster();
+      return;
+    }
+    const mode = event.target.closest("[data-player-score-mode]");
+    if (mode) {
+      state.playerScoreMode = mode.dataset.playerScoreMode === "deep" ? "deep" : "brief";
+      window.localStorage.setItem(PLAYER_SCORE_MODE_KEY, state.playerScoreMode);
+      const model = playerScoreModel();
+      renderPlayerScoreHeader(model);
+      renderPlayerScoreContent(model);
+      renderPlayerScoreEvidence(model);
+      return;
+    }
+    const openDimension = event.target.closest("[data-player-score-open-dimension]");
+    if (openDimension) {
+      state.playerScoreMode = "deep";
+      state.playerScoreSection = "overview";
+      state.selectedPlayerScoreEvidence = { type: "dimension", id: openDimension.dataset.playerScoreOpenDimension };
+      window.localStorage.setItem(PLAYER_SCORE_MODE_KEY, state.playerScoreMode);
+      const model = playerScoreModel();
+      renderPlayerScoreHeader(model);
+      renderPlayerScoreContent(model);
+      renderPlayerScoreEvidence(model);
+      if (window.innerWidth < 1180) setPlayerScoreEvidenceOpen(true);
+      return;
+    }
+    const section = event.target.closest("[data-player-score-section]");
+    if (section) {
+      state.playerScoreSection = section.dataset.playerScoreSection;
+      state.selectedPlayerScoreEvidence = null;
+      const model = playerScoreModel();
+      renderPlayerScoreContent(model);
+      renderPlayerScoreEvidence(model);
+      window.requestAnimationFrame(() => section.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" }));
+      return;
+    }
+    const player = event.target.closest("[data-player-score-slot]");
+    if (player) {
+      selectHero(player.dataset.playerScoreSlot);
+      return;
+    }
+    const reparse = event.target.closest("[data-player-score-reparse]");
+    if (reparse && state.currentMatch) {
+      startAutomaticParse(state.currentMatch, true);
+      return;
+    }
+    const jump = event.target.closest("[data-player-score-jump]");
+    if (jump) {
+      jumpFromPlayerScore(jump.dataset.playerScoreJump, jump.dataset.playerScoreTime);
+      return;
+    }
+    const evidence = event.target.closest("[data-player-score-evidence-type]");
+    if (evidence) {
+      state.selectedPlayerScoreEvidence = {
+        type: evidence.dataset.playerScoreEvidenceType,
+        id: evidence.dataset.playerScoreEvidenceId,
+      };
+      if (state.selectedPlayerScoreEvidence.type === "ward") state.selectedWardId = state.selectedPlayerScoreEvidence.id;
+      if (Number.isFinite(Number(evidence.dataset.playerScoreTime))) updateCurrentTime(Number(evidence.dataset.playerScoreTime), { syncSegment: false });
+      const model = playerScoreModel();
+      if (state.playerScoreSection === "vision" && state.selectedPlayerScoreEvidence.type === "ward") renderPlayerScoreContent(model);
+      else document.querySelectorAll("#player-score-content [data-player-score-evidence-type]").forEach((item) => item.classList.toggle("active", item === evidence));
+      renderPlayerScoreEvidence(model);
+      if (window.innerWidth < 1180) setPlayerScoreEvidenceOpen(true);
+      return;
+    }
+    const timeline = event.target.closest("[data-player-score-time]");
+    if (timeline) updateCurrentTime(Number(timeline.dataset.playerScoreTime), { syncSegment: false });
   });
   document.querySelector("#global-time-slider").addEventListener("input", (event) => updatePlayheadMs(event.target.value));
   document.querySelector("#play-toggle").addEventListener("click", togglePlayback);
@@ -5396,8 +6785,7 @@ function bindEvents() {
   document.querySelector("#topbar-refresh").addEventListener("click", async (event) => {
     event.currentTarget.classList.add("is-spinning");
     await checkParserStatus();
-    if (state.page === "goldens") await loadGoldenMatches({ reloadSelected: true, silent: true });
-    else if (state.matchesStatus === "ready") await loadMatches(state.accountId, { silent: true });
+    if (state.matchesStatus === "ready") await loadMatches(state.accountId, { silent: true });
     event.currentTarget.classList.remove("is-spinning");
   });
   document.querySelector("#global-search-toggle").addEventListener("click", () => {
@@ -5435,6 +6823,12 @@ function bindEvents() {
   });
 
   window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      setDetailMoreOpen(false);
+      if (state.playerScoreEvidenceOpen) setPlayerScoreEvidenceOpen(false);
+      if (state.wardMapExpanded) setWardMapExpanded(false);
+      if (window.innerWidth < 1280 && !state.sidebarCollapsed) setSidebarCollapsed(true);
+    }
     if (state.page !== "detail" || ["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName)) return;
     if (event.code === "Space") {
       event.preventDefault();
@@ -5450,10 +6844,15 @@ function bindEvents() {
     }
   });
   window.addEventListener("resize", () => {
+    applySidebarLayout();
+    if (window.innerWidth >= 1180 && state.playerScoreEvidenceOpen) setPlayerScoreEvidenceOpen(false);
     const chartContainer = document.querySelector("#development-chart");
     if (state.chart && chartContainer?.clientWidth > 1 && chartContainer?.clientHeight > 1) state.chart.resize();
     if (state.page === "detail" && state.detailView === "combat") {
       window.requestAnimationFrame(() => resolveCombatMarkerCollisions(document.querySelector("#combat-map-players")));
+    }
+    if (state.page === "detail" && state.detailView === "vision") {
+      window.requestAnimationFrame(applyWardMapTransform);
     }
   });
 }
@@ -5461,6 +6860,13 @@ function bindEvents() {
 async function init() {
   restoreDirectorySettings();
   applyScoreboardStressFixture();
+  applySidebarLayout();
+  setWardSideView(state.wardSideView);
+  setWardTimelineCollapsed(state.wardTimelineCollapsed, { persist: false });
+  setFarmCompactView(state.farmCompactView);
+  setBuildCompactView(state.buildCompactView);
+  setCombatCompactView(state.combatCompactView);
+  setPlayerScoreEvidenceOpen(false);
   renderMatches();
   renderHeroStrip();
   renderLaneReview();
@@ -5475,25 +6881,28 @@ async function init() {
   renderCombat();
   filterTimelineEvents();
   renderScoreboard();
+  renderPlayerScore();
   renderCoverage();
   renderReplays();
   renderTasks();
-  renderGoldenMatchOptions();
-  renderGoldenWorkspace();
   bindEvents();
   setPage("matches");
   updateAccountChrome();
   updateCurrentTime(state.currentTime, { syncSegment: false });
   refreshIcons();
   if (PREVIEW_VIEW) {
-    if (PREVIEW_VIEW === "goldens") {
-      setPage("goldens");
-      const online = await checkParserStatus();
-      if (online) {
-        await loadGoldenMatches({ silent: true });
-        const previewMatch = state.golden.matches.find((match) => match.annotation?.exists) || state.golden.matches[0];
-        if (previewMatch) await loadGoldenMatch(previewMatch.match_id);
-      }
+    if (PREVIEW_VIEW === "matches") {
+      state.accountId = "123456789";
+      state.matches = DEMO_MATCHES;
+      state.matchesStatus = "ready";
+      updateAccountChrome();
+      updateMatchSummary();
+      renderMatches();
+      setPage("matches");
+      return;
+    }
+    if (PREVIEW_VIEW === "replays" || PREVIEW_VIEW === "tasks") {
+      setPage(PREVIEW_VIEW);
       return;
     }
     if (PREVIEW_VIEW === "settings") {
@@ -5515,13 +6924,13 @@ async function init() {
         local_status: "full",
       });
       applyAnalysisToProduct(analysis, match);
-      setDetailView(["development", "farm", "vision", "combat", "players"].includes(PREVIEW_VIEW) ? PREVIEW_VIEW : "farm");
+      setDetailView(["development", "farm", "vision", "combat", "player-score", "players"].includes(PREVIEW_VIEW) ? PREVIEW_VIEW : "farm");
       document.documentElement.dataset.qaMatchLoaded = PREVIEW_MATCH_ID;
       return;
     }
     state.currentMatch = { ...DEMO_MATCHES[0], id: "preview" };
     setPage("detail");
-    setDetailView(["development", "farm", "vision", "combat", "players"].includes(PREVIEW_VIEW) ? PREVIEW_VIEW : "farm");
+    setDetailView(["development", "farm", "vision", "combat", "player-score", "players"].includes(PREVIEW_VIEW) ? PREVIEW_VIEW : "farm");
     return;
   }
   const online = await checkParserStatus();

@@ -8,16 +8,17 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.NavigableMap;
+import java.util.Set;
 import java.util.TreeMap;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 
 /** Aligns delayed CombatLog callbacks to the pause-adjusted clock of their original demo tick. */
 final class ReplayTimeNormalizer {
     private static final int MAX_ANCHOR_DISTANCE_TICKS = 45;
     private static final double DEFAULT_MILLIS_PER_TICK = 1000.0 / 30.0;
+    private static final Set<String> ANCHOR_FIELDS = Set.of("type", "demo_tick", "game_time_ms");
 
     private final NavigableMap<Integer, Anchor> anchors = new TreeMap<>();
     private long normalizedEvents;
@@ -36,8 +37,7 @@ final class ReplayTimeNormalizer {
                 }
                 if (line.isBlank()) continue;
                 try {
-                    JsonElement parsed = JsonParser.parseString(line);
-                    if (parsed.isJsonObject()) normalizer.observe(parsed.getAsJsonObject());
+                    normalizer.observe(JsonLineProjection.parse(line, ANCHOR_FIELDS));
                 } catch (RuntimeException ignored) {
                     // The main summary pass reports malformed lines.
                 }

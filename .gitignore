@@ -27,11 +27,20 @@ tools/replay-poc/output/
 .playwright-mcp/
 .validation/
 qa/
+docs/layout-audit-*/*.png.json
 *.log
 *.msi
 npm-debug.log*
 __pycache__/
 *.pyc
+
+# Local promo rendering runtime and generated media
+promo/vendor/
+promo/voice_vendor/
+promo/audio/
+promo/neural_audio/
+promo/output/
+promo/assets/
 
 # Editors and operating systems
 .idea/

@@ -19,6 +19,9 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -26,7 +29,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import java.util.zip.GZIPOutputStream;
 
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
 
@@ -40,6 +42,7 @@ final class ReplayJobManager implements AutoCloseable {
     private static final Gson PRETTY_GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final int DEFAULT_REPLAY_WAIT_SECONDS = 180;
     private static final int DEFAULT_REPLAY_DOWNLOAD_WAIT_SECONDS = 600;
+    private static final int DEFAULT_DECOMPRESSED_CACHE_COUNT = 2;
 
     private final Path dataDirectory;
     private final OpenDotaClient openDota;
@@ -53,6 +56,7 @@ final class ReplayJobManager implements AutoCloseable {
         this.executor = Executors.newSingleThreadExecutor(runnable -> {
             Thread thread = new Thread(runnable, "dota-lens-replay-worker");
             thread.setDaemon(true);
+            thread.setPriority(Math.min(Thread.MAX_PRIORITY, Thread.NORM_PRIORITY + 1));
             return thread;
         });
         Files.createDirectories(this.dataDirectory.resolve("replays"));
@@ -79,7 +83,13 @@ final class ReplayJobManager implements AutoCloseable {
         JobState job = new JobState(matchId, accountId);
         jobs.put(job.id, job);
         matchJobs.put(matchId, job.id);
-        Future<?> task = executor.submit(() -> run(job, force));
+        Future<?> task = executor.submit(() -> {
+            try {
+                run(job, force);
+            } finally {
+                reclaimTransientHeap(job.matchId);
+            }
+        });
         job.attachTask(task);
         return job.snapshot();
     }
@@ -154,6 +164,7 @@ final class ReplayJobManager implements AutoCloseable {
         Path rawArchive = analysisDirectory.resolve(job.matchId + ".raw.jsonl.gz");
         Path rawArchivePart = analysisDirectory.resolve(job.matchId + ".raw.jsonl.gz.part");
         Path summaryPart = analysisDirectory.resolve("summary.json.part");
+        long phaseStarted = System.nanoTime();
         try {
             job.throwIfCanceled();
             Files.createDirectories(analysisDirectory);
@@ -163,31 +174,42 @@ final class ReplayJobManager implements AutoCloseable {
             addPatchName(matchDetail);
             Files.writeString(analysisDirectory.resolve("match.json"), PRETTY_GSON.toJson(matchDetail),
                     StandardCharsets.UTF_8);
+            job.recordPhase("resolving", phaseStarted);
 
             URI replayUrl = OpenDotaClient.replayUrl(matchDetail);
             if (replayUrl == null) {
                 throw new IOException("Replay URL is unavailable after OpenDota parse request");
             }
+            phaseStarted = System.nanoTime();
             Path downloadedReplay = acquireReplay(job, replayUrl);
             job.throwIfCanceled();
+            job.recordPhase("acquiring_replay", phaseStarted);
+            phaseStarted = System.nanoTime();
             Path replayFile = prepareReplay(job, downloadedReplay, replayUrl);
+            job.recordPhase("decompressing", phaseStarted);
 
             job.update("parsing", 56, "Parsing Replay events");
             Files.deleteIfExists(rawPart);
             Files.deleteIfExists(rawArchivePart);
             Files.deleteIfExists(summaryPart);
+            phaseStarted = System.nanoTime();
             parseReplay(job, replayFile, rawPart);
             job.throwIfCanceled();
+            job.recordPhase("parsing", phaseStarted);
 
             job.update("summarizing", 92, "Building analysis summary and coverage report");
+            phaseStarted = System.nanoTime();
             JsonObject summary = AnalysisSummary.build(rawPart, matchDetail, job.accountId);
             job.throwIfCanceled();
+            job.recordPhase("summarizing", phaseStarted);
             if (!summary.get("complete").getAsBoolean()) {
                 throw new IOException("Parsed JSONL did not pass completeness checks");
             }
             job.update("archiving", 95, "Compressing raw Replay event archive");
+            phaseStarted = System.nanoTime();
             gzipRawArchive(job, rawPart, rawArchivePart);
             job.throwIfCanceled();
+            job.recordPhase("archiving", phaseStarted);
             summary.addProperty("raw_file", rawArchive.getFileName().toString());
             summary.addProperty("raw_encoding", "gzip");
             summary.addProperty("raw_archive_bytes", Files.size(rawArchivePart));
@@ -195,6 +217,7 @@ final class ReplayJobManager implements AutoCloseable {
             summary.addProperty("replay_bytes", Files.size(downloadedReplay));
 
             job.update("indexing", 97, "Writing compact analysis modules");
+            phaseStarted = System.nanoTime();
             JsonObject storedSummary = AnalysisStorage.write(analysisDirectory, summaryPart, summary);
             job.throwIfCanceled();
             moveReplacing(rawArchivePart, rawArchive);
@@ -203,6 +226,7 @@ final class ReplayJobManager implements AutoCloseable {
             Files.deleteIfExists(rawFile);
             AnalysisStorage.cleanupInactiveGenerations(analysisDirectory, storedSummary);
             compactReplayCache(job.matchId);
+            job.recordPhase("indexing", phaseStarted);
             job.complete(storedSummary);
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
@@ -210,7 +234,10 @@ final class ReplayJobManager implements AutoCloseable {
             else job.fail("interrupted", "Replay task was interrupted", error);
         } catch (Exception error) {
             if (job.cancelRequested()) job.markCanceled("Canceled by user");
-            else job.fail(errorCode(error), safeMessage(error), error);
+            else {
+                logFailure(job, error);
+                job.fail(errorCode(error), safeMessage(error), error);
+            }
         } finally {
             job.clearCancellationResource(null);
             try {
@@ -221,6 +248,23 @@ final class ReplayJobManager implements AutoCloseable {
                 // A stale partial file is harmless and will be replaced on the next run.
             }
         }
+    }
+
+    private static void logFailure(JobState job, Exception error) {
+        System.err.printf("Replay parse failed: match=%d stage=%s error=%s message=%s%n",
+                job.matchId, job.stage, error.getClass().getName(), safeMessage(error));
+        error.printStackTrace(System.err);
+    }
+
+    private static void reclaimTransientHeap(long matchId) {
+        Runtime runtime = Runtime.getRuntime();
+        long before = runtime.totalMemory() - runtime.freeMemory();
+        long started = System.nanoTime();
+        System.gc();
+        long after = runtime.totalMemory() - runtime.freeMemory();
+        long elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+        System.err.printf("Replay heap cleanup: match=%d elapsed_ms=%d before_mb=%d after_mb=%d%n",
+                matchId, elapsed, before / (1024 * 1024), after / (1024 * 1024));
     }
 
     private void cleanupPartialFiles(long matchId) {
@@ -295,6 +339,11 @@ final class ReplayJobManager implements AutoCloseable {
     }
 
     private void addPatchName(JsonObject match) {
+        JsonElement existingName = match.get("patch_name");
+        if (existingName != null && !existingName.isJsonNull()
+                && !existingName.getAsString().isBlank()) {
+            return;
+        }
         JsonElement patch = match.get("patch");
         if (patch == null || patch.isJsonNull()) {
             return;
@@ -421,7 +470,7 @@ final class ReplayJobManager implements AutoCloseable {
         Path part = demFile.resolveSibling(demFile.getFileName() + ".part");
         Files.deleteIfExists(part);
         job.update("decompressing", 49, "Decompressing Replay");
-        if (!decompressWithPython(job, downloadedReplay, part)) {
+        if (!decompressWithConfiguredPython(job, downloadedReplay, part)) {
             job.throwIfCanceled();
             decompressWithJava(job, downloadedReplay, part);
         }
@@ -434,10 +483,12 @@ final class ReplayJobManager implements AutoCloseable {
         return demFile;
     }
 
-    private boolean decompressWithPython(JobState job, Path source, Path target) throws InterruptedException {
+    private boolean decompressWithConfiguredPython(JobState job, Path source, Path target)
+            throws InterruptedException {
         String python = Optional.ofNullable(System.getenv("DOTA_LENS_PYTHON"))
                 .filter(value -> !value.isBlank())
-                .orElse("python");
+                .orElse(null);
+        if (python == null) return false;
         String script = "import bz2, shutil, sys\n"
                 + "with bz2.open(sys.argv[1], 'rb') as source, open(sys.argv[2], 'wb') as target:\n"
                 + "    shutil.copyfileobj(source, target, 1024 * 1024)\n";
@@ -532,7 +583,7 @@ final class ReplayJobManager implements AutoCloseable {
         InputStream input = new BufferedInputStream(Files.newInputStream(source), 1024 * 1024);
         job.attachCancellationResource(input);
         try (input;
-                GZIPOutputStream output = new GZIPOutputStream(
+                TunedGzipOutputStream output = new TunedGzipOutputStream(
                         new BufferedOutputStream(Files.newOutputStream(target), 1024 * 1024), 1024 * 256)) {
             byte[] buffer = new byte[1024 * 1024];
             int read;
@@ -552,8 +603,36 @@ final class ReplayJobManager implements AutoCloseable {
 
     private void compactReplayCache(long matchId) throws IOException {
         Path replayDirectory = dataDirectory.resolve("replays");
-        Path compressed = replayDirectory.resolve(matchId + ".dem.bz2");
-        if (nonEmptyFile(compressed)) Files.deleteIfExists(replayDirectory.resolve(matchId + ".dem"));
+        int cacheCount = Math.max(0, intEnvironment(
+                "DOTA_LENS_DECOMPRESSED_CACHE_COUNT", DEFAULT_DECOMPRESSED_CACHE_COUNT));
+        pruneDecompressedReplayCache(replayDirectory, matchId, cacheCount);
+    }
+
+    static void pruneDecompressedReplayCache(Path replayDirectory, long currentMatchId, int cacheCount)
+            throws IOException {
+        if (!Files.isDirectory(replayDirectory)) return;
+        Path current = replayDirectory.resolve(currentMatchId + ".dem").toAbsolutePath().normalize();
+        List<Path> candidates;
+        try (var paths = Files.list(replayDirectory)) {
+            candidates = paths
+                    .filter(path -> path.getFileName().toString().endsWith(".dem"))
+                    .filter(path -> nonEmptyFile(path.resolveSibling(path.getFileName() + ".bz2")))
+                    .map(path -> path.toAbsolutePath().normalize())
+                    .sorted(Comparator.comparingLong((Path path) -> path.equals(current)
+                            ? Long.MAX_VALUE : lastModifiedMillis(path)).reversed())
+                    .toList();
+        }
+        for (int index = Math.max(0, cacheCount); index < candidates.size(); index++) {
+            Files.deleteIfExists(candidates.get(index));
+        }
+    }
+
+    private static long lastModifiedMillis(Path path) {
+        try {
+            return Files.getLastModifiedTime(path).toMillis();
+        } catch (IOException ignored) {
+            return Long.MIN_VALUE;
+        }
     }
 
     private Path analysisDirectory(long matchId) {
@@ -667,6 +746,8 @@ final class ReplayJobManager implements AutoCloseable {
         final long matchId;
         final long accountId;
         final String createdAt = Instant.now().toString();
+        final long createdNanos = System.nanoTime();
+        final Map<String, Long> phaseDurationsMs = new LinkedHashMap<>();
         String updatedAt = createdAt;
         String status = "queued";
         String stage = "queued";
@@ -801,8 +882,15 @@ final class ReplayJobManager implements AutoCloseable {
             if (summary.has("raw_archive_bytes")) {
                 result.addProperty("raw_archive_bytes", summary.get("raw_archive_bytes").getAsLong());
             }
+            result.add("phase_durations_ms", phaseDurationsJson());
             if (bytesTotal > 0) bytesProcessed = bytesTotal;
             updatedAt = Instant.now().toString();
+        }
+
+        synchronized void recordPhase(String name, long startedNanos) {
+            long elapsed = Math.max(0L, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos));
+            phaseDurationsMs.merge(name, elapsed, Long::sum);
+            System.err.printf("Replay phase: match=%d phase=%s elapsed_ms=%d%n", matchId, name, elapsed);
         }
 
         synchronized void fail(String code, String detail, Exception error) {
@@ -842,6 +930,9 @@ final class ReplayJobManager implements AutoCloseable {
             object.addProperty("updated_at", updatedAt);
             object.addProperty("bytes_processed", bytesProcessed);
             object.addProperty("bytes_total", bytesTotal);
+            object.addProperty("elapsed_ms",
+                    Math.max(0L, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - createdNanos)));
+            object.add("phase_durations_ms", phaseDurationsJson());
             object.addProperty("cancelable", isActive());
             object.addProperty("cancel_requested", cancelRequested);
             if (errorCode != null) {
@@ -860,6 +951,12 @@ final class ReplayJobManager implements AutoCloseable {
                 object.add("result", existing);
             }
             return object;
+        }
+
+        private JsonObject phaseDurationsJson() {
+            JsonObject timings = new JsonObject();
+            phaseDurationsMs.forEach(timings::addProperty);
+            return timings;
         }
 
         private static void closeQuietly(AutoCloseable resource) {

@@ -31,6 +31,18 @@ final class AnalysisSummary {
             "camps_stacked", "creeps_stacked", "rune_pickups", "tower_kills", "roshan_kills",
             "buyback_count", "gold_spent", "total_gold", "total_xp"
     };
+    private static final Set<String> CORE_EVENT_FIELDS = Set.of(
+            "type", "slot", "time", "demo_tick", "raw_game_time_ms", "game_time_ms",
+            "event_seq", "visible_radiant", "visible_dire");
+    private static final Set<String> FULL_ANALYSIS_TYPES = Set.of(
+            "interval", "unit_enter", "unit_state", "unit_left", "visibility",
+            "DOTA_COMBATLOG_PURCHASE", "DOTA_ABILITY_LEVEL",
+            "DOTA_COMBATLOG_ITEM", "DOTA_COMBATLOG_ABILITY",
+            "DOTA_COMBATLOG_GOLD", "DOTA_COMBATLOG_DEATH", "DOTA_COMBATLOG_DAMAGE",
+            "DOTA_COMBATLOG_HEAL", "DOTA_COMBATLOG_MODIFIER_ADD",
+            "DOTA_COMBATLOG_MODIFIER_REMOVE", "obs", "sen", "obs_left", "sen_left",
+            "DOTA_COMBATLOG_TEAM_BUILDING_KILL", "CHAT_MESSAGE_ROSHAN_KILL",
+            "CHAT_MESSAGE_AEGIS", "CHAT_MESSAGE_COURIER_LOST");
 
     private AnalysisSummary() {
     }
@@ -72,12 +84,17 @@ final class AnalysisSummary {
                 }
                 JsonObject event;
                 try {
-                    JsonElement parsed = JsonParser.parseString(line);
-                    if (!parsed.isJsonObject()) {
-                        invalidLines++;
-                        continue;
+                    String compactType = JsonLineProjection.compactType(line);
+                    if (FULL_ANALYSIS_TYPES.contains(compactType)) {
+                        JsonElement parsed = JsonParser.parseString(line);
+                        if (!parsed.isJsonObject()) {
+                            invalidLines++;
+                            continue;
+                        }
+                        event = parsed.getAsJsonObject();
+                    } else {
+                        event = JsonLineProjection.parse(line, CORE_EVENT_FIELDS);
                     }
-                    event = parsed.getAsJsonObject();
                 } catch (RuntimeException error) {
                     invalidLines++;
                     continue;
@@ -209,14 +226,20 @@ final class AnalysisSummary {
     }
 
     static boolean isCurrent(JsonObject summary) {
-        return summary != null
-                && summary.has("schema")
-                && CURRENT_SCHEMA.equals(summary.get("schema").getAsString())
-                && summary.has("modules")
-                && summary.getAsJsonObject("modules").has("laning")
-                && summary.getAsJsonObject("modules").has("schema")
-                && ProductAnalysis.CURRENT_SCHEMA.equals(
-                        summary.getAsJsonObject("modules").get("schema").getAsString());
+        if (summary == null || !summary.has("schema")
+                || !CURRENT_SCHEMA.equals(summary.get("schema").getAsString())
+                || !summary.has("modules")) {
+            return false;
+        }
+        JsonObject modules = summary.getAsJsonObject("modules");
+        JsonObject players = modules.has("players") && modules.get("players").isJsonObject()
+                ? modules.getAsJsonObject("players") : null;
+        return modules.has("laning")
+                && modules.has("schema")
+                && ProductAnalysis.CURRENT_SCHEMA.equals(modules.get("schema").getAsString())
+                && players != null
+                && players.has("schema")
+                && PlayerReportAnalysis.SCHEMA.equals(players.get("schema").getAsString());
     }
 
     private static JsonObject compactMatch(JsonObject source, long accountId) {

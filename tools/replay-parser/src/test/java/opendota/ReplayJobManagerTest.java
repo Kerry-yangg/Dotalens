@@ -9,6 +9,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -40,6 +41,25 @@ class ReplayJobManagerTest {
             assertFalse(manager.hasReplayCache(103L));
             assertFalse(manager.hasReplayCache(104L));
         }
+    }
+
+    @Test
+    void retainsOnlyTheCurrentAndMostRecentDecompressedReplayCaches() throws Exception {
+        Path replayDirectory = temporaryDirectory.resolve("replays");
+        Files.createDirectories(replayDirectory);
+        for (long matchId : new long[] { 201L, 202L, 203L }) {
+            Path dem = replayDirectory.resolve(matchId + ".dem");
+            Files.write(dem, new byte[] { 1, 2, 3 });
+            Files.write(replayDirectory.resolve(matchId + ".dem.bz2"), new byte[] { 4, 5, 6 });
+            Files.setLastModifiedTime(dem, FileTime.fromMillis(matchId * 1000L));
+        }
+
+        ReplayJobManager.pruneDecompressedReplayCache(replayDirectory, 201L, 2);
+
+        assertTrue(Files.isRegularFile(replayDirectory.resolve("201.dem")));
+        assertFalse(Files.exists(replayDirectory.resolve("202.dem")));
+        assertTrue(Files.isRegularFile(replayDirectory.resolve("203.dem")));
+        assertTrue(Files.isRegularFile(replayDirectory.resolve("202.dem.bz2")));
     }
 
     @Test

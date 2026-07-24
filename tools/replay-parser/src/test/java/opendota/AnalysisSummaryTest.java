@@ -52,7 +52,7 @@ class AnalysisSummaryTest {
 
         assertEquals("dota-lens/1.0", summary.get("schema").getAsString());
         JsonObject modules = summary.getAsJsonObject("modules");
-        assertEquals("product-modules/2.8", modules.get("schema").getAsString());
+        assertEquals("product-modules/2.10", modules.get("schema").getAsString());
         for (String module : new String[] { "snapshots", "development", "build", "farm", "laning", "vision",
                 "combat", "map", "timeline", "players", "time_contract" }) {
             assertTrue(modules.has(module), "missing product module: " + module);
@@ -64,24 +64,53 @@ class AnalysisSummaryTest {
         JsonObject oldSummary = summary.deepCopy();
         oldSummary.addProperty("schema", "dota-lens/0.3");
         assertFalse(AnalysisSummary.isCurrent(oldSummary));
-        assertEquals(1, modules.getAsJsonObject("snapshots").getAsJsonArray("0").size());
+        JsonObject oldPlayerReport = summary.deepCopy();
+        oldPlayerReport.getAsJsonObject("modules").getAsJsonObject("players")
+                .addProperty("schema", "player-report/1.1");
+        assertFalse(AnalysisSummary.isCurrent(oldPlayerReport));
+        assertEquals(1, modules.getAsJsonObject("snapshots").getAsJsonObject("by_slot")
+                .getAsJsonArray("0").size());
         assertEquals(1, modules.getAsJsonObject("build").getAsJsonObject("by_slot")
                 .getAsJsonObject("0").getAsJsonArray("inventory").size());
         JsonObject playerModule = modules.getAsJsonObject("players");
-        assertEquals("player-report/1.0", playerModule.get("schema").getAsString());
+        assertEquals("player-report/3.0", playerModule.get("schema").getAsString());
         assertEquals(60.0, playerModule.getAsJsonObject("by_slot").getAsJsonObject("0")
                 .get("actions_per_min").getAsDouble());
         JsonObject report = playerModule.getAsJsonObject("by_slot").getAsJsonObject("0")
                 .getAsJsonObject("report");
+        assertEquals("player-report/3.0", report.get("model").getAsString());
         assertTrue(report.get("overall_score").getAsInt() >= 0);
         assertTrue(report.get("overall_score").getAsInt() <= 100);
-        assertEquals(5, report.getAsJsonArray("dimensions").size());
+        assertEquals(10, report.getAsJsonArray("dimensions").size());
         assertTrue(report.getAsJsonArray("phase_scores").size() > 0);
         assertTrue(report.getAsJsonArray("dimensions").get(0).getAsJsonObject()
                 .getAsJsonArray("evidence").size() > 0);
-        assertEquals(30, playerModule.getAsJsonObject("role_profiles").getAsJsonObject("1")
+        assertEquals(10, report.getAsJsonObject("score_card").getAsJsonArray("dimensions").size());
+        assertEquals(10, report.getAsJsonObject("score_card").get("dimension_target").getAsInt());
+        assertEquals(5, report.getAsJsonObject("brief").getAsJsonArray("domain_scores").size());
+        assertEquals(3, report.getAsJsonArray("story_nodes").size());
+        assertTrue(report.getAsJsonArray("training_plan").size() > 0);
+        assertTrue(report.getAsJsonObject("evidence_index").size() > 0);
+        assertEquals(20, playerModule.getAsJsonObject("role_profiles").getAsJsonObject("1")
                 .getAsJsonArray("dimensions").get(1).getAsJsonObject().get("weight").getAsInt());
-        assertEquals(25, playerModule.getAsJsonObject("role_profiles").getAsJsonObject("5")
-                .getAsJsonArray("dimensions").get(1).getAsJsonObject().get("weight").getAsInt());
+        assertEquals(23, playerModule.getAsJsonObject("role_profiles").getAsJsonObject("5")
+                .getAsJsonArray("dimensions").get(8).getAsJsonObject().get("weight").getAsInt());
+        for (int position = 1; position <= 5; position++) {
+            JsonArray profile = playerModule.getAsJsonObject("role_profiles")
+                    .getAsJsonObject(Integer.toString(position)).getAsJsonArray("dimensions");
+            assertEquals(10, profile.size());
+            int totalWeight = 0;
+            for (var element : profile) {
+                totalWeight += element.getAsJsonObject().get("weight").getAsInt();
+            }
+            assertEquals(100, totalWeight);
+        }
+        for (var element : report.getAsJsonArray("dimensions")) {
+            JsonObject dimension = element.getAsJsonObject();
+            if (!dimension.get("available").getAsBoolean()) {
+                assertFalse(dimension.has("score"));
+                assertFalse(dimension.has("score_impact"));
+            }
+        }
     }
 }
