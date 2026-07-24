@@ -1,6 +1,6 @@
 # Dota Lens 0.4.2 Douyin Promo
 
-This folder builds a vertical `1080x1920` product video from real Dota Lens QA captures.
+This folder builds an approximately 30-second vertical `1080x1920` product video from real Dota Lens QA captures.
 
 ## Build
 
