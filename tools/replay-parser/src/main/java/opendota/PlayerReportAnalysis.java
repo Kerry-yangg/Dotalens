@@ -537,17 +537,22 @@ final class PlayerReportAnalysis {
         List<String> objectiveMissing = new ArrayList<>();
         objectiveMissing.add("objective_setup_attribution");
         List<PlayerReportBaseComponents.ComponentInput> objectiveInputs = new ArrayList<>();
-        if (teamTower > 0 && hasNumber(own, "tower_damage")) {
+        boolean completeTowerDamageDenominator = hasCompleteTeamNumber(bySlot, teamStart,
+                "tower_damage");
+        if (teamTower > 0 && hasNumber(own, "tower_damage") && completeTowerDamageDenominator) {
             objectiveInputs.add(shareComponent("team_tower_damage_share_vs_role_target",
                     "团队防御塔伤害占比相对位置目标", number(own, "tower_damage"), teamTower,
                     towerTarget, 75, moduleConfidence(modules, "objectives", 74), "damage",
                     List.of("players:slot:" + slot + ":tower_damage")));
         } else {
-            objectiveMissing.add("team_tower_damage_share_inputs_missing");
+            String towerDamageReason = completeTowerDamageDenominator
+                    ? "team_tower_damage_share_inputs_missing"
+                    : "team_tower_damage_denominator_incomplete";
+            objectiveMissing.add(towerDamageReason);
             objectiveInputs.add(missingComponent("team_tower_damage_share_vs_role_target",
                     "团队防御塔伤害占比相对位置目标", 75,
                     moduleConfidence(modules, "objectives", 74),
-                    "team_tower_damage_share_inputs_missing",
+                    towerDamageReason,
                     List.of("players:slot:" + slot + ":tower_damage")));
         }
         if (hasNumber(own, "tower_kills") && hasNumber(own, "roshan_kills")) {
@@ -601,25 +606,25 @@ final class PlayerReportAnalysis {
                 && hasNumber(roleOpponent, "teleport_uses");
         boolean runeAvailable = hasPreferredNumber(own, "aggregate_rune_pickups", "rune_pickups")
                 && hasPreferredNumber(roleOpponent, "aggregate_rune_pickups", "rune_pickups");
+        Double ownTp = tpAvailable ? number(own, "teleport_uses") : null;
+        Double opponentTp = tpAvailable ? number(roleOpponent, "teleport_uses") : null;
+        Double ownRunes = runeAvailable
+                ? preferred(own, "aggregate_rune_pickups", "rune_pickups") : null;
+        Double opponentRunes = runeAvailable
+                ? preferred(roleOpponent, "aggregate_rune_pickups", "rune_pickups") : null;
+        Integer tpScore = tpAvailable ? relativeScore(ownTp, opponentTp) : null;
+        Integer runeScore = runeAvailable ? relativeScore(ownRunes, opponentRunes) : null;
+        JsonObject activationMetrics = rawMetrics("tp_available", tpAvailable,
+                "rune_available", runeAvailable);
+        nullableMetric(activationMetrics, "tp_subject", ownTp);
+        nullableMetric(activationMetrics, "tp_reference", opponentTp);
+        nullableMetric(activationMetrics, "tp_score", tpScore);
+        nullableMetric(activationMetrics, "rune_subject", ownRunes);
+        nullableMetric(activationMetrics, "rune_reference", opponentRunes);
+        nullableMetric(activationMetrics, "rune_score", runeScore);
         if (tpAvailable || runeAvailable) {
-            Double ownTp = tpAvailable ? number(own, "teleport_uses") : null;
-            Double opponentTp = tpAvailable ? number(roleOpponent, "teleport_uses") : null;
-            Double ownRunes = runeAvailable
-                    ? preferred(own, "aggregate_rune_pickups", "rune_pickups") : null;
-            Double opponentRunes = runeAvailable
-                    ? preferred(roleOpponent, "aggregate_rune_pickups", "rune_pickups") : null;
-            Integer tpScore = tpAvailable ? relativeScore(ownTp, opponentTp) : null;
-            Integer runeScore = runeAvailable ? relativeScore(ownRunes, opponentRunes) : null;
             int activationScore = tpAvailable && runeAvailable ? average(tpScore, runeScore)
                     : tpAvailable ? tpScore : runeScore;
-            JsonObject activationMetrics = rawMetrics("tp_available", tpAvailable,
-                    "rune_available", runeAvailable);
-            nullableMetric(activationMetrics, "tp_subject", ownTp);
-            nullableMetric(activationMetrics, "tp_reference", opponentTp);
-            nullableMetric(activationMetrics, "tp_score", tpScore);
-            nullableMetric(activationMetrics, "rune_subject", ownRunes);
-            nullableMetric(activationMetrics, "rune_reference", opponentRunes);
-            nullableMetric(activationMetrics, "rune_score", runeScore);
             tempoInputs.add(component("tp_rune_activation_relative_score", "传送与神符激活相对评分",
                     activationScore, 25, moduleConfidence(modules, "timeline", 80), activationScore,
                     50, "score", activationMetrics,
@@ -629,9 +634,11 @@ final class PlayerReportAnalysis {
                             "players:slot:" + roleCounterpart + ":aggregate_rune_pickups")));
         } else {
             tempoMissing.add("tp_and_rune_activation_inputs_missing");
-            tempoInputs.add(missingComponent("tp_rune_activation_relative_score", "传送与神符激活相对评分",
+            tempoInputs.add(missingComponentWithRawMetrics(
+                    "tp_rune_activation_relative_score", "传送与神符激活相对评分",
                     25, moduleConfidence(modules, "timeline", 80),
                     "tp_and_rune_activation_inputs_missing",
+                    activationMetrics,
                     List.of("players:slot:" + slot + ":teleport_uses",
                             "players:slot:" + roleCounterpart + ":teleport_uses",
                             "players:slot:" + slot + ":aggregate_rune_pickups",
@@ -1059,6 +1066,13 @@ final class PlayerReportAnalysis {
         return PlayerReportBaseComponents.missing(key, label, weight, confidence, reason, evidenceRefs);
     }
 
+    private static PlayerReportBaseComponents.ComponentInput missingComponentWithRawMetrics(
+            String key, String label, double weight, int confidence, String reason,
+            JsonObject rawMetrics, List<String> evidenceRefs) {
+        return new PlayerReportBaseComponents.ComponentInput(key, label, false, null, weight,
+                confidence, new JsonObject(), rawMetrics, List.copyOf(evidenceRefs), reason, null);
+    }
+
     private static PlayerReportBaseComponents.ComponentInput suppressedComponent(String key, String label,
             double weight, int confidence, String reason, List<String> evidenceRefs) {
         return PlayerReportBaseComponents.suppressed(key, label, weight, confidence, reason, evidenceRefs);
@@ -1200,6 +1214,13 @@ final class PlayerReportAnalysis {
             total += fallback == null ? number(row, primary) : preferred(row, primary, fallback);
         }
         return total;
+    }
+
+    private static boolean hasCompleteTeamNumber(JsonObject bySlot, int start, String key) {
+        for (int slot = start; slot < start + 5; slot++) {
+            if (!hasNumber(object(bySlot, Integer.toString(slot)), key)) return false;
+        }
+        return true;
     }
 
     private static double teamActivity(JsonObject bySlot, int start, String type) {

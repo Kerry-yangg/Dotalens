@@ -263,6 +263,47 @@ class PlayerReportAnalysisAtomicComponentsTest {
         assertTrue(activationMetrics.get("rune_score").isJsonPrimitive());
     }
 
+    @Test
+    void retainsFullTpRuneRawMetricSchemaWhenAllActivationInputsAreMissing() {
+        JsonObject modules = completeModulesForPosition(2);
+        for (int slot : List.of(0, 5)) {
+            JsonObject row = player(modules, slot);
+            row.remove("teleport_uses");
+            row.remove("aggregate_rune_pickups");
+            row.remove("rune_pickups");
+        }
+        PlayerReportAnalysis.enrich(modules, null, 1800);
+
+        JsonObject activation = component(dimension(report(modules, 0), "map_tempo"),
+                "tp_rune_activation_relative_score");
+        JsonObject metrics = activation.getAsJsonObject("raw_metrics");
+        assertFalse(activation.get("available").getAsBoolean());
+        assertEquals(0.0, activation.get("effective_local_weight").getAsDouble(), 0.01);
+        assertTrue(activation.get("weighted_contribution").isJsonNull());
+        assertFalse(metrics.get("tp_available").getAsBoolean());
+        assertFalse(metrics.get("rune_available").getAsBoolean());
+        assertTrue(metrics.get("tp_subject").isJsonNull());
+        assertTrue(metrics.get("tp_reference").isJsonNull());
+        assertTrue(metrics.get("tp_score").isJsonNull());
+        assertTrue(metrics.get("rune_subject").isJsonNull());
+        assertTrue(metrics.get("rune_reference").isJsonNull());
+        assertTrue(metrics.get("rune_score").isJsonNull());
+    }
+
+    @Test
+    void excludesTowerShareWhenTeamDenominatorInputIsMissing() {
+        JsonObject modules = completeModulesForPosition(2);
+        player(modules, 1).remove("tower_damage");
+        PlayerReportAnalysis.enrich(modules, null, 1800);
+
+        JsonObject towerShare = component(dimension(report(modules, 0), "objective_conversion"),
+                "team_tower_damage_share_vs_role_target");
+        assertFalse(towerShare.get("available").getAsBoolean());
+        assertEquals(0.0, towerShare.get("effective_local_weight").getAsDouble(), 0.01);
+        assertEquals("team_tower_damage_denominator_incomplete",
+                towerShare.get("missing_reason").getAsString());
+    }
+
     private static JsonObject report(JsonObject modules, int slot) {
         return PlayerReportAtomicTestFixture.player(modules, slot)
                 .getAsJsonObject("report");
