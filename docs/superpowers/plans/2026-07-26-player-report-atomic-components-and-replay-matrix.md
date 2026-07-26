@@ -304,12 +304,14 @@ Expected: no whitespace errors. Do not stage or commit.
 - Modify: `tools/replay-parser/src/main/java/opendota/PlayerReportAnalysis.java:38-113`
 - Modify: `tools/replay-parser/src/main/java/opendota/PlayerReportAnalysis.java:192-294`
 - Modify: `tools/replay-parser/src/main/java/opendota/PlayerReportAnalysis.java:1061-1101`
+- Modify: `tools/replay-parser/src/main/java/opendota/PlayerReportScoringV4.java:183-214`
 
 **Interfaces:**
 - Consumes: `PlayerReportBaseComponents.ComponentInput`
 - Produces: `DimensionScore.components()`
 - Produces: report-level `base_component_model`
 - Produces: dimension-level `base_components`
+- Produces: V4 计分器保留分析阶段已经生成的非空 `base_components`
 - Test helper: `PlayerReportAtomicTestFixture.completeModulesForPosition(int position)`
 - Test helper: `PlayerReportAtomicTestFixture.player(JsonObject modules, int slot)`
 - Test helper: `PlayerReportAtomicTestFixture.blockEveryFightDutyGate(JsonObject modules)`
@@ -563,6 +565,16 @@ playerModule.addProperty("base_component_model",
 row.add("base_components",
         PlayerReportBaseComponents.toJson(result.score.baseCalculation()));
 ```
+
+同步提前实现 Task 5 的一个必要前置动作：`PlayerReportScoringV4.prepareDimension`
+遇到非空 `base_components` 时必须保留原数组，不再先执行：
+
+```java
+row.add("base_components", new JsonArray());
+```
+
+这一阶段只负责“保留”，不得在此实现组件复算、审计字段或旧包回退规则；
+这些仍由 Task 5 完成。没有真实组件的旧维度继续使用当前聚合占位行为。
 
 将 `weightedScore` 改为 `double`，排名改用 `Comparator.comparingDouble`；传给只接受整数的旧叙事逻辑时使用 `Math.round`，不提前截断维度基础分。
 
@@ -950,7 +962,8 @@ Run:
   '-Dtest=PlayerReportScoreFormulaV4Test' test
 ```
 
-Expected: FAIL because `prepareDimension` replaces `base_components`.
+Expected: FAIL because `prepareDimension` preserves the array after Task 2
+but does not yet independently recompute, validate, or expose audit fields.
 
 - [ ] **Step 4: 修改 `prepareDimension`**
 
@@ -965,7 +978,9 @@ Expected: FAIL because `prepareDimension` replaces `base_components`.
 6. 再进入三路计分、去重和封顶。
 ```
 
-不得先执行：
+Task 2 已保证非空组件不会被覆盖；本任务必须进一步移除当前模型报告对
+聚合占位的依赖，并确保任何空数组初始化只发生在旧输入兼容路径。不得对
+已经存在的真实组件执行：
 
 ```java
 row.add("base_components", new JsonArray());
