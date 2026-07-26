@@ -8,6 +8,7 @@ tools/replay-parser/target/
 
 # Local runtimes, replay data, and generated analysis
 tools/runtime/
+tools/runtime/player-report-regression/
 tools/replay-poc/output/
 *.dem
 *.dem.bz2

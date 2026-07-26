@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
@@ -26,7 +29,204 @@ import {
 
 const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const TOOL = resolve(PROJECT_ROOT, "tools", "player-report-regression.mjs");
+const PLAYER_REPORT_RUNNER = resolve(
+  PROJECT_ROOT,
+  "tools",
+  "Invoke-PlayerReportRegression.ps1",
+);
+const PLAYER_REPORT_MANIFEST = resolve(
+  PROJECT_ROOT,
+  "tests",
+  "player-report-regression",
+  "manifest.json",
+);
+const PLAYER_REPORT_RUNTIME = resolve(
+  PROJECT_ROOT,
+  "tools",
+  "runtime",
+  "player-report-regression",
+);
 const round4 = (value) => Math.round(value * 10000) / 10000;
+
+function readManifestFixture() {
+  const ids = [
+    "8893373471", "8893461215", "8894766243", "8902638530",
+    "8902709946", "8903960010", "8904119291", "8904187926",
+    "8904265149", "8904318329", "8904432250", "8908349474",
+    "8908420184", "8909845275", "8911632470", "8912957512",
+  ];
+  return {
+    schema: "player-report-regression-manifest/1.0",
+    matches: ids.map((matchId, index) => ({
+      match_id: matchId,
+      matrix_enabled: index < 15,
+      reserve: index === 15,
+      golden_subject: index < 15
+        ? {
+            player_slot: index % 10,
+            expected_position: (index % 5) + 1,
+            scenario_tags: ["contract-fixture"],
+          }
+        : null,
+    })),
+  };
+}
+
+test("candidate manifest contains sixteen unique replay IDs", () => {
+  const manifest = readManifestFixture();
+  assert.equal(manifest.schema, "player-report-regression-manifest/1.0");
+  assert.equal(new Set(manifest.matches.map((row) => row.match_id)).size, 16);
+  assert.equal(manifest.matches.filter((row) => row.matrix_enabled).length, 15);
+  assert.equal(manifest.matches.filter((row) => row.reserve).length, 1);
+});
+
+test("golden subjects contain exactly three samples per position", () => {
+  const manifest = readManifestFixture();
+  const counts = manifest.matches
+    .filter((row) => row.golden_subject)
+    .reduce((result, row) => {
+      const key = String(row.golden_subject.expected_position);
+      result[key] = (result[key] || 0) + 1;
+      return result;
+    }, {});
+  assert.deepEqual(counts, { "1": 3, "2": 3, "3": 3, "4": 3, "5": 3 });
+});
+
+test("candidate manifest remains a relative-path pool before Task 10 freezes it", () => {
+  const manifest = JSON.parse(readFileSync(PLAYER_REPORT_MANIFEST, "utf8"));
+  const expectedIds = [
+    "8893373471", "8893461215", "8894766243", "8902638530",
+    "8902709946", "8903960010", "8904119291", "8904187926",
+    "8904265149", "8904318329", "8904432250", "8908349474",
+    "8908420184", "8909845275", "8911632470", "8912957512",
+  ];
+
+  assert.equal(manifest.schema, "player-report-regression-manifest/1.0");
+  assert.deepEqual(manifest.matches.map((row) => row.match_id), expectedIds);
+  assert.ok(manifest.matches.every((row) =>
+    typeof row.replay_path === "string"
+    && !row.replay_path.includes(":")));
+  assert.ok(manifest.matches.every((row) =>
+    !Object.hasOwn(row, "matrix_enabled")
+    && !Object.hasOwn(row, "reserve")
+    && !Object.hasOwn(row, "golden_subject")));
+});
+
+test("runner aggregates a missing candidate and writes a failed checkpoint", () => {
+  const fixtureDirectory = mkdtempSync(join(tmpdir(), "player-report-runner-"));
+  const manifestPath = join(fixtureDirectory, "manifest.json");
+  const runDirectoriesBefore = existsSync(join(PLAYER_REPORT_RUNTIME, "runs"))
+    ? new Set(readdirSync(join(PLAYER_REPORT_RUNTIME, "runs")))
+    : new Set();
+  const checkpointPath = join(
+    PLAYER_REPORT_RUNTIME,
+    "checkpoints",
+    "9999999999.json",
+  );
+
+  writeFileSync(manifestPath, JSON.stringify({
+    schema: "player-report-regression-manifest/1.0",
+    matches: [{
+      match_id: "9999999999",
+      replay_path: "tools/runtime/dota-lens-data/replays/does-not-exist.dem",
+    }],
+  }));
+
+  try {
+    const result = spawnSync(
+      "pwsh",
+      [
+        "-NoProfile",
+        "-File",
+        PLAYER_REPORT_RUNNER,
+        "-Mode",
+        "ValidateExisting",
+        "-ManifestPath",
+        manifestPath,
+        "-IncludeCandidates",
+      ],
+      { cwd: PROJECT_ROOT, encoding: "utf8" },
+    );
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+
+    const runDirectoriesAfter = readdirSync(join(PLAYER_REPORT_RUNTIME, "runs"));
+    const createdRunDirectories = runDirectoriesAfter.filter(
+      (name) => !runDirectoriesBefore.has(name),
+    );
+    assert.equal(createdRunDirectories.length, 1);
+
+    const runDirectory = join(
+      PLAYER_REPORT_RUNTIME,
+      "runs",
+      createdRunDirectories[0],
+    );
+    const aggregate = JSON.parse(readFileSync(join(runDirectory, "aggregate.json"), "utf8"));
+    const checkpoint = JSON.parse(readFileSync(checkpointPath, "utf8"));
+    assert.equal(aggregate.matches_total, 1);
+    assert.equal(aggregate.matches_passed, 0);
+    assert.equal(aggregate.failures.length, 1);
+    assert.equal(checkpoint.status, "failed");
+    assert.ok(existsSync(join(runDirectory, "aggregate.md")));
+    assert.ok(!JSON.stringify(aggregate).includes(fixtureDirectory));
+  } finally {
+    const runDirectoriesAfter = existsSync(join(PLAYER_REPORT_RUNTIME, "runs"))
+      ? readdirSync(join(PLAYER_REPORT_RUNTIME, "runs"))
+      : [];
+    for (const name of runDirectoriesAfter) {
+      if (!runDirectoriesBefore.has(name)) {
+        rmSync(join(PLAYER_REPORT_RUNTIME, "runs", name), {
+          recursive: true,
+          force: true,
+        });
+      }
+    }
+    rmSync(checkpointPath, { force: true });
+    rmSync(fixtureDirectory, { recursive: true, force: true });
+  }
+});
+
+test("runner never persists an absolute replay path from an invalid manifest", () => {
+  const fixtureDirectory = mkdtempSync(join(tmpdir(), "player-report-runner-"));
+  const manifestPath = join(fixtureDirectory, "manifest.json");
+  const checkpointPath = join(
+    PLAYER_REPORT_RUNTIME,
+    "checkpoints",
+    "9999999998.json",
+  );
+
+  writeFileSync(manifestPath, JSON.stringify({
+    schema: "player-report-regression-manifest/1.0",
+    matches: [{
+      match_id: "9999999998",
+      replay_path: "C:\\outside\\not-a-replay.dem",
+    }],
+  }));
+
+  try {
+    const result = spawnSync(
+      "pwsh",
+      [
+        "-NoProfile",
+        "-File",
+        PLAYER_REPORT_RUNNER,
+        "-Mode",
+        "ValidateExisting",
+        "-ManifestPath",
+        manifestPath,
+        "-IncludeCandidates",
+      ],
+      { cwd: PROJECT_ROOT, encoding: "utf8" },
+    );
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+
+    const checkpoint = JSON.parse(readFileSync(checkpointPath, "utf8"));
+    assert.equal(checkpoint.replay_path, null);
+    assert.ok(!JSON.stringify(checkpoint).includes("C:\\outside"));
+  } finally {
+    rmSync(checkpointPath, { force: true });
+    rmSync(fixtureDirectory, { recursive: true, force: true });
+  }
+});
 
 function makeDimensionUnavailable(report, index, status = "missing") {
   const dimensions = report.score_card.dimensions;
