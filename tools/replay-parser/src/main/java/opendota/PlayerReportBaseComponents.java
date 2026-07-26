@@ -1,6 +1,7 @@
 package opendota;
 
 import java.util.HashSet;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -75,22 +76,33 @@ final class PlayerReportBaseComponents {
                     .toList());
         }
 
-        List<ComponentResult> results = inputs.stream().map(input -> {
+        List<ComponentResult> results = new ArrayList<>();
+        double exactScore = 0;
+        double roundedWeightTotal = 0;
+        double roundedContributionTotal = 0;
+        int lastAvailable = -1;
+        for (int index = 0; index < inputs.size(); index++) {
+            ComponentInput input = inputs.get(index);
             if (!input.available()) {
-                return new ComponentResult(input, 0, null);
+                results.add(new ComponentResult(input, 0, null));
+                continue;
             }
             double effectiveWeight = input.localWeight() * 100.0 / denominator;
-            double contribution = clampScore(input.normalizedScore())
+            double exactContribution = clampScore(input.normalizedScore())
                     * effectiveWeight / 100.0;
-            return new ComponentResult(input, round4(effectiveWeight),
-                    round4(contribution));
-        }).toList();
-        double score = results.stream()
-                .map(ComponentResult::weightedContribution)
-                .filter(Objects::nonNull)
-                .mapToDouble(Double::doubleValue)
-                .sum();
-        return new Calculation(true, round2(clampScore(score)), List.copyOf(results));
+            double roundedWeight = round4(effectiveWeight);
+            double roundedContribution = round4(exactContribution);
+            results.add(new ComponentResult(input, roundedWeight, roundedContribution));
+            roundedWeightTotal += roundedWeight;
+            roundedContributionTotal += roundedContribution;
+            exactScore += exactContribution;
+            lastAvailable = index;
+        }
+        ComponentResult last = results.get(lastAvailable);
+        results.set(lastAvailable, new ComponentResult(last.input(),
+                round4(last.effectiveLocalWeight() + 100.0 - roundedWeightTotal),
+                round4(last.weightedContribution() + round4(exactScore) - roundedContributionTotal)));
+        return new Calculation(true, round2(clampScore(exactScore)), List.copyOf(results));
     }
 
     static JsonArray toJson(Calculation calculation) {
