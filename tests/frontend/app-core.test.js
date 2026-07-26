@@ -561,6 +561,35 @@ test("player report v4 exposes recomputable overall and dimension score drilldow
   assert.match(evidence, /同结果已去重/);
 });
 
+test("player score evidence renders atomic component audit fields", () => {
+  const appSource = readFileSync(new URL("../../app.js", import.meta.url), "utf8");
+  const stylesSource = readFileSync(new URL("../../styles.css", import.meta.url), "utf8");
+  const evidenceStart = appSource.indexOf("function renderPlayerScoreEvidence(model)");
+  const evidenceEnd = appSource.indexOf("function renderPlayerScoreContent(model)", evidenceStart);
+  const evidence = appSource.slice(evidenceStart, evidenceEnd);
+
+  assert.match(evidence, /baseComponentAudit/);
+  assert.match(evidence, /effective_local_weight/);
+  assert.match(evidence, /weighted_contribution/);
+  assert.match(evidence, /missing_reason/);
+  assert.match(evidence, /suppression_reason/);
+  assert.match(evidence, /基础分重算/);
+  assert.match(evidence, /服务端基础分/);
+  assert.match(evidence, /允许误差/);
+  assert.match(evidence, /未计分/);
+  assert.match(evidence, /原子分/);
+  assert.match(evidence, /有效权重/);
+  assert.match(evidence, /对维度贡献/);
+  assert.match(evidence, /可信度/);
+  assert.match(evidence, /base_component_score_mismatch/);
+  assert.match(
+    stylesSource,
+    /grid-template-columns:\s*minmax\(180px,\s*1fr\)\s+repeat\(3,\s*minmax\(72px,\s*92px\)\)/,
+  );
+  assert.match(stylesSource, /\.player-score-base-component\s+\.identity\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/s);
+  assert.match(stylesSource, /\.player-score-base-component-reason\s*\{[^}]*white-space:\s*normal/s);
+});
+
 test("player report review navigation selects the target entity and preroll", () => {
   assert.deepEqual(resolvePlayerReportReviewNavigation({
     module: "combat",
