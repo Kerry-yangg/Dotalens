@@ -35,17 +35,13 @@ test("player report v4 validator independently enforces the per-root overall cap
       resolve(analysisDirectory, "summary.json"),
       JSON.stringify({ analysis_storage: { module_base: moduleBase } }),
     );
-    const players = bundleFixture();
-    for (const player of Object.values(players.by_slot)) {
-      player.report.score_card.audit.model = "player-report-score-audit/1.0";
-      player.report.score_card.audit.recomputation_valid = true;
-    }
+    const players = bundleFixture({ serverAudit: true });
     players.by_slot["0"].report.root_causes = [{
       id: "root-one",
       scoring_impacts: [{
         dimension: "lane_execution",
         score_path: "modifier",
-        applied_delta: -70,
+        applied_delta: -700 / 15,
         dedupe_key: "lane_execution|effect:one",
         dedupe_status: "applied_unique",
       }],
