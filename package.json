@@ -18,9 +18,11 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
-    "test": "npm run test:frontend && npm run test:desktop",
+    "test": "npm run test:frontend && npm run test:tools && npm run test:desktop",
     "test:frontend": "node --test \"tests/frontend/*.test.js\"",
+    "test:tools": "node --test \"tests/tools/*.test.js\"",
     "test:desktop": "node --test \"tests/desktop/*.test.cjs\"",
+    "player-report:validate": "node tools/player-report-regression.mjs validate-analysis",
     "preview": "vite preview --host 127.0.0.1",
     "desktop:dev": "npm run build && electron .",
     "desktop:dir": "npm run build && electron-builder --win --x64 --dir",

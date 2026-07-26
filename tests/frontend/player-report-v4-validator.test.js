@@ -12,72 +12,10 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 
+import { bundleFixture } from "../tools/player-report-fixtures.mjs";
+
 const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const VALIDATOR = resolve(PROJECT_ROOT, "tools", "Validate-PlayerReportV4.mjs");
-const DIMENSIONS = [
-  "lane_execution",
-  "farm_efficiency",
-  "resource_decision",
-  "map_tempo",
-  "combat_output",
-  "combat_duty",
-  "survival_risk",
-  "objective_conversion",
-  "vision_team",
-  "observable_execution",
-];
-
-function dimensionRows(modifier = 0) {
-  return DIMENSIONS.map((key, index) => ({
-    key,
-    available: true,
-    effective_weight: index === 0 ? 100 : 0,
-    base_score: index === 0 ? 80 : 60,
-    behavior_modifier: index === 0 ? modifier : 0,
-    final_score: index === 0 ? 80 + modifier : 60,
-    scoring_components: index === 0 && modifier
-      ? [{
-          dimension: key,
-          score_path: "modifier",
-          applied_delta: modifier,
-          dedupe_key: `${key}|effect:one`,
-          dedupe_status: "applied_unique",
-        }]
-      : [],
-  }));
-}
-
-function report(slot, tamperRootSummary = false) {
-  const modifier = tamperRootSummary ? -7 : 0;
-  const dimensions = dimensionRows(modifier);
-  const impact = dimensions[0].scoring_components[0];
-  return {
-    report: {
-      model: "player-report/4.0",
-      position: (slot % 5) + 1,
-      score_card: {
-        model: "player-report/4.0",
-        base_score: 80,
-        behavior_modifier: modifier,
-        final_score: 80 + modifier,
-        dimensions,
-        audit: {
-          model: "player-report-score-audit/1.0",
-          recomputation_valid: true,
-        },
-      },
-      root_causes: tamperRootSummary
-        ? [{
-            id: "root-one",
-            scoring_impacts: [impact],
-            scoring_summary: {
-              applied_negative_overall: 1,
-            },
-          }]
-        : [],
-    },
-  };
-}
 
 test("player report v4 validator independently enforces the per-root overall cap", () => {
   const root = mkdtempSync(resolve(tmpdir(), "dota-lens-v4-validator-"));
@@ -97,12 +35,27 @@ test("player report v4 validator independently enforces the per-root overall cap
       resolve(analysisDirectory, "summary.json"),
       JSON.stringify({ analysis_storage: { module_base: moduleBase } }),
     );
-    const bySlot = Object.fromEntries(
-      Array.from({ length: 10 }, (_, slot) => [slot, report(slot, slot === 0)]),
-    );
+    const players = bundleFixture();
+    for (const player of Object.values(players.by_slot)) {
+      player.report.score_card.audit.model = "player-report-score-audit/1.0";
+      player.report.score_card.audit.recomputation_valid = true;
+    }
+    players.by_slot["0"].report.root_causes = [{
+      id: "root-one",
+      scoring_impacts: [{
+        dimension: "lane_execution",
+        score_path: "modifier",
+        applied_delta: -70,
+        dedupe_key: "lane_execution|effect:one",
+        dedupe_status: "applied_unique",
+      }],
+      scoring_summary: {
+        applied_negative_overall: 1,
+      },
+    }];
     writeFileSync(
       resolve(analysisDirectory, moduleBase, "players.json.gz"),
-      gzipSync(JSON.stringify({ schema: "player-report/4.0", by_slot: bySlot })),
+      gzipSync(JSON.stringify(players)),
     );
 
     const run = spawnSync(process.execPath, [VALIDATOR, matchId, root], {
@@ -111,8 +64,16 @@ test("player report v4 validator independently enforces the per-root overall cap
     const result = JSON.parse(run.stdout);
 
     assert.equal(run.status, 1);
+    assert.equal(result.schema, "dota-lens-player-report-v4-regression/1.0");
+    assert.equal(result.match_id, Number(matchId));
+    assert.equal(result.player_module_schema, "player-report/4.0");
+    assert.equal(result.player_reports, 10);
+    assert.ok(Array.isArray(result.behavior_modifier_range));
+    assert.equal(typeof result.duplicate_applied_key_count, "number");
+    assert.equal(typeof result.max_root_negative_overall, "number");
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((error) => error.includes("root_penalty_recomputed=7")));
+    assert.equal(result.reports.length, 10);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
