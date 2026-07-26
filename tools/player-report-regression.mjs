@@ -1,5 +1,18 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import {
+  dirname,
+  isAbsolute,
+  relative,
+  resolve,
+} from "node:path";
 import { pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
 
@@ -1144,6 +1157,40 @@ function uniqueSortedStrings(value) {
   )].sort();
 }
 
+function projectSemantic(report) {
+  const semantic = isRecord(report?.semantic) ? report.semantic : {};
+  const brief = isRecord(report?.brief) ? report.brief : {};
+  const semanticStrengths = uniqueSortedStrings(semantic.strength_ids);
+  return {
+    strength_ids: semanticStrengths.length > 0
+      ? semanticStrengths
+      : uniqueSortedStrings(brief.strengths),
+    main_issue_id: String(
+      semantic.main_issue_id
+      || (Array.isArray(brief.priorities) ? brief.priorities[0] : "")
+      || "",
+    ),
+    training_target_id: String(
+      semantic.training_target_id
+      || (Array.isArray(brief.training_plan) ? brief.training_plan[0] : "")
+      || "",
+    ),
+  };
+}
+
+function projectMainStrengthId(report, semantic) {
+  const sourceSemantic = isRecord(report?.semantic) ? report.semantic : {};
+  const brief = isRecord(report?.brief) ? report.brief : {};
+  return String(
+    sourceSemantic.main_strength_id
+    || (Array.isArray(sourceSemantic.strength_ids)
+      ? sourceSemantic.strength_ids[0] : "")
+    || (Array.isArray(brief.strengths) ? brief.strengths[0] : "")
+    || semantic.strength_ids[0]
+    || "",
+  );
+}
+
 export function projectGoldenReport({ matchId, slot, report }) {
   const scoreCard = isRecord(report?.score_card) ? report.score_card : {};
   const dimensions = Array.isArray(scoreCard.dimensions)
@@ -1158,14 +1205,17 @@ export function projectGoldenReport({ matchId, slot, report }) {
     const projected = projectJumpTarget(source);
     const identity = jumpTargetIdentity(projected);
     if (jumpTargetsByIdentity.has(identity)) {
-      throw new Error(`duplicate_jump_target_identity=${identity}`);
+      if (!arrayEqual(jumpTargetsByIdentity.get(identity), projected)) {
+        throw new Error(`duplicate_jump_target_identity=${identity}`);
+      }
+      continue;
     }
     jumpTargetsByIdentity.set(identity, projected);
   }
   const jumpTargets = [...jumpTargetsByIdentity.entries()]
     .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
     .map(([, target]) => target);
-  const semantic = isRecord(report?.semantic) ? report.semantic : {};
+  const semantic = projectSemantic(report);
 
   return {
     schema: GOLDEN_SCHEMA,
@@ -1184,9 +1234,9 @@ export function projectGoldenReport({ matchId, slot, report }) {
     },
     dimensions: dimensions.map(projectDimension),
     semantic: {
-      strength_ids: uniqueSortedStrings(semantic.strength_ids),
-      main_issue_id: String(semantic.main_issue_id || ""),
-      training_target_id: String(semantic.training_target_id || ""),
+      strength_ids: semantic.strength_ids,
+      main_issue_id: semantic.main_issue_id,
+      training_target_id: semantic.training_target_id,
       root_cause_ids: rootCauseIds,
     },
     jump_targets: jumpTargets,
@@ -2074,22 +2124,420 @@ export function loadPlayerReportAnalysis(matchId, projectRoot = process.cwd()) {
   };
 }
 
-export function runRegressionCli(argv = process.argv.slice(2)) {
-  const [subcommand, matchId = "8894766243", root = process.cwd()] = argv;
-  if (subcommand !== "validate-analysis") {
-    console.error(
-      "Usage: node tools/player-report-regression.mjs "
-        + "validate-analysis [match-id] [project-root]",
-    );
-    return 2;
+function manifestContext(manifestArgument) {
+  const manifestPath = resolve(String(manifestArgument || ""));
+  const projectRoot = resolve(dirname(manifestPath), "..", "..");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  if (manifest?.schema !== "player-report-regression-manifest/1.0") {
+    throw new Error("Unsupported player report regression manifest schema");
   }
-  const analysis = loadPlayerReportAnalysis(matchId, resolve(root));
-  const result = validatePlayerReportBundle(analysis.players, {
+  if (!Array.isArray(manifest.matches)) {
+    throw new Error("Player report regression manifest requires matches");
+  }
+
+  const matchIds = new Set();
+  for (const [index, match] of manifest.matches.entries()) {
+    const matchId = String(match?.match_id || "");
+    if (!/^\d+$/.test(matchId)) {
+      throw new Error(`Invalid match_id at matches[${index}]`);
+    }
+    if (matchIds.has(matchId)) {
+      throw new Error(`Duplicate match_id=${matchId}`);
+    }
+    matchIds.add(matchId);
+
+    const replayPath = String(match?.replay_path || "");
+    const resolvedReplay = resolve(projectRoot, replayPath);
+    const replayRelative = relative(projectRoot, resolvedReplay);
+    if (!replayPath
+        || isAbsolute(replayPath)
+        || replayRelative === ".."
+        || replayRelative.startsWith(`..\\`)
+        || replayRelative.startsWith("../")
+        || isAbsolute(replayRelative)) {
+      throw new Error(`Invalid replay_path for match_id=${matchId}`);
+    }
+  }
+
+  return {
+    manifest,
+    manifestPath,
+    projectRoot,
+    runtimeDirectory: resolve(
+      projectRoot,
+      "tools",
+      "runtime",
+      "player-report-regression",
+    ),
+    expectedDirectory: resolve(dirname(manifestPath), "expected"),
+  };
+}
+
+function validateGoldenSubject(match, index) {
+  const subject = match?.golden_subject;
+  if (subject == null) return null;
+  const playerSlot = subject.player_slot;
+  const expectedPosition = subject.expected_position;
+  if (!Number.isInteger(playerSlot) || playerSlot < 0 || playerSlot > 9) {
+    throw new Error(`Invalid golden_subject.player_slot at matches[${index}]`);
+  }
+  if (!Number.isInteger(expectedPosition)
+      || expectedPosition < 1
+      || expectedPosition > 5) {
+    throw new Error(`Invalid golden_subject.expected_position at matches[${index}]`);
+  }
+  if (!Array.isArray(subject.scenario_tags)
+      || subject.scenario_tags.some((tag) => (
+        typeof tag !== "string" || !tag.trim()
+      ))) {
+    throw new Error(`Invalid golden_subject.scenario_tags at matches[${index}]`);
+  }
+  return {
+    ...subject,
+    player_slot: playerSlot,
+    expected_position: expectedPosition,
+    scenario_tags: uniqueSortedStrings(subject.scenario_tags),
+  };
+}
+
+function goldenSubjectRows(context) {
+  return context.manifest.matches
+    .map((match, index) => ({
+      index,
+      match,
+      matchId: String(match.match_id),
+      subject: validateGoldenSubject(match, index),
+    }))
+    .filter((row) => row.subject)
+    .sort((left, right) => (
+      left.matchId.localeCompare(right.matchId, "en")
+      || left.subject.player_slot - right.subject.player_slot
+    ));
+}
+
+function validateFrozenManifest(context) {
+  const { matches } = context.manifest;
+  if (matches.length !== 16) {
+    throw new Error(`Frozen manifest cardinality must be 16, received ${matches.length}`);
+  }
+  const enabled = matches.filter((match) => match.matrix_enabled === true);
+  const reserve = matches.filter((match) => match.reserve === true);
+  const subjects = goldenSubjectRows(context);
+  if (enabled.length !== 15 || reserve.length !== 1 || subjects.length !== 15) {
+    throw new Error(
+      "Frozen manifest requires 15 enabled matches, 1 reserve, and 15 Golden subjects",
+    );
+  }
+  for (const [index, match] of matches.entries()) {
+    const subject = validateGoldenSubject(match, index);
+    if (match.matrix_enabled === true) {
+      if (match.reserve === true || subject == null) {
+        throw new Error(`Enabled match ${match.match_id} requires one Golden subject`);
+      }
+    } else if (match.reserve !== true || subject != null) {
+      throw new Error(`Disabled match ${match.match_id} must be the subject-free reserve`);
+    }
+  }
+  const positionCounts = Object.fromEntries(
+    [1, 2, 3, 4, 5].map((position) => [position, 0]),
+  );
+  for (const { subject } of subjects) {
+    positionCounts[subject.expected_position] += 1;
+  }
+  for (const [position, count] of Object.entries(positionCounts)) {
+    if (count !== 3) {
+      throw new Error(`Golden position ${position} cardinality must be 3, received ${count}`);
+    }
+  }
+  return subjects;
+}
+
+function reportForSubject(context, row) {
+  const analysis = loadPlayerReportAnalysis(row.matchId, context.projectRoot);
+  const validation = validatePlayerReportBundle(analysis.players, {
     requireAtomic: true,
     requireServerAudit: true,
   });
-  console.log(JSON.stringify(result, null, 2));
-  return result.valid ? 0 : 1;
+  if (!validation.valid) {
+    throw new Error(
+      `Analysis ${row.matchId} is invalid: ${validation.errors.join("; ")}`,
+    );
+  }
+  const report = analysis.players?.by_slot?.[String(row.subject.player_slot)]?.report;
+  if (!isRecord(report)) {
+    throw new Error(
+      `Missing report ${row.matchId} slot ${row.subject.player_slot}`,
+    );
+  }
+  if (Number(report.position) !== row.subject.expected_position) {
+    throw new Error(
+      `Position mismatch ${row.matchId} slot ${row.subject.player_slot}: `
+        + `expected ${row.subject.expected_position}, received ${report.position}`,
+    );
+  }
+  const projection = projectGoldenReport({
+    matchId: row.matchId,
+    slot: row.subject.player_slot,
+    report,
+  });
+  if (projection.dimension_coverage < 8) {
+    throw new Error(
+      `Golden subject ${row.matchId} slot ${row.subject.player_slot} `
+        + `has dimension_coverage=${projection.dimension_coverage}`,
+    );
+  }
+  if (projection.role_confidence < 75
+      && !row.subject.scenario_tags.includes("role-confidence-low")) {
+    throw new Error(
+      `Golden subject ${row.matchId} slot ${row.subject.player_slot} `
+        + "requires scenario tag role-confidence-low",
+    );
+  }
+  const integrity = compareGolden(projection, projection);
+  if (!integrity.valid || integrity.changes.length > 0) {
+    throw new Error(
+      `Generated Golden projection failed integrity for ${row.matchId} `
+        + `slot ${row.subject.player_slot}`,
+    );
+  }
+  return { analysis, projection, report, validation };
+}
+
+function goldenFileName(row) {
+  return `${row.matchId}-slot-${row.subject.player_slot}.json`;
+}
+
+function replaceDirectoryAtomically(directory, files) {
+  const parent = dirname(directory);
+  const nonce = `${process.pid}-${Date.now()}`;
+  const staging = `${directory}.staging-${nonce}`;
+  const backup = `${directory}.backup-${nonce}`;
+  mkdirSync(parent, { recursive: true });
+  rmSync(staging, { recursive: true, force: true });
+  mkdirSync(staging, { recursive: true });
+  try {
+    for (const [fileName, contents] of files) {
+      writeFileSync(resolve(staging, fileName), contents);
+    }
+    if (existsSync(directory)) renameSync(directory, backup);
+    try {
+      renameSync(staging, directory);
+    } catch (error) {
+      if (existsSync(backup)) renameSync(backup, directory);
+      throw error;
+    }
+    rmSync(backup, { recursive: true, force: true });
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
+}
+
+function jsonProjection(projection) {
+  return `${JSON.stringify(projection, null, 2)}\n`;
+}
+
+function markdownCell(value) {
+  const text = Array.isArray(value) ? value.join(", ") : String(value ?? "");
+  return (text || "-").replaceAll("|", "\\|").replaceAll("\n", " ");
+}
+
+function candidateScenarioTags(match, slot, projection) {
+  const tags = [
+    ...(Array.isArray(match?.scenario_tags) ? match.scenario_tags : []),
+    ...(match?.golden_subject?.player_slot === slot
+      ? match.golden_subject.scenario_tags || []
+      : []),
+  ];
+  if (projection.role_confidence < 75) tags.push("role-confidence-low");
+  if (projection.dimension_coverage < PLAYER_REPORT_DIMENSIONS.length) {
+    tags.push("dimensions-missing");
+  }
+  return uniqueSortedStrings(tags);
+}
+
+function candidatesMarkdown(context) {
+  const lines = [
+    "# Player Report Regression Candidates",
+    "",
+    "| Match | Slot | Position | Role confidence | Coverage | Base score | Final score | Main strength | Main issue | Scenario tags | Missing dimensions |",
+    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- |",
+  ];
+  for (const match of context.manifest.matches) {
+    const matchId = String(match.match_id);
+    const analysis = loadPlayerReportAnalysis(matchId, context.projectRoot);
+    const validation = validatePlayerReportBundle(analysis.players, {
+      requireAtomic: true,
+      requireServerAudit: true,
+    });
+    if (!validation.valid) {
+      throw new Error(
+        `Analysis ${matchId} is invalid: ${validation.errors.join("; ")}`,
+      );
+    }
+    for (let slot = 0; slot < 10; slot += 1) {
+      const report = analysis.players?.by_slot?.[String(slot)]?.report;
+      const scoreCard = isRecord(report?.score_card) ? report.score_card : {};
+      const dimensions = Array.isArray(scoreCard.dimensions)
+        ? scoreCard.dimensions
+        : Array.isArray(report?.dimensions) ? report.dimensions : [];
+      const dimensionCoverage = dimensions.filter(
+        (dimension) => dimension?.available !== false
+          && dimension?.base_score != null,
+      ).length;
+      const candidate = {
+        position: Number(report?.position || 0),
+        role_confidence: projectNumber(report?.role_confidence),
+        dimension_coverage: dimensionCoverage,
+        score_card: {
+          base_score: projectNumber(scoreCard.base_score),
+          final_score: projectNumber(
+            scoreCard.final_score ?? scoreCard.overall_score,
+          ),
+        },
+        dimensions,
+        semantic: projectSemantic(report),
+      };
+      candidate.main_strength_id = projectMainStrengthId(
+        report,
+        candidate.semantic,
+      );
+      const missingDimensions = candidate.dimensions
+        .filter((dimension) => (
+          dimension.available === false || dimension.base_score == null
+        ))
+        .map((dimension) => dimension.key);
+      const tags = candidateScenarioTags(match, slot, candidate);
+      lines.push([
+        matchId,
+        slot,
+        candidate.position,
+        candidate.role_confidence,
+        candidate.dimension_coverage,
+        candidate.score_card.base_score,
+        candidate.score_card.final_score,
+        candidate.main_strength_id || "-",
+        candidate.semantic.main_issue_id || "-",
+        tags,
+        missingDimensions,
+      ].map(markdownCell).join(" | ").replace(/^/, "| ").replace(/$/, " |"));
+    }
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function runCandidatesCommand(manifestArgument) {
+  const context = manifestContext(manifestArgument);
+  const markdown = candidatesMarkdown(context);
+  const reportDirectory = resolve(context.runtimeDirectory, "reports");
+  mkdirSync(reportDirectory, { recursive: true });
+  const reportPath = resolve(reportDirectory, "candidates.md");
+  const temporary = `${reportPath}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(temporary, markdown);
+  renameSync(temporary, reportPath);
+  process.stdout.write(markdown);
+  return 0;
+}
+
+function runProposeGoldenCommand(manifestArgument) {
+  const context = manifestContext(manifestArgument);
+  const rows = goldenSubjectRows(context);
+  const files = rows.map((row) => {
+    const { projection } = reportForSubject(context, row);
+    return [goldenFileName(row), jsonProjection(projection)];
+  });
+  replaceDirectoryAtomically(
+    resolve(context.runtimeDirectory, "candidate-golden"),
+    files,
+  );
+  console.log(`Proposed ${files.length} Golden candidates`);
+  return 0;
+}
+
+function runApproveGoldenCommand(manifestArgument, reviewed) {
+  if (!reviewed) {
+    throw new Error("approve-golden requires explicit --reviewed");
+  }
+  const context = manifestContext(manifestArgument);
+  const rows = validateFrozenManifest(context);
+  const candidateDirectory = resolve(
+    context.runtimeDirectory,
+    "candidate-golden",
+  );
+  const expectedNames = rows.map(goldenFileName).sort();
+  const candidateNames = existsSync(candidateDirectory)
+    ? readdirSync(candidateDirectory)
+      .filter((fileName) => fileName.endsWith(".json"))
+      .sort()
+    : [];
+  if (candidateNames.length !== 15
+      || JSON.stringify(candidateNames) !== JSON.stringify(expectedNames)) {
+    throw new Error(
+      `Golden candidate cardinality mismatch: expected ${expectedNames.length}, `
+        + `received ${candidateNames.length}`,
+    );
+  }
+
+  const files = [];
+  for (const row of rows) {
+    const fileName = goldenFileName(row);
+    const candidate = JSON.parse(readFileSync(
+      resolve(candidateDirectory, fileName),
+      "utf8",
+    ));
+    const selfComparison = compareGolden(candidate, candidate);
+    if (!selfComparison.valid || selfComparison.changes.length > 0) {
+      throw new Error(`Golden candidate integrity failed for ${fileName}`);
+    }
+    const { projection } = reportForSubject(context, row);
+    const sourceComparison = compareGolden(candidate, projection);
+    if (!sourceComparison.valid
+        || sourceComparison.changes.length > 0
+        || JSON.stringify(candidate) !== JSON.stringify(projection)) {
+      throw new Error(`Golden candidate drift detected for ${fileName}`);
+    }
+    files.push([fileName, jsonProjection(candidate)]);
+  }
+
+  replaceDirectoryAtomically(context.expectedDirectory, files);
+  console.log(`Approved ${files.length} reviewed Golden files`);
+  return 0;
+}
+
+export function runRegressionCli(argv = process.argv.slice(2)) {
+  const [subcommand, firstArgument, secondArgument] = argv;
+  try {
+    if (subcommand === "validate-analysis") {
+      const matchId = firstArgument || "8894766243";
+      const root = secondArgument || process.cwd();
+      const analysis = loadPlayerReportAnalysis(matchId, resolve(root));
+      const result = validatePlayerReportBundle(analysis.players, {
+        requireAtomic: true,
+        requireServerAudit: true,
+      });
+      console.log(JSON.stringify(result, null, 2));
+      return result.valid ? 0 : 1;
+    }
+    if (subcommand === "candidates") {
+      return runCandidatesCommand(firstArgument);
+    }
+    if (subcommand === "propose-golden") {
+      return runProposeGoldenCommand(firstArgument);
+    }
+    if (subcommand === "approve-golden") {
+      const reviewed = argv.slice(2).includes("--reviewed");
+      return runApproveGoldenCommand(firstArgument, reviewed);
+    }
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+  console.error(
+    "Usage: node tools/player-report-regression.mjs "
+      + "validate-analysis [match-id] [project-root] | "
+      + "candidates <manifest> | propose-golden <manifest> | "
+      + "approve-golden <manifest> --reviewed",
+  );
+  return 2;
 }
 
 const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : "";

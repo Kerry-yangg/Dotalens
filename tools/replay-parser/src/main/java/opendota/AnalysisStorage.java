@@ -19,6 +19,7 @@ import java.util.UUID;
 import java.util.zip.GZIPInputStream;
 
 import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
@@ -29,7 +30,7 @@ final class AnalysisStorage {
     static final String STORAGE_SCHEMA = "analysis-storage/1.0";
     static final String SNAPSHOT_SCHEMA = "snapshot-columns/1.1";
 
-    private static final Gson GSON = new Gson();
+    private static final Gson GSON = new GsonBuilder().serializeNulls().create();
     private static final List<String> MODULE_NAMES = List.of(
             "snapshots", "development", "build", "farm", "laning", "vision",
             "combat", "objectives", "map", "timeline", "players", "module_evidence",

@@ -302,17 +302,43 @@ function Invoke-ReplayParse {
     )
 
     $status = Ensure-ParserReady
+    $fileName = [IO.Path]::GetFileName($ReplayPath)
+    $compressed = $fileName.EndsWith('.bz2', [StringComparison]::OrdinalIgnoreCase)
+    $extension = if ($compressed) { '.dem.bz2' } else { '.dem' }
+    $cachedReplay = [IO.Path]::GetFullPath((
+        Join-Path $parserDataDirectory "replays\$MatchId$extension"
+    ))
+    $uploadPath = $ReplayPath
+    $stagedUpload = $null
+    if ([IO.Path]::GetFullPath($ReplayPath).Equals(
+            $cachedReplay,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+        $uploadDirectory = Join-Path $runtimeRoot 'uploads'
+        New-Item -ItemType Directory -Force -Path $uploadDirectory | Out-Null
+        $stagedUpload = Join-Path $uploadDirectory (
+            "$MatchId.$([guid]::NewGuid().ToString('N'))$extension"
+        )
+        Copy-Item -LiteralPath $ReplayPath -Destination $stagedUpload
+        $uploadPath = $stagedUpload
+    }
     $headers = @{
-        'X-Dota-Lens-File-Name' = [IO.Path]::GetFileName($ReplayPath)
+        'X-Dota-Lens-File-Name' = $fileName
         'X-Dota-Lens-Account-Id' = '139766850'
     }
-    $job = Invoke-RestMethod `
-        -Method Post `
-        -Uri "$apiBase/replays/$MatchId/import" `
-        -InFile $ReplayPath `
-        -ContentType 'application/octet-stream' `
-        -Headers $headers `
-        -TimeoutSec 180
+    try {
+        $job = Invoke-RestMethod `
+            -Method Post `
+            -Uri "$apiBase/replays/$MatchId/import" `
+            -InFile $uploadPath `
+            -ContentType 'application/octet-stream' `
+            -Headers $headers `
+            -TimeoutSec 180
+    } finally {
+        if ($stagedUpload -and (Test-Path -LiteralPath $stagedUpload)) {
+            Remove-Item -LiteralPath $stagedUpload -Force
+        }
+    }
     try {
         $deadline = [DateTimeOffset]::Now.AddSeconds($TimeoutSeconds)
         do {
@@ -339,9 +365,21 @@ function Invoke-ReplayParse {
 }
 
 function Invoke-Task8Validation {
-    param([Parameter(Mandatory)][string]$MatchId)
+    param(
+        [Parameter(Mandatory)][string]$MatchId,
+        [string]$GoldenPath,
+        [int]$GoldenSlot = -1
+    )
 
-    $output = & node (Join-Path $PSScriptRoot 'Validate-PlayerReportV4.mjs') $MatchId $projectRoot 2>&1
+    $arguments = @(
+        (Join-Path $PSScriptRoot 'Validate-PlayerReportV4.mjs'),
+        $MatchId,
+        $projectRoot
+    )
+    if (-not [string]::IsNullOrWhiteSpace($GoldenPath)) {
+        $arguments += @($GoldenPath, [string]$GoldenSlot)
+    }
+    $output = & node @arguments 2>&1
     $exitCode = $LASTEXITCODE
     $text = ($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
     try {
@@ -401,6 +439,11 @@ try {
             status = 'failed'
             reports_total = 0
             reports_valid = 0
+            golden_total = 0
+            golden_passed = 0
+            aggregate_fallback_count = 0
+            duplicate_applied_key_count = 0
+            max_root_negative_overall = 0
             error = $null
         }
         $checkpoint = $null
@@ -440,9 +483,30 @@ try {
                     -TimeoutSeconds $TimeoutSeconds
             }
 
-            $validation = Invoke-Task8Validation -MatchId $matchId
+            $goldenPath = $null
+            $goldenSlot = -1
+            $goldenProperty = $match.PSObject.Properties['golden_subject']
+            if ($goldenProperty -and $null -ne $goldenProperty.Value) {
+                $goldenSlot = [int]$goldenProperty.Value.player_slot
+                if ($goldenSlot -lt 0 -or $goldenSlot -gt 9) {
+                    throw "Golden player slot is invalid: $goldenSlot"
+                }
+                $goldenPath = Join-Path (
+                    Join-Path (Split-Path -Parent $ManifestPath) 'expected'
+                ) "$matchId-slot-$goldenSlot.json"
+            }
+
+            $validation = Invoke-Task8Validation `
+                -MatchId $matchId `
+                -GoldenPath $goldenPath `
+                -GoldenSlot $goldenSlot
             $result.reports_total = [int]$validation.result.player_reports
             $result.reports_valid = [int]$validation.result.valid_reports
+            $result.golden_total = [int]$validation.result.golden_total
+            $result.golden_passed = [int]$validation.result.golden_passed
+            $result.aggregate_fallback_count = [int]$validation.result.aggregate_fallback_count
+            $result.duplicate_applied_key_count = [int]$validation.result.duplicate_applied_key_count
+            $result.max_root_negative_overall = [double]$validation.result.max_root_negative_overall
             if ($validation.exit_code -ne 0 -or -not $validation.result.valid) {
                 $errors = @($validation.result.errors | ForEach-Object { [string]$_ })
                 throw "Task 8 validation failed: $($errors -join '; ')"
@@ -506,6 +570,17 @@ $aggregate = [ordered]@{
     matches_passed = @($matchResults | Where-Object { $_.status -eq 'validated' }).Count
     reports_total = [int](@($matchResults | Measure-Object -Property reports_total -Sum).Sum)
     reports_valid = [int](@($matchResults | Measure-Object -Property reports_valid -Sum).Sum)
+    golden_total = [int](@($matchResults | Measure-Object -Property golden_total -Sum).Sum)
+    golden_passed = [int](@($matchResults | Measure-Object -Property golden_passed -Sum).Sum)
+    aggregate_fallback_count = [int](@(
+        $matchResults | Measure-Object -Property aggregate_fallback_count -Sum
+    ).Sum)
+    duplicate_applied_key_count = [int](@(
+        $matchResults | Measure-Object -Property duplicate_applied_key_count -Sum
+    ).Sum)
+    max_root_negative_overall = [double](@(
+        $matchResults | Measure-Object -Property max_root_negative_overall -Maximum
+    ).Maximum)
     position_counts = [ordered]@{
         '1' = [int]($positionCounts['1'] ?? 0)
         '2' = [int]($positionCounts['2'] ?? 0)
@@ -524,6 +599,10 @@ $markdown = @(
     "- Mode: $Mode"
     "- Matches: $($aggregate.matches_passed)/$($aggregate.matches_total)"
     "- Reports: $($aggregate.reports_valid)/$($aggregate.reports_total)"
+    "- Golden: $($aggregate.golden_passed)/$($aggregate.golden_total)"
+    "- Aggregate fallback components: $($aggregate.aggregate_fallback_count)"
+    "- Duplicate applied keys: $($aggregate.duplicate_applied_key_count)"
+    "- Max root negative overall: $($aggregate.max_root_negative_overall)"
     "- Failures: $($aggregate.failures.Count)"
 )
 if ($aggregate.failures.Count -gt 0) {

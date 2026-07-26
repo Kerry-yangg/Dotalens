@@ -1,21 +1,268 @@
 {
   "schema": "player-report-regression-manifest/1.0",
   "matches": [
-    { "match_id": "8893373471", "replay_path": "tools/runtime/dota-lens-data/replays/8893373471.dem.bz2" },
-    { "match_id": "8893461215", "replay_path": "tools/runtime/dota-lens-data/replays/8893461215.dem.bz2" },
-    { "match_id": "8894766243", "replay_path": "tools/runtime/dota-lens-data/replays/8894766243.dem" },
-    { "match_id": "8902638530", "replay_path": "tools/runtime/dota-lens-data/replays/8902638530.dem.bz2" },
-    { "match_id": "8902709946", "replay_path": "tools/runtime/dota-lens-data/replays/8902709946.dem.bz2" },
-    { "match_id": "8903960010", "replay_path": "tools/runtime/dota-lens-data/replays/8903960010.dem.bz2" },
-    { "match_id": "8904119291", "replay_path": "tools/runtime/dota-lens-data/replays/8904119291.dem.bz2" },
-    { "match_id": "8904187926", "replay_path": "tools/runtime/dota-lens-data/replays/8904187926.dem.bz2" },
-    { "match_id": "8904265149", "replay_path": "tools/runtime/dota-lens-data/replays/8904265149.dem.bz2" },
-    { "match_id": "8904318329", "replay_path": "tools/runtime/dota-lens-data/replays/8904318329.dem.bz2" },
-    { "match_id": "8904432250", "replay_path": "tools/runtime/dota-lens-data/replays/8904432250.dem.bz2" },
-    { "match_id": "8908349474", "replay_path": "tools/runtime/dota-lens-data/replays/8908349474.dem.bz2" },
-    { "match_id": "8908420184", "replay_path": "tools/runtime/dota-lens-data/replays/8908420184.dem.bz2" },
-    { "match_id": "8909845275", "replay_path": "tools/runtime/dota-lens-data/replays/8909845275.dem.bz2" },
-    { "match_id": "8911632470", "replay_path": "tools/runtime/dota-lens-data/replays/8911632470.dem.bz2" },
-    { "match_id": "8912957512", "replay_path": "tools/runtime/dota-lens-data/replays/8912957512.dem.bz2" }
+    {
+      "match_id": "8893373471",
+      "replay_path": "tools/runtime/dota-lens-data/replays/8893373471.dem.bz2",
+      "matrix_enabled": true,
+      "reserve": false,
+      "scenario_tags": ["radiant-win"],
+      "golden_subject": {
+        "player_slot": 6,
+        "expected_position": 2,
+        "scenario_tags": [
+          "behavior-modifier-applied",
+          "complete-dimensions",
+          "player-loss",
+          "root-cause-with-consequences"
+        ]
+      }
+    },
+    {
+      "match_id": "8893461215",
+      "replay_path": "tools/runtime/dota-lens-data/replays/8893461215.dem.bz2",
+      "matrix_enabled": true,
+      "reserve": false,
+      "scenario_tags": ["dire-win"],
+      "golden_subject": {
+        "player_slot": 0,
+        "expected_position": 3,
+        "scenario_tags": [
+          "behavior-modifier-applied",
+          "complete-dimensions",
+          "player-loss",
+          "root-cause-with-consequences"
+        ]
+      }
+    },
+    {
+      "match_id": "8894766243",
+      "replay_path": "tools/runtime/dota-lens-data/replays/8894766243.dem",
+      "matrix_enabled": false,
+      "reserve": true,
+      "scenario_tags": ["dire-win"],
+      "golden_subject": null
+    },
+    {
+      "match_id": "8902638530",
+      "replay_path": "tools/runtime/dota-lens-data/replays/8902638530.dem.bz2",
+      "matrix_enabled": true,
+      "reserve": false,
+      "scenario_tags": ["dire-win"],
+      "golden_subject": {
+        "player_slot": 0,
+        "expected_position": 1,
+        "scenario_tags": [
+          "behavior-modifier-applied",
+          "complete-dimensions",
+          "player-loss",
+          "root-cause-with-consequences"
+        ]
+      }
+    },
+    {
+      "match_id": "8902709946",
+      "replay_path": "tools/runtime/dota-lens-data/replays/8902709946.dem.bz2",
+      "matrix_enabled": true,
+      "reserve": false,
+      "scenario_tags": ["dire-win"],
+      "golden_subject": {
+        "player_slot": 2,
+        "expected_position": 5,
+        "scenario_tags": [
+          "behavior-modifier-applied",
+          "complete-dimensions",
+          "player-loss",
+          "root-cause-with-consequences"
+        ]
+      }
+    },
+    {
+      "match_id": "8903960010",
+      "replay_path": "tools/runtime/dota-lens-data/replays/8903960010.dem.bz2",
+      "matrix_enabled": true,
+      "reserve": false,
+      "scenario_tags": ["dire-win"],
+      "golden_subject": {
+        "player_slot": 8,
+        "expected_position": 4,
+        "scenario_tags": [
+          "behavior-modifier-applied",
+          "complete-dimensions",
+          "player-win",
+          "root-cause-with-consequences"
+        ]
+      }
+    },
+    {
+      "match_id": "8904119291",
+      "replay_path": "tools/runtime/dota-lens-data/replays/8904119291.dem.bz2",
+      "matrix_enabled": true,
+      "reserve": false,
+      "scenario_tags": ["dire-win"],
+      "golden_subject": {
+        "player_slot": 2,
+        "expected_position": 4,
+        "scenario_tags": [
+          "behavior-modifier-applied",
+          "dimensions-missing",
+          "player-loss",
+          "root-cause-with-consequences"
+        ]
+      }
+    },
+    {
+      "match_id": "8904187926",
+      "replay_path": "tools/runtime/dota-lens-data/replays/8904187926.dem.bz2",
+      "matrix_enabled": true,
+      "reserve": false,
+      "scenario_tags": ["radiant-win"],
+      "golden_subject": {
+        "player_slot": 1,
+        "expected_position": 1,
+        "scenario_tags": [
+          "behavior-modifier-applied",
+          "complete-dimensions",
+          "player-win",
+          "root-cause-with-consequences"
+        ]
+      }
+    },
+    {
+      "match_id": "8904265149",
+      "replay_path": "tools/runtime/dota-lens-data/replays/8904265149.dem.bz2",
+      "matrix_enabled": true,
+      "reserve": false,
+      "scenario_tags": ["radiant-win", "short-match"],
+      "golden_subject": {
+        "player_slot": 5,
+        "expected_position": 5,
+        "scenario_tags": [
+          "behavior-modifier-applied",
+          "dimensions-missing",
+          "player-loss",
+          "root-cause-with-consequences"
+        ]
+      }
+    },
+    {
+      "match_id": "8904318329",
+      "replay_path": "tools/runtime/dota-lens-data/replays/8904318329.dem.bz2",
+      "matrix_enabled": true,
+      "reserve": false,
+      "scenario_tags": ["dire-win"],
+      "golden_subject": {
+        "player_slot": 7,
+        "expected_position": 2,
+        "scenario_tags": [
+          "behavior-modifier-applied",
+          "complete-dimensions",
+          "player-win",
+          "root-cause-with-consequences"
+        ]
+      }
+    },
+    {
+      "match_id": "8904432250",
+      "replay_path": "tools/runtime/dota-lens-data/replays/8904432250.dem.bz2",
+      "matrix_enabled": true,
+      "reserve": false,
+      "scenario_tags": ["dire-win", "long-match"],
+      "golden_subject": {
+        "player_slot": 3,
+        "expected_position": 2,
+        "scenario_tags": [
+          "behavior-modifier-applied",
+          "complete-dimensions",
+          "player-loss",
+          "root-cause-with-consequences"
+        ]
+      }
+    },
+    {
+      "match_id": "8908349474",
+      "replay_path": "tools/runtime/dota-lens-data/replays/8908349474.dem.bz2",
+      "matrix_enabled": true,
+      "reserve": false,
+      "scenario_tags": ["radiant-win"],
+      "golden_subject": {
+        "player_slot": 3,
+        "expected_position": 4,
+        "scenario_tags": [
+          "behavior-modifier-applied",
+          "complete-dimensions",
+          "player-win",
+          "root-cause-with-consequences"
+        ]
+      }
+    },
+    {
+      "match_id": "8908420184",
+      "replay_path": "tools/runtime/dota-lens-data/replays/8908420184.dem.bz2",
+      "matrix_enabled": true,
+      "reserve": false,
+      "scenario_tags": ["radiant-win"],
+      "golden_subject": {
+        "player_slot": 7,
+        "expected_position": 5,
+        "scenario_tags": [
+          "behavior-modifier-applied",
+          "complete-dimensions",
+          "player-loss",
+          "root-cause-with-consequences"
+        ]
+      }
+    },
+    {
+      "match_id": "8909845275",
+      "replay_path": "tools/runtime/dota-lens-data/replays/8909845275.dem.bz2",
+      "matrix_enabled": true,
+      "reserve": false,
+      "scenario_tags": ["radiant-win"],
+      "golden_subject": {
+        "player_slot": 0,
+        "expected_position": 3,
+        "scenario_tags": [
+          "behavior-modifier-applied",
+          "complete-dimensions",
+          "player-win",
+          "root-cause-with-consequences"
+        ]
+      }
+    },
+    {
+      "match_id": "8911632470",
+      "replay_path": "tools/runtime/dota-lens-data/replays/8911632470.dem.bz2",
+      "matrix_enabled": true,
+      "reserve": false,
+      "scenario_tags": ["dire-win"],
+      "golden_subject": {
+        "player_slot": 1,
+        "expected_position": 3,
+        "scenario_tags": [
+          "behavior-modifier-applied",
+          "dimensions-missing",
+          "player-loss",
+          "root-cause-with-consequences"
+        ]
+      }
+    },
+    {
+      "match_id": "8912957512",
+      "replay_path": "tools/runtime/dota-lens-data/replays/8912957512.dem.bz2",
+      "matrix_enabled": true,
+      "reserve": false,
+      "scenario_tags": ["radiant-win"],
+      "golden_subject": {
+        "player_slot": 9,
+        "expected_position": 1,
+        "scenario_tags": [
+          "behavior-modifier-applied",
+          "complete-dimensions",
+          "player-loss",
+          "root-cause-with-consequences"
+        ]
+      }
+    }
   ]
 }

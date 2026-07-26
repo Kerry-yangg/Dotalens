@@ -165,7 +165,8 @@ class PlayerReportNarrativeV3Test {
         JsonObject duty = findDimension(report, "combat_duty");
         assertNotNull(duty);
         assertFalse(duty.get("available").getAsBoolean());
-        assertFalse(duty.has("score"));
+        assertTrue(duty.has("score"));
+        assertTrue(duty.get("score").isJsonNull());
         assertFalse(duty.has("score_impact"));
 
         int weighted = 0;

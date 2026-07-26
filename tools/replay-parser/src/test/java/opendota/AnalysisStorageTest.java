@@ -14,6 +14,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 
 class AnalysisStorageTest {
@@ -106,6 +107,61 @@ class AnalysisStorageTest {
 
         assertNotNull(loadedCombat);
         assertTrue(loadedCombat.getAsJsonObject().getAsJsonArray("fights").isEmpty());
+    }
+
+    @Test
+    void preservesExplicitProtocolNullsInSplitPlayerModules() throws Exception {
+        Path analysisDirectory = temporaryDirectory.resolve("explicit-nulls");
+        Files.createDirectories(analysisDirectory);
+        JsonObject analysis = analysis();
+        JsonObject report = analysis.getAsJsonObject("modules")
+                .getAsJsonObject("players")
+                .getAsJsonObject("by_slot")
+                .getAsJsonObject("0")
+                .getAsJsonObject("report");
+        JsonObject dimension = new JsonObject();
+        dimension.addProperty("key", "combat_duty");
+        dimension.addProperty("available", false);
+        dimension.add("base_score", JsonNull.INSTANCE);
+        dimension.add("behavior_modifier", JsonNull.INSTANCE);
+        dimension.add("final_score", JsonNull.INSTANCE);
+        dimension.add("score", JsonNull.INSTANCE);
+        JsonObject component = new JsonObject();
+        component.addProperty("key", "hard_gated_duty_average");
+        component.addProperty("available", false);
+        component.add("normalized_score", JsonNull.INSTANCE);
+        component.add("weighted_contribution", JsonNull.INSTANCE);
+        JsonArray components = new JsonArray();
+        components.add(component);
+        dimension.add("base_components", components);
+        JsonArray dimensions = new JsonArray();
+        dimensions.add(dimension);
+        report.getAsJsonObject("score_card").add("dimensions", dimensions);
+
+        Path summaryPart = analysisDirectory.resolve("summary.json.part");
+        JsonObject stored = AnalysisStorage.write(analysisDirectory, summaryPart, analysis);
+        JsonObject storedDimension = AnalysisStorage.readModule(
+                analysisDirectory, stored, "players")
+                .getAsJsonObject()
+                .getAsJsonObject("by_slot")
+                .getAsJsonObject("0")
+                .getAsJsonObject("report")
+                .getAsJsonObject("score_card")
+                .getAsJsonArray("dimensions")
+                .get(0)
+                .getAsJsonObject();
+
+        for (String key : new String[] {
+                "base_score", "behavior_modifier", "final_score", "score" }) {
+            assertTrue(storedDimension.has(key), key);
+            assertTrue(storedDimension.get(key).isJsonNull(), key);
+        }
+        JsonObject storedComponent = storedDimension.getAsJsonArray("base_components")
+                .get(0).getAsJsonObject();
+        assertTrue(storedComponent.has("normalized_score"));
+        assertTrue(storedComponent.get("normalized_score").isJsonNull());
+        assertTrue(storedComponent.has("weighted_contribution"));
+        assertTrue(storedComponent.get("weighted_contribution").isJsonNull());
     }
 
     private static JsonObject analysis() {

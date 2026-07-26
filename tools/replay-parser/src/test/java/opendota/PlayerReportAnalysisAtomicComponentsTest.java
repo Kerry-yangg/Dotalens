@@ -154,9 +154,14 @@ class PlayerReportAnalysisAtomicComponentsTest {
 
         JsonObject duty = dimension(report(modules, 0), "combat_duty");
         assertFalse(duty.get("available").getAsBoolean());
-        assertFalse(duty.has("score"));
-        assertFalse(duty.has("base_score"));
-        assertFalse(duty.has("final_score"));
+        assertTrue(duty.has("score"));
+        assertTrue(duty.get("score").isJsonNull());
+        assertTrue(duty.has("base_score"));
+        assertTrue(duty.get("base_score").isJsonNull());
+        assertTrue(duty.has("behavior_modifier"));
+        assertTrue(duty.get("behavior_modifier").isJsonNull());
+        assertTrue(duty.has("final_score"));
+        assertTrue(duty.get("final_score").isJsonNull());
         assertEquals(0.0, duty.get("effective_weight").getAsDouble(), 0.01);
         assertEquals("no_passed_responsibility_gate_fights",
                 component(duty, "hard_gated_duty_average")

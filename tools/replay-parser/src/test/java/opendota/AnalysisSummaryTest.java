@@ -117,7 +117,8 @@ class AnalysisSummaryTest {
         for (var element : report.getAsJsonArray("dimensions")) {
             JsonObject dimension = element.getAsJsonObject();
             if (!dimension.get("available").getAsBoolean()) {
-                assertFalse(dimension.has("score"));
+                assertTrue(dimension.has("score"));
+                assertTrue(dimension.get("score").isJsonNull());
                 assertFalse(dimension.has("score_impact"));
             }
         }

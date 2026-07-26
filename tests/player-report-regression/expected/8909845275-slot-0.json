@@ -1,0 +1,724 @@
+{
+  "schema": "player-report-golden/1.0",
+  "match_id": "8909845275",
+  "slot": 0,
+  "position": 3,
+  "role_confidence": 96,
+  "dimension_coverage": 10,
+  "score_card": {
+    "base_score": 64.64,
+    "behavior_modifier": -2.8,
+    "final_score": 61.84
+  },
+  "dimensions": [
+    {
+      "key": "lane_execution",
+      "available": true,
+      "weight": 15,
+      "effective_weight": 15,
+      "base_score": 85,
+      "behavior_modifier": 0,
+      "final_score": 85,
+      "score": 85,
+      "base_components": [
+        {
+          "key": "lane_model_score",
+          "available": true,
+          "normalized_score": 85,
+          "local_weight": 75,
+          "effective_local_weight": 100,
+          "weighted_contribution": 85,
+          "confidence": 81
+        },
+        {
+          "key": "core_lane_opportunity_conversion",
+          "available": false,
+          "normalized_score": null,
+          "local_weight": 25,
+          "effective_local_weight": 0,
+          "weighted_contribution": null,
+          "confidence": 86
+        }
+      ],
+      "scoring_components": [
+        {
+          "key": "",
+          "dimension": "lane_execution",
+          "score_path": "embedded",
+          "applied_delta": 0,
+          "dedupe_key": "lane_execution|evidence:lane:0:600",
+          "dedupe_status": "not_applicable"
+        }
+      ]
+    },
+    {
+      "key": "farm_efficiency",
+      "available": true,
+      "weight": 8,
+      "effective_weight": 8,
+      "base_score": 73.67,
+      "behavior_modifier": 0,
+      "final_score": 73.67,
+      "score": 73.67,
+      "base_components": [
+        {
+          "key": "relative_gpm",
+          "available": true,
+          "normalized_score": 74,
+          "local_weight": 33.3333,
+          "effective_local_weight": 33.3333,
+          "weighted_contribution": 24.6666,
+          "confidence": 84
+        },
+        {
+          "key": "relative_xpm",
+          "available": true,
+          "normalized_score": 68,
+          "local_weight": 33.3333,
+          "effective_local_weight": 33.3333,
+          "weighted_contribution": 22.6666,
+          "confidence": 84
+        },
+        {
+          "key": "relative_net_worth",
+          "available": true,
+          "normalized_score": 79,
+          "local_weight": 33.3334,
+          "effective_local_weight": 33.3334,
+          "weighted_contribution": 26.3335,
+          "confidence": 84
+        }
+      ],
+      "scoring_components": []
+    },
+    {
+      "key": "resource_decision",
+      "available": true,
+      "weight": 7,
+      "effective_weight": 7,
+      "base_score": 61,
+      "behavior_modifier": 0,
+      "final_score": 61,
+      "score": 61,
+      "base_components": [
+        {
+          "key": "secured_lane_opportunity_ratio",
+          "available": false,
+          "normalized_score": null,
+          "local_weight": 35,
+          "effective_local_weight": 0,
+          "weighted_contribution": null,
+          "confidence": 94
+        },
+        {
+          "key": "hard_gated_route_match",
+          "available": false,
+          "normalized_score": null,
+          "local_weight": 50,
+          "effective_local_weight": 0,
+          "weighted_contribution": null,
+          "confidence": 94
+        },
+        {
+          "key": "confirmed_lane_jungle_cycles",
+          "available": true,
+          "normalized_score": 61,
+          "local_weight": 15,
+          "effective_local_weight": 100,
+          "weighted_contribution": 61,
+          "confidence": 94
+        }
+      ],
+      "scoring_components": []
+    },
+    {
+      "key": "map_tempo",
+      "available": true,
+      "weight": 15,
+      "effective_weight": 15,
+      "base_score": 52.55,
+      "behavior_modifier": -4.86,
+      "final_score": 47.69,
+      "score": 47.69,
+      "base_components": [
+        {
+          "key": "team_tempo_share_vs_role_target",
+          "available": true,
+          "normalized_score": 49,
+          "local_weight": 45,
+          "effective_local_weight": 45,
+          "weighted_contribution": 22.05,
+          "confidence": 97
+        },
+        {
+          "key": "tp_rune_activation_relative_score",
+          "available": true,
+          "normalized_score": 50,
+          "local_weight": 25,
+          "effective_local_weight": 25,
+          "weighted_contribution": 12.5,
+          "confidence": 97
+        },
+        {
+          "key": "fight_presence_vs_role_target",
+          "available": true,
+          "normalized_score": 60,
+          "local_weight": 30,
+          "effective_local_weight": 30,
+          "weighted_contribution": 18,
+          "confidence": 90
+        }
+      ],
+      "scoring_components": [
+        {
+          "key": "",
+          "dimension": "map_tempo",
+          "score_path": "embedded",
+          "applied_delta": 0,
+          "dedupe_key": "map_tempo|evidence:lane:0:600",
+          "dedupe_status": "not_applicable"
+        },
+        {
+          "key": "",
+          "dimension": "map_tempo",
+          "score_path": "modifier",
+          "applied_delta": -2.43,
+          "dedupe_key": "map_tempo|consequence:consequence:death:0:1511,consequence:objective:0:1534",
+          "dedupe_status": "applied_unique"
+        },
+        {
+          "key": "",
+          "dimension": "map_tempo",
+          "score_path": "modifier",
+          "applied_delta": -2.43,
+          "dedupe_key": "map_tempo|evidence:combat-timing:fight-41:0,combat:fight-41:0",
+          "dedupe_status": "applied_unique"
+        }
+      ]
+    },
+    {
+      "key": "combat_output",
+      "available": true,
+      "weight": 8,
+      "effective_weight": 8,
+      "base_score": 62.45,
+      "behavior_modifier": 0,
+      "final_score": 62.45,
+      "score": 62.45,
+      "base_components": [
+        {
+          "key": "team_damage_share_vs_role_target",
+          "available": true,
+          "normalized_score": 51,
+          "local_weight": 55,
+          "effective_local_weight": 55,
+          "weighted_contribution": 28.05,
+          "confidence": 90
+        },
+        {
+          "key": "fight_damage_share_vs_role_target",
+          "available": true,
+          "normalized_score": 64,
+          "local_weight": 25,
+          "effective_local_weight": 25,
+          "weighted_contribution": 16,
+          "confidence": 90
+        },
+        {
+          "key": "kill_conversion",
+          "available": true,
+          "normalized_score": 92,
+          "local_weight": 20,
+          "effective_local_weight": 20,
+          "weighted_contribution": 18.4,
+          "confidence": 90
+        }
+      ],
+      "scoring_components": []
+    },
+    {
+      "key": "combat_duty",
+      "available": true,
+      "weight": 20,
+      "effective_weight": 20,
+      "base_score": 66,
+      "behavior_modifier": -8.1,
+      "final_score": 57.9,
+      "score": 57.9,
+      "base_components": [
+        {
+          "key": "hard_gated_duty_average",
+          "available": true,
+          "normalized_score": 81,
+          "local_weight": 75,
+          "effective_local_weight": 75,
+          "weighted_contribution": 60.75,
+          "confidence": 90
+        },
+        {
+          "key": "team_utility_share_vs_role_target",
+          "available": true,
+          "normalized_score": 21,
+          "local_weight": 25,
+          "effective_local_weight": 25,
+          "weighted_contribution": 5.25,
+          "confidence": 90
+        }
+      ],
+      "scoring_components": [
+        {
+          "key": "",
+          "dimension": "combat_duty",
+          "score_path": "modifier",
+          "applied_delta": -4.05,
+          "dedupe_key": "combat_duty|consequence:consequence:death:0:1511,consequence:objective:0:1534",
+          "dedupe_status": "applied_unique"
+        },
+        {
+          "key": "",
+          "dimension": "combat_duty",
+          "score_path": "embedded",
+          "applied_delta": 0,
+          "dedupe_key": "combat_duty|evidence:combat:fight-38:0",
+          "dedupe_status": "not_applicable"
+        },
+        {
+          "key": "",
+          "dimension": "combat_duty",
+          "score_path": "modifier",
+          "applied_delta": -4.05,
+          "dedupe_key": "combat_duty|evidence:combat-timing:fight-41:0,combat:fight-41:0",
+          "dedupe_status": "applied_unique"
+        }
+      ]
+    },
+    {
+      "key": "survival_risk",
+      "available": true,
+      "weight": 10,
+      "effective_weight": 10,
+      "base_score": 85.45,
+      "behavior_modifier": -3.24,
+      "final_score": 82.21,
+      "score": 82.21,
+      "base_components": [
+        {
+          "key": "deaths_vs_same_position",
+          "available": true,
+          "normalized_score": 90,
+          "local_weight": 65,
+          "effective_local_weight": 65,
+          "weighted_contribution": 58.5,
+          "confidence": 88
+        },
+        {
+          "key": "dead_time_percentage_score",
+          "available": true,
+          "normalized_score": 77,
+          "local_weight": 35,
+          "effective_local_weight": 35,
+          "weighted_contribution": 26.95,
+          "confidence": 88
+        }
+      ],
+      "scoring_components": [
+        {
+          "key": "",
+          "dimension": "survival_risk",
+          "score_path": "modifier",
+          "applied_delta": -3.24,
+          "dedupe_key": "survival_risk|consequence:consequence:death:0:1511,consequence:objective:0:1534",
+          "dedupe_status": "applied_unique"
+        }
+      ]
+    },
+    {
+      "key": "objective_conversion",
+      "available": true,
+      "weight": 8,
+      "effective_weight": 8,
+      "base_score": 37,
+      "behavior_modifier": -1.62,
+      "final_score": 35.38,
+      "score": 35.38,
+      "base_components": [
+        {
+          "key": "team_tower_damage_share_vs_role_target",
+          "available": true,
+          "normalized_score": 37,
+          "local_weight": 75,
+          "effective_local_weight": 100,
+          "weighted_contribution": 37,
+          "confidence": 91
+        },
+        {
+          "key": "tower_roshan_finish_contribution",
+          "available": false,
+          "normalized_score": null,
+          "local_weight": 25,
+          "effective_local_weight": 0,
+          "weighted_contribution": null,
+          "confidence": 91
+        }
+      ],
+      "scoring_components": [
+        {
+          "key": "",
+          "dimension": "objective_conversion",
+          "score_path": "modifier",
+          "applied_delta": -1.62,
+          "dedupe_key": "objective_conversion|consequence:consequence:death:0:1511,consequence:objective:0:1534",
+          "dedupe_status": "applied_unique"
+        }
+      ]
+    },
+    {
+      "key": "vision_team",
+      "available": true,
+      "weight": 5,
+      "effective_weight": 5,
+      "base_score": 40.9,
+      "behavior_modifier": 0,
+      "final_score": 40.9,
+      "score": 40.9,
+      "base_components": [
+        {
+          "key": "team_vision_share_vs_role_target",
+          "available": true,
+          "normalized_score": 36,
+          "local_weight": 65,
+          "effective_local_weight": 65,
+          "weighted_contribution": 23.4,
+          "confidence": 82
+        },
+        {
+          "key": "own_ward_average_score",
+          "available": true,
+          "normalized_score": 50,
+          "local_weight": 35,
+          "effective_local_weight": 35,
+          "weighted_contribution": 17.5,
+          "confidence": 82
+        }
+      ],
+      "scoring_components": []
+    },
+    {
+      "key": "observable_execution",
+      "available": true,
+      "weight": 4,
+      "effective_weight": 4,
+      "base_score": 52.4,
+      "behavior_modifier": 0,
+      "final_score": 52.4,
+      "score": 52.4,
+      "base_components": [
+        {
+          "key": "action_continuity_apm",
+          "available": true,
+          "normalized_score": 64,
+          "local_weight": 60,
+          "effective_local_weight": 60,
+          "weighted_contribution": 38.4,
+          "confidence": 88
+        },
+        {
+          "key": "observable_uses_per_minute_vs_opponent",
+          "available": true,
+          "normalized_score": 35,
+          "local_weight": 40,
+          "effective_local_weight": 40,
+          "weighted_contribution": 14,
+          "confidence": 88
+        }
+      ],
+      "scoring_components": []
+    }
+  ],
+  "semantic": {
+    "strength_ids": [
+      "insight:fight-38:0",
+      "insight:lane-core-0"
+    ],
+    "main_issue_id": "insight:pattern:critical_late_arrival:0:1465",
+    "training_target_id": "training:0:0",
+    "root_cause_ids": [
+      "combat-timing:pattern:critical_late_arrival:0:1465",
+      "combat-timing:pattern:critical_late_arrival:0:1842",
+      "combat:fight-38:0",
+      "lane:0:600"
+    ]
+  },
+  "jump_targets": [
+    {
+      "id": "",
+      "module": "combat",
+      "entity_type": "fight",
+      "entity_id": "fight-11",
+      "player_slot": 0,
+      "time": 341,
+      "range_start": 331,
+      "range_end": 378,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 44.540000915527344,
+        "y": 43.68000030517578,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "map_percent",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": 96
+      }
+    },
+    {
+      "id": "",
+      "module": "combat",
+      "entity_type": "fight",
+      "entity_id": "fight-13",
+      "player_slot": 0,
+      "time": 387,
+      "range_start": 377,
+      "range_end": 429,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 88.41000366210938,
+        "y": 59.279998779296875,
+        "region": "bottom_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "map_percent",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": 86
+      }
+    },
+    {
+      "id": "",
+      "module": "combat",
+      "entity_type": "fight",
+      "entity_id": "fight-24",
+      "player_slot": 0,
+      "time": 853,
+      "range_start": 843,
+      "range_end": 916,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 69.91999816894531,
+        "y": 52.83000183105469,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "map_percent",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": 79
+      }
+    },
+    {
+      "id": "",
+      "module": "combat",
+      "entity_type": "fight",
+      "entity_id": "fight-28",
+      "player_slot": 0,
+      "time": 1103,
+      "range_start": 1093,
+      "range_end": 1124,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 60.63999938964844,
+        "y": 21.610000610351562,
+        "region": "dire_jungle",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "map_percent",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": 96
+      }
+    },
+    {
+      "id": "",
+      "module": "combat",
+      "entity_type": "fight",
+      "entity_id": "fight-34",
+      "player_slot": 0,
+      "time": 1389,
+      "range_start": 1379,
+      "range_end": 1424,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 98.44000244140625,
+        "y": 49.29999923706055,
+        "region": "dire_jungle",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "map_percent",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": 96
+      }
+    },
+    {
+      "id": "",
+      "module": "combat",
+      "entity_type": "fight",
+      "entity_id": "fight-35",
+      "player_slot": 0,
+      "time": 1465,
+      "range_start": 1455,
+      "range_end": 1520,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 89.1500015258789,
+        "y": 34.83000183105469,
+        "region": "bottom_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "map_percent",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": 96
+      }
+    },
+    {
+      "id": "",
+      "module": "combat",
+      "entity_type": "fight",
+      "entity_id": "fight-37",
+      "player_slot": 0,
+      "time": 1549,
+      "range_start": 1539,
+      "range_end": 1589,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 86.5199966430664,
+        "y": 36.79999923706055,
+        "region": "bottom_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "map_percent",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": 93
+      }
+    },
+    {
+      "id": "",
+      "module": "combat",
+      "entity_type": "fight",
+      "entity_id": "fight-38",
+      "player_slot": 0,
+      "time": 1592,
+      "range_start": 1582,
+      "range_end": 1603,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 92.80000305175781,
+        "y": 26.299999237060547,
+        "region": "dire_base",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "map_percent",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": 96
+      }
+    },
+    {
+      "id": "",
+      "module": "combat",
+      "entity_type": "fight",
+      "entity_id": "fight-39",
+      "player_slot": 0,
+      "time": 1687,
+      "range_start": 1677,
+      "range_end": 1716,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 74.93000030517578,
+        "y": 28.059999465942383,
+        "region": "mid_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "map_percent",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": 94
+      }
+    },
+    {
+      "id": "",
+      "module": "combat",
+      "entity_type": "fight",
+      "entity_id": "fight-41",
+      "player_slot": 0,
+      "time": 1842,
+      "range_start": 1832,
+      "range_end": 1888,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 84.4800033569336,
+        "y": 15.079999923706055,
+        "region": "dire_base",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "map_percent",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": 90
+      }
+    },
+    {
+      "id": "",
+      "module": "combat",
+      "entity_type": "fight",
+      "entity_id": "fight-7",
+      "player_slot": 0,
+      "time": 206,
+      "range_start": 196,
+      "range_end": 232,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 19.899999618530273,
+        "y": 15.899999618530273,
+        "region": "top_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "map_percent",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": 96
+      }
+    },
+    {
+      "id": "",
+      "module": "combat",
+      "entity_type": "",
+      "entity_id": "",
+      "player_slot": 0,
+      "time": 1239,
+      "range_start": 1239,
+      "range_end": 1239
+    },
+    {
+      "id": "",
+      "module": "combat",
+      "entity_type": "",
+      "entity_id": "",
+      "player_slot": 0,
+      "time": 712,
+      "range_start": 712,
+      "range_end": 712
+    },
+    {
+      "id": "",
+      "module": "development",
+      "entity_type": "lane_checkpoint",
+      "entity_id": "lane:0:600",
+      "player_slot": 0,
+      "time": 600,
+      "range_start": 580,
+      "range_end": 620,
+      "map_focus": {
+        "coordinate_valid": false,
+        "x": null,
+        "y": null,
+        "region": "top_lane",
+        "coordinate_space": "",
+        "coordinate_source": "",
+        "coordinate_version": "",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "development",
+      "entity_type": "",
+      "entity_id": "",
+      "player_slot": 0,
+      "time": 600,
+      "range_start": 600,
+      "range_end": 600
+    }
+  ]
+}

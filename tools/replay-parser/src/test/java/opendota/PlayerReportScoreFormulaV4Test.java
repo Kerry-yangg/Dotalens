@@ -164,9 +164,11 @@ class PlayerReportScoreFormulaV4Test {
         JsonObject lane = findDimension(report, "lane_execution");
         assertEquals(100.0, lane.get("effective_weight").getAsDouble(), EPSILON);
         JsonObject missing = findDimension(report, "combat_duty");
-        assertFalse(missing.has("base_score"));
-        assertFalse(missing.has("final_score"));
-        assertFalse(missing.has("score"));
+        for (String key : new String[] {
+                "base_score", "behavior_modifier", "final_score", "score" }) {
+            assertTrue(missing.has(key), key);
+            assertTrue(missing.get(key).isJsonNull(), key);
+        }
         assertEquals(0.0, missing.get("effective_weight").getAsDouble(), EPSILON);
     }
 
@@ -256,6 +258,37 @@ class PlayerReportScoreFormulaV4Test {
                 .get("recomputation_valid").getAsBoolean());
         assertTrue(findDimension(report, "lane_execution").getAsJsonObject("recomputation")
                 .get("base_component_valid").getAsBoolean());
+    }
+
+    @Test
+    void canonicalizesUnavailableAtomicRowsForStrictProtocol() {
+        JsonObject lane = dimension("lane_execution", "lane", 100, 0, false);
+        lane.add("base_components", components(
+                component("lane_model_score", 80, 75),
+                component("core_lane_opportunity_conversion", 40, 25)));
+        JsonObject report = report(lane);
+        report.addProperty("base_component_model", PlayerReportBaseComponents.MODEL);
+
+        PlayerReportScoringV4.apply(report);
+
+        JsonObject scored = findDimension(report, "lane_execution");
+        for (String key : new String[] {
+                "base_score", "behavior_modifier", "final_score", "score" }) {
+            assertTrue(scored.has(key), key);
+            assertTrue(scored.get(key).isJsonNull(), key);
+        }
+        for (JsonElement element : scored.getAsJsonArray("base_components")) {
+            JsonObject component = element.getAsJsonObject();
+            assertFalse(component.get("available").getAsBoolean());
+            assertTrue(component.get("normalized_score").isJsonNull());
+            assertEquals(0.0, component.get("effective_local_weight").getAsDouble(), EPSILON);
+            assertTrue(component.get("weighted_contribution").isJsonNull());
+        }
+        var calculation = PlayerReportBaseComponents.fromJson(
+                scored.getAsJsonArray("base_components"));
+        assertFalse(calculation.available());
+        assertTrue(report.getAsJsonObject("score_card").getAsJsonObject("audit")
+                .get("recomputation_valid").getAsBoolean());
     }
 
     @Test

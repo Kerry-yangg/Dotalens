@@ -200,16 +200,19 @@ final class PlayerReportScoringV4 {
         row.add("scoring_components", new JsonArray());
         JsonArray baseComponents = array(row, "base_components");
         if (dimension.currentAtomicModel) {
+            if (!dimension.available) {
+                canonicalizeUnavailableAtomicComponents(baseComponents);
+            }
             prepareAtomicBaseComponents(dimension, baseComponents);
         } else if (baseComponents == null || baseComponents.isEmpty()) {
             baseComponents = new JsonArray();
             row.add("base_components", baseComponents);
         }
         if (!dimension.available) {
-            row.remove("base_score");
-            row.remove("behavior_modifier");
-            row.remove("final_score");
-            row.remove("score");
+            row.add("base_score", JsonNull.INSTANCE);
+            row.add("behavior_modifier", JsonNull.INSTANCE);
+            row.add("final_score", JsonNull.INSTANCE);
+            row.add("score", JsonNull.INSTANCE);
             row.remove("score_impact");
             row.addProperty("status", "missing");
             JsonObject recomputation = new JsonObject();
@@ -233,6 +236,22 @@ final class PlayerReportScoringV4 {
         component.add("evidence_refs", refs == null ? new JsonArray() : refs.deepCopy());
         baseComponents.add(component);
         dimension.aggregateFallback = true;
+    }
+
+    private static void canonicalizeUnavailableAtomicComponents(JsonArray components) {
+        if (components == null) return;
+        for (JsonElement element : components) {
+            if (!element.isJsonObject()) continue;
+            JsonObject component = element.getAsJsonObject();
+            component.addProperty("available", false);
+            component.add("normalized_score", JsonNull.INSTANCE);
+            component.addProperty("effective_local_weight", 0);
+            component.add("weighted_contribution", JsonNull.INSTANCE);
+            if (!component.has("missing_reason")
+                    && !component.has("suppression_reason")) {
+                component.addProperty("suppression_reason", "dimension_unavailable");
+            }
+        }
     }
 
     private static void prepareAtomicBaseComponents(DimensionState dimension,

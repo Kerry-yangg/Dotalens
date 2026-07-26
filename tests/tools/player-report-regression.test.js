@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { gzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 
 import {
   compareGolden,
@@ -51,7 +51,7 @@ const round4 = (value) => Math.round(value * 10000) / 10000;
 
 const MOCK_PARSER_SOURCE = String.raw`
 import http from "node:http";
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, renameSync, writeFileSync } from "node:fs";
 
 const port = Number(process.env.PLAYER_REPORT_MOCK_PORT);
 const eventsPath = process.env.PLAYER_REPORT_MOCK_EVENTS;
@@ -88,7 +88,21 @@ const server = http.createServer((request, response) => {
     jobs.set(job.id, job);
     event({ type: "upload", match_id: matchId, file_name: request.headers["x-dota-lens-file-name"] });
     request.resume();
-    request.on("end", () => send(200, { id: job.id, status: job.status }));
+    request.on("end", () => {
+      if (config.replace_cached_replay) {
+        const destination = config.replay_paths?.[matchId];
+        const part = destination + ".import.part";
+        writeFileSync(part, "replacement");
+        try {
+          renameSync(part, destination);
+        } catch (error) {
+          event({ type: "replace_failed", match_id: matchId, code: error.code });
+          send(400, { error: "invalid_replay_file", message: error.message });
+          return;
+        }
+      }
+      send(200, { id: job.id, status: job.status });
+    });
     return;
   }
   const jobMatch = url.pathname.match(/^\/api\/jobs\/(.+)$/);
@@ -199,6 +213,38 @@ function writeRunnerManifest(fixture, matches = fixture.matchIds) {
   }));
 }
 
+function writeRunnerGolden(fixture, matchId, { drift = false } = {}) {
+  const bundle = bundleFixture({ serverAudit: true });
+  const report = bundle.by_slot["0"].report;
+  const golden = projectGoldenReport({ matchId, slot: 0, report });
+  if (drift) golden.score_card.final_score += 10;
+  const expectedDirectory = join(
+    fixture.root,
+    "tests",
+    "player-report-regression",
+    "expected",
+  );
+  mkdirSync(expectedDirectory, { recursive: true });
+  writeFileSync(
+    join(expectedDirectory, `${matchId}-slot-0.json`),
+    JSON.stringify(golden),
+  );
+  writeFileSync(fixture.manifestPath, JSON.stringify({
+    schema: "player-report-regression-manifest/1.0",
+    matches: [{
+      match_id: matchId,
+      replay_path: `tools/runtime/dota-lens-data/replays/${matchId}.dem`,
+      matrix_enabled: true,
+      reserve: false,
+      golden_subject: {
+        player_slot: 0,
+        expected_position: report.position,
+        scenario_tags: ["fixture-current"],
+      },
+    }],
+  }));
+}
+
 function writeRunnerCheckpoint(fixture, matchId, overrides = {}) {
   const directory = join(fixture.runtime, "checkpoints");
   mkdirSync(directory, { recursive: true });
@@ -289,32 +335,8 @@ function readLatestRunnerAggregate(fixture) {
   };
 }
 
-function readManifestFixture() {
-  const ids = [
-    "8893373471", "8893461215", "8894766243", "8902638530",
-    "8902709946", "8903960010", "8904119291", "8904187926",
-    "8904265149", "8904318329", "8904432250", "8908349474",
-    "8908420184", "8909845275", "8911632470", "8912957512",
-  ];
-  return {
-    schema: "player-report-regression-manifest/1.0",
-    matches: ids.map((matchId, index) => ({
-      match_id: matchId,
-      matrix_enabled: index < 15,
-      reserve: index === 15,
-      golden_subject: index < 15
-        ? {
-            player_slot: index % 10,
-            expected_position: (index % 5) + 1,
-            scenario_tags: ["contract-fixture"],
-          }
-        : null,
-    })),
-  };
-}
-
 test("candidate manifest contains sixteen unique replay IDs", () => {
-  const manifest = readManifestFixture();
+  const manifest = JSON.parse(readFileSync(PLAYER_REPORT_MANIFEST, "utf8"));
   assert.equal(manifest.schema, "player-report-regression-manifest/1.0");
   assert.equal(new Set(manifest.matches.map((row) => row.match_id)).size, 16);
   assert.equal(manifest.matches.filter((row) => row.matrix_enabled).length, 15);
@@ -322,7 +344,7 @@ test("candidate manifest contains sixteen unique replay IDs", () => {
 });
 
 test("golden subjects contain exactly three samples per position", () => {
-  const manifest = readManifestFixture();
+  const manifest = JSON.parse(readFileSync(PLAYER_REPORT_MANIFEST, "utf8"));
   const counts = manifest.matches
     .filter((row) => row.golden_subject)
     .reduce((result, row) => {
@@ -333,7 +355,7 @@ test("golden subjects contain exactly three samples per position", () => {
   assert.deepEqual(counts, { "1": 3, "2": 3, "3": 3, "4": 3, "5": 3 });
 });
 
-test("candidate manifest remains a relative-path pool before Task 10 freezes it", () => {
+test("frozen manifest binds one valid Golden subject to every enabled match", () => {
   const manifest = JSON.parse(readFileSync(PLAYER_REPORT_MANIFEST, "utf8"));
   const expectedIds = [
     "8893373471", "8893461215", "8894766243", "8902638530",
@@ -347,10 +369,261 @@ test("candidate manifest remains a relative-path pool before Task 10 freezes it"
   assert.ok(manifest.matches.every((row) =>
     typeof row.replay_path === "string"
     && !row.replay_path.includes(":")));
-  assert.ok(manifest.matches.every((row) =>
-    !Object.hasOwn(row, "matrix_enabled")
-    && !Object.hasOwn(row, "reserve")
-    && !Object.hasOwn(row, "golden_subject")));
+  assert.equal(
+    manifest.matches.filter((row) => row.matrix_enabled && row.golden_subject).length,
+    15,
+  );
+  assert.equal(
+    manifest.matches.filter((row) => !row.matrix_enabled && row.golden_subject).length,
+    0,
+  );
+  for (const row of manifest.matches.filter((entry) => entry.matrix_enabled)) {
+    assert.equal(row.reserve, false);
+    assert.ok(Number.isInteger(row.golden_subject.player_slot));
+    assert.ok(row.golden_subject.player_slot >= 0);
+    assert.ok(row.golden_subject.player_slot <= 9);
+    assert.ok(Number.isInteger(row.golden_subject.expected_position));
+    assert.ok(row.golden_subject.expected_position >= 1);
+    assert.ok(row.golden_subject.expected_position <= 5);
+    assert.ok(Array.isArray(row.golden_subject.scenario_tags));
+    assert.ok(row.golden_subject.scenario_tags.length > 0);
+  }
+  const reserve = manifest.matches.find((row) => row.reserve);
+  assert.equal(reserve.matrix_enabled, false);
+  assert.equal(reserve.golden_subject, null);
+});
+
+function writeCliMatrixManifest(fixture, { count = 15 } = {}) {
+  const matches = fixture.matchIds.map((matchId, index) => {
+    const enabled = index < count;
+    const playerSlot = index % 10;
+    return {
+      match_id: matchId,
+      replay_path: `tools/runtime/dota-lens-data/replays/${matchId}.dem`,
+      matrix_enabled: enabled,
+      reserve: !enabled,
+      golden_subject: enabled
+        ? {
+            player_slot: playerSlot,
+            expected_position: (playerSlot % 5) + 1,
+            scenario_tags: ["fixture-current"],
+          }
+        : null,
+    };
+  });
+  mkdirSync(dirname(fixture.manifestPath), { recursive: true });
+  writeFileSync(fixture.manifestPath, JSON.stringify({
+    schema: "player-report-regression-manifest/1.0",
+    matches,
+  }));
+}
+
+function runRegressionCliFixture(fixture, ...args) {
+  return spawnSync(
+    process.execPath,
+    [TOOL, ...args, fixture.manifestPath],
+    { cwd: fixture.root, encoding: "utf8" },
+  );
+}
+
+test("candidates CLI writes and prints a deterministic ten-player table per match", () => {
+  const fixture = createRunnerFixture(["9900000101", "9900000102"]);
+  writeCliMatrixManifest(fixture, { count: 1 });
+  const playersPath = join(
+    fixture.root,
+    "tools",
+    "runtime",
+    "dota-lens-data",
+    "analyses",
+    "9900000101",
+    "modules",
+    "fixture",
+    "players.json.gz",
+  );
+  const players = JSON.parse(gunzipSync(readFileSync(playersPath)));
+  const repeatedTarget = {
+    module: "development",
+    entity_type: "lane_checkpoint",
+    entity_id: "lane:0:600",
+    player_slot: 0,
+    time: 600,
+  };
+  players.by_slot["0"].report.jump_targets = [repeatedTarget];
+  players.by_slot["0"].report.semantic.jump_target = structuredClone(repeatedTarget);
+  players.by_slot["0"].report.semantic.strength_ids = [
+    "strength:z-main",
+    "strength:a-secondary",
+  ];
+  writeFileSync(playersPath, gzipSync(JSON.stringify(players)));
+  try {
+    const first = runRegressionCliFixture(fixture, "candidates");
+    assert.equal(first.status, 0, first.stderr || first.stdout);
+    const reportPath = join(
+      fixture.runtime,
+      "reports",
+      "candidates.md",
+    );
+    assert.equal(readFileSync(reportPath, "utf8"), first.stdout);
+    assert.match(first.stdout, /\| Match \| Slot \| Position \|/);
+    assert.equal(
+      first.stdout.split("\n").filter((line) => /^\| 990000010[12] \|/.test(line)).length,
+      20,
+    );
+    assert.match(
+      first.stdout,
+      /\| 9900000101 \| 0 \| 1 \| 96 \| 10 \| 70 \| 70 \| strength:z-main \|/,
+    );
+
+    const second = runRegressionCliFixture(fixture, "candidates");
+    assert.equal(second.status, 0, second.stderr || second.stdout);
+    assert.equal(second.stdout, first.stdout);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("propose-golden writes only deterministic runtime candidates", () => {
+  const matchIds = Array.from(
+    { length: 16 },
+    (_, index) => String(9900000201 + index),
+  );
+  const fixture = createRunnerFixture(matchIds);
+  writeCliMatrixManifest(fixture);
+  const expectedDirectory = join(
+    fixture.root,
+    "tests",
+    "player-report-regression",
+    "expected",
+  );
+  mkdirSync(expectedDirectory, { recursive: true });
+  writeFileSync(join(expectedDirectory, "sentinel.txt"), "unchanged");
+
+  try {
+    const first = runRegressionCliFixture(fixture, "propose-golden");
+    assert.equal(first.status, 0, first.stderr || first.stdout);
+    const candidateDirectory = join(fixture.runtime, "candidate-golden");
+    const firstFiles = readdirSync(candidateDirectory).sort();
+    assert.equal(firstFiles.length, 15);
+    assert.ok(firstFiles.every((file) => /^\d+-slot-\d+\.json$/.test(file)));
+    assert.deepEqual(readdirSync(expectedDirectory), ["sentinel.txt"]);
+    const firstContents = firstFiles.map((file) =>
+      readFileSync(join(candidateDirectory, file), "utf8"));
+
+    writeFileSync(join(candidateDirectory, "stale.json"), "{}");
+    const second = runRegressionCliFixture(fixture, "propose-golden");
+    assert.equal(second.status, 0, second.stderr || second.stdout);
+    assert.deepEqual(readdirSync(candidateDirectory).sort(), firstFiles);
+    assert.deepEqual(
+      firstFiles.map((file) => readFileSync(join(candidateDirectory, file), "utf8")),
+      firstContents,
+    );
+    assert.deepEqual(readdirSync(expectedDirectory), ["sentinel.txt"]);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("approve-golden refuses unreviewed or incomplete candidates without expected drift", () => {
+  const matchIds = Array.from(
+    { length: 16 },
+    (_, index) => String(9900000301 + index),
+  );
+  const fixture = createRunnerFixture(matchIds);
+  writeCliMatrixManifest(fixture);
+  const expectedDirectory = join(
+    fixture.root,
+    "tests",
+    "player-report-regression",
+    "expected",
+  );
+  mkdirSync(expectedDirectory, { recursive: true });
+  writeFileSync(join(expectedDirectory, "sentinel.txt"), "unchanged");
+
+  try {
+    const proposal = runRegressionCliFixture(fixture, "propose-golden");
+    assert.equal(proposal.status, 0, proposal.stderr || proposal.stdout);
+    const before = readdirSync(expectedDirectory).sort();
+
+    const unreviewed = runRegressionCliFixture(fixture, "approve-golden");
+    assert.notEqual(unreviewed.status, 0);
+    assert.match(unreviewed.stderr, /--reviewed/);
+    assert.deepEqual(readdirSync(expectedDirectory).sort(), before);
+    assert.equal(readFileSync(join(expectedDirectory, "sentinel.txt"), "utf8"), "unchanged");
+
+    const candidateDirectory = join(fixture.runtime, "candidate-golden");
+    rmSync(join(candidateDirectory, readdirSync(candidateDirectory).sort()[0]));
+    const incomplete = spawnSync(
+      process.execPath,
+      [TOOL, "approve-golden", fixture.manifestPath, "--reviewed"],
+      { cwd: fixture.root, encoding: "utf8" },
+    );
+    assert.notEqual(incomplete.status, 0);
+    assert.match(incomplete.stderr, /candidate.*cardinality/i);
+    assert.deepEqual(readdirSync(expectedDirectory).sort(), before);
+    assert.equal(readFileSync(join(expectedDirectory, "sentinel.txt"), "utf8"), "unchanged");
+
+    const refreshed = runRegressionCliFixture(fixture, "propose-golden");
+    assert.equal(refreshed.status, 0, refreshed.stderr || refreshed.stdout);
+    const firstCandidate = join(
+      candidateDirectory,
+      readdirSync(candidateDirectory).sort()[0],
+    );
+    const drifted = JSON.parse(readFileSync(firstCandidate, "utf8"));
+    drifted.role_confidence -= 1;
+    writeFileSync(firstCandidate, JSON.stringify(drifted, null, 2));
+    const driftApproval = spawnSync(
+      process.execPath,
+      [TOOL, "approve-golden", fixture.manifestPath, "--reviewed"],
+      { cwd: fixture.root, encoding: "utf8" },
+    );
+    assert.notEqual(driftApproval.status, 0);
+    assert.match(driftApproval.stderr, /drift detected/i);
+    assert.deepEqual(readdirSync(expectedDirectory).sort(), before);
+    assert.equal(readFileSync(join(expectedDirectory, "sentinel.txt"), "utf8"), "unchanged");
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("approve-golden atomically replaces expected with exactly fifteen reviewed files", () => {
+  const matchIds = Array.from(
+    { length: 16 },
+    (_, index) => String(9900000401 + index),
+  );
+  const fixture = createRunnerFixture(matchIds);
+  writeCliMatrixManifest(fixture);
+  const expectedDirectory = join(
+    fixture.root,
+    "tests",
+    "player-report-regression",
+    "expected",
+  );
+  mkdirSync(expectedDirectory, { recursive: true });
+  writeFileSync(join(expectedDirectory, "stale.json"), "{}");
+
+  try {
+    const proposal = runRegressionCliFixture(fixture, "propose-golden");
+    assert.equal(proposal.status, 0, proposal.stderr || proposal.stdout);
+    const approval = spawnSync(
+      process.execPath,
+      [TOOL, "approve-golden", fixture.manifestPath, "--reviewed"],
+      { cwd: fixture.root, encoding: "utf8" },
+    );
+    assert.equal(approval.status, 0, approval.stderr || approval.stdout);
+
+    const candidateDirectory = join(fixture.runtime, "candidate-golden");
+    const expectedFiles = readdirSync(expectedDirectory).sort();
+    assert.equal(expectedFiles.length, 15);
+    assert.deepEqual(expectedFiles, readdirSync(candidateDirectory).sort());
+    for (const file of expectedFiles) {
+      assert.equal(
+        readFileSync(join(expectedDirectory, file), "utf8"),
+        readFileSync(join(candidateDirectory, file), "utf8"),
+      );
+    }
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
 });
 
 test("ValidateExisting validates a fixture analysis without parser calls and replaces its checkpoint", () => {
@@ -373,6 +646,43 @@ test("ValidateExisting validates a fixture analysis without parser calls and rep
     assert.equal(Object.hasOwn(checkpoint, "stale"), false);
   } finally {
     parser.stop();
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("ValidateExisting aggregates protocol and approved Golden evidence", () => {
+  const fixture = createRunnerFixture(["9900000001"]);
+  writeRunnerManifest(fixture);
+  writeRunnerGolden(fixture, "9900000001");
+
+  try {
+    const result = runRunnerFixture(fixture, "ValidateExisting");
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const aggregate = readLatestRunnerAggregate(fixture);
+    assert.equal(aggregate.json.golden_total, 1);
+    assert.equal(aggregate.json.golden_passed, 1);
+    assert.equal(aggregate.json.aggregate_fallback_count, 0);
+    assert.equal(aggregate.json.duplicate_applied_key_count, 0);
+    assert.equal(aggregate.json.max_root_negative_overall, 0);
+    assert.match(aggregate.markdown, /Golden: 1\/1/);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("ValidateExisting rejects drift from an approved Golden file", () => {
+  const fixture = createRunnerFixture(["9900000001"]);
+  writeRunnerManifest(fixture);
+  writeRunnerGolden(fixture, "9900000001", { drift: true });
+
+  try {
+    const result = runRunnerFixture(fixture, "ValidateExisting");
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+    const aggregate = readLatestRunnerAggregate(fixture).json;
+    assert.equal(aggregate.golden_total, 1);
+    assert.equal(aggregate.golden_passed, 0);
+    assert.match(aggregate.failures[0].error, /Golden validation failed/);
+  } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });
@@ -456,7 +766,11 @@ test("ReparseAll uploads matches serially through the documented endpoints", () 
     const result = runRunnerFixture(fixture, "ReparseAll", {
       env: { PLAYER_REPORT_REGRESSION_API_BASE: parser.apiBase },
     });
-    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(
+      result.status,
+      0,
+      `${result.stderr || result.stdout}\n${JSON.stringify(parser.events())}`,
+    );
     const events = parser.events();
     assert.deepEqual(events.filter((event) => event.type === "upload").map((event) => event.match_id), fixture.matchIds);
     for (const matchId of fixture.matchIds) {
@@ -464,6 +778,40 @@ test("ReparseAll uploads matches serially through the documented endpoints", () 
       const poll = events.findIndex((event) => event.type === "poll" && event.job_id === `job-${matchId}`);
       assert.ok(upload >= 0 && poll > upload, matchId);
     }
+  } finally {
+    parser.stop();
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("ReparseAll stages a cached Replay so the parser can atomically replace it", () => {
+  const fixture = createRunnerFixture(["9900000001"]);
+  const replayPath = join(
+    fixture.root,
+    "tools",
+    "runtime",
+    "dota-lens-data",
+    "replays",
+    "9900000001.dem",
+  );
+  const parser = startMockParser(fixture, {
+    replace_cached_replay: true,
+    replay_paths: { "9900000001": replayPath },
+  });
+  writeRunnerManifest(fixture);
+  try {
+    const result = runRunnerFixture(fixture, "ReparseAll", {
+      env: { PLAYER_REPORT_REGRESSION_API_BASE: parser.apiBase },
+    });
+    assert.equal(
+      result.status,
+      0,
+      `${result.stderr || result.stdout}\n${JSON.stringify(parser.events())}`,
+    );
+    assert.equal(
+      parser.events().some((event) => event.type === "replace_failed"),
+      false,
+    );
   } finally {
     parser.stop();
     rmSync(fixture.root, { recursive: true, force: true });
@@ -1247,6 +1595,29 @@ test("golden projection includes stable audit fields and excludes prose", () => 
   assert.equal(projected.semantic.main_issue_id, "issue:combat_timing");
 });
 
+test("golden projection derives stable semantic IDs from real report brief fields", () => {
+  const report = atomicReportFixture();
+  delete report.semantic;
+  report.brief = {
+    strengths: ["insight:lane:0", "insight:combat:0"],
+    priorities: ["advice:combat:0"],
+    training_plan: ["training:0:combat"],
+  };
+
+  const projected = projectGoldenReport({
+    matchId: "fixture",
+    slot: 0,
+    report,
+  });
+
+  assert.deepEqual(projected.semantic.strength_ids, [
+    "insight:combat:0",
+    "insight:lane:0",
+  ]);
+  assert.equal(projected.semantic.main_issue_id, "advice:combat:0");
+  assert.equal(projected.semantic.training_target_id, "training:0:combat");
+});
+
 test("golden projection derives available dimension coverage from rows", () => {
   const report = atomicReportFixture();
   report.dimension_coverage = 10;
@@ -1353,6 +1724,36 @@ test("Golden jump targets compare canonical full payloads without order drift", 
   const reordered = structuredClone(ordered);
   reordered.jump_targets.reverse();
   assert.equal(compareGolden(ordered, reordered).valid, true);
+});
+
+test("Golden projection deduplicates identical repeated jump-target references", () => {
+  const report = atomicReportFixture();
+  const target = {
+    module: "combat",
+    entity_type: "fight",
+    entity_id: "fight-1",
+    player_slot: 0,
+    time: 120,
+  };
+  report.jump_targets = [target];
+  report.brief = { jump_target: structuredClone(target) };
+
+  const projected = projectGoldenReport({
+    matchId: "fixture",
+    slot: 0,
+    report,
+  });
+
+  assert.deepEqual(projected.jump_targets, [{
+    id: "",
+    module: "combat",
+    entity_type: "fight",
+    entity_id: "fight-1",
+    player_slot: 0,
+    time: 120,
+    range_start: null,
+    range_end: null,
+  }]);
 });
 
 test("Golden jump-target duplicate identities are hard failures", () => {
