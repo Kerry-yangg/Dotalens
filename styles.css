@@ -6319,18 +6319,38 @@ svg {
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
-.player-score-base-components { display: grid; gap: 4px; container-type: inline-size; }
+.player-score-dimension-chain-audit.valid { background: rgba(101, 217, 149, 0.055); }
+.player-score-dimension-chain-audit.invalid { background: rgba(227, 101, 108, 0.06); }
+.player-score-dimension-chain-audit.unavailable { background: var(--amber-soft); }
+.player-score-dimension-chain-audit > header { margin-bottom: 4px !important; }
+.player-score-dimension-chain-audit.valid > header { color: var(--radiant); }
+.player-score-dimension-chain-audit.invalid > header { color: var(--dire); }
+.player-score-dimension-chain-audit.unavailable > header { color: var(--amber); }
+.player-score-dimension-chain-audit > p,
+.player-score-dimension-chain-audit > small {
+  display: block;
+  color: var(--text-soft);
+  font-family: var(--font-numeric);
+  font-size: 10px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.player-score-dimension-chain-audit > small { margin-top: 4px; color: var(--dire); }
+.player-score-dimension-audit-meta { padding-top: 5px !important; padding-bottom: 5px !important; }
+.player-score-dimension-audit-meta > small { margin: 0 !important; }
+.player-score-base-components { display: grid; gap: 4px; }
 .player-score-base-component {
   display: grid;
   min-width: 0;
   min-height: 52px;
-  grid-template-columns: minmax(180px, 1fr) repeat(3, minmax(72px, 92px));
+  grid-template-columns: repeat(3, minmax(72px, 1fr));
   align-items: center;
   padding: 6px 7px;
   gap: 8px;
   background: #15191b;
   border-left: 2px solid var(--info);
 }
+.player-score-base-component .identity { grid-column: 1 / -1; }
 .player-score-base-component.valid { border-left-color: var(--radiant); }
 .player-score-base-component.invalid { border-left-color: var(--dire); }
 .player-score-base-component.unavailable { border-left-color: var(--amber); }
@@ -6366,13 +6386,17 @@ svg {
   white-space: normal;
 }
 
-@container (max-width: 430px) {
-  .player-score-base-component {
-    grid-template-columns: repeat(3, minmax(72px, 1fr));
-  }
+@supports (container-type: inline-size) {
+  .player-score-base-components { container-type: inline-size; }
 
-  .player-score-base-component .identity {
-    grid-column: 1 / -1;
+  @container (min-width: 430px) {
+    .player-score-base-component {
+      grid-template-columns: minmax(180px, 1fr) repeat(3, minmax(72px, 92px));
+    }
+
+    .player-score-base-component .identity {
+      grid-column: auto;
+    }
   }
 }
 .player-score-comparison {
@@ -10915,6 +10939,14 @@ svg {
 }
 
 @media (min-width: 1440px) {
+  .player-score-workspace {
+    grid-template-columns: 210px minmax(500px, 1fr) minmax(440px, 460px);
+  }
+
+  .player-score-workspace.brief-reading .player-score-evidence-panel {
+    width: 460px;
+  }
+
   .ward-main-layout {
     grid-template-columns: minmax(520px, 1fr) minmax(320px, 0.62fr) minmax(360px, 0.7fr);
   }

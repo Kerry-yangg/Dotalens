@@ -183,6 +183,7 @@ import {
   combatContributionSampleLabel,
   combatScoreComponentsMarkup,
 } from "./combat-contribution-view.js";
+import { renderPlayerScoreAtomicAudit } from "./player-score-atomic-audit.js";
 
 const API_BASE = "http://127.0.0.1:5600/api";
 const APP_VERSION = "0.4.5";
@@ -6610,146 +6611,16 @@ function renderPlayerScoreEvidence(model) {
         <b class="${impact != null && impact >= 0 ? "positive" : "negative"}">${impact == null ? "--" : signedValue(impact)}</b><i data-lucide="chevron-right"></i>
       </button>`;
     }).join("");
-    const audit = item.scoreAudit;
-    const baseComponentAudit = audit?.baseComponentAudit;
-    const baseComponentIssueMeta = {
-      base_component_malformed: "原子组件字段缺失或格式错误",
-      base_component_duplicate_key: "原子组件标识重复",
-      base_component_weight_mismatch: "有效权重与本地重算不同",
-      base_component_contribution_mismatch: "维度贡献与本地重算不同",
-      base_component_score_mismatch: "基础分与原子组件合计不同",
-      base_component_weight_sum_mismatch: "有效权重合计不是 100%",
-      aggregate_component_in_current_report: "当前报告仍包含旧版聚合组件",
-      dimension_modifier_mismatch: "行为修正与计分路径合计不同",
-      dimension_final_mismatch: "最终分与本地重算不同",
-      dimension_score_alias_mismatch: "维度分数字段之间不一致",
-    };
-    const baseComponentReasonMeta = {
-      ...PLAYER_SCORE_MISSING_META,
-      counterpart_or_subject_gpm_missing: "缺少你或同位置参照的 GPM",
-      counterpart_or_subject_xpm_missing: "缺少你或同位置参照的 XPM",
-      counterpart_or_subject_networth_missing: "缺少你或同位置参照的净资产",
-      team_damage_share_inputs_missing: "缺少个人或团队伤害数据",
-      no_passed_responsibility_gate_fights: "没有战斗片段通过职责硬门禁",
-      responsibility_gate_not_passed: "职责硬门禁未通过，本项被抑制",
-      team_utility_share_inputs_missing: "缺少个人或团队效用数据",
-      team_vision_share_inputs_missing: "缺少个人或团队视野数据",
-      subject_or_same_position_deaths_missing: "缺少你或同位置参照的死亡数据",
-      dead_time_or_duration_missing: "缺少死亡时长或比赛时长",
-      team_tower_damage_share_inputs_missing: "缺少个人或团队防御塔伤害",
-      tower_or_roshan_finish_inputs_missing: "缺少防御塔或肉山终结数据",
-      team_tempo_share_inputs_missing: "缺少个人或团队节奏数据",
-      tp_and_rune_activation_inputs_missing: "缺少传送或神符激活数据",
-      action_continuity_apm_missing: "缺少可用的操作连续性 APM",
-      subject_or_opponent_observable_uses_missing: "缺少你或同位置参照的技能物品使用数据",
-    };
-    const baseComponentUnitMeta = {
-      model_points: "模型分",
-      percent: "%",
-      route_score: "路线分",
-      windows: "个窗口",
-      count: "次",
-      per_minute: "每分钟",
-      damage: "伤害",
-      score: "分",
-      utility: "效用值",
-      vision_value: "视野值",
-      gold: "金",
-      tower_damage: "防御塔伤害",
-      actions_per_minute: "APM",
-      seconds: "秒",
-    };
-    const baseComponentAtomicNumber = (value) => (
-      typeof value === "number" && Number.isFinite(value) ? value : null
-    );
-    const baseComponentNumber = (value) => {
-      const number = baseComponentAtomicNumber(value);
-      if (number == null) return "--";
-      return Number.isInteger(number) ? number.toLocaleString("zh-CN") : number.toFixed(2);
-    };
-    const baseComponentComparisonText = (component) => {
-      const comparison = component?.comparison;
-      const subject = baseComponentAtomicNumber(comparison?.subject);
-      const reference = baseComponentAtomicNumber(comparison?.reference);
-      if (subject == null && reference == null) return "主体值与参照值未提供";
-      const key = String(component?.key || "");
-      const rawUnit = String(comparison?.unit || "");
-      const unit = key === "relative_gpm" ? "GPM"
-        : key === "relative_xpm" ? "XPM"
-          : baseComponentUnitMeta[rawUnit] || rawUnit;
-      const suffix = unit === "%" ? "%" : unit ? ` ${unit}` : "";
-      const subjectLabel = key.startsWith("team_") ? "你" : "主体";
-      const referenceLabel = key.startsWith("team_") ? "团队" : key.includes("same_position") || key.startsWith("relative_") ? "同位置" : "参照";
-      return `${subjectLabel} ${baseComponentNumber(subject)}${suffix} / ${referenceLabel} ${baseComponentNumber(reference)}${suffix}`;
-    };
-    const baseComponentRows = Array.isArray(baseComponentAudit?.rows)
-      ? baseComponentAudit.rows : [];
-    const baseComponents = item.baseComponents.map((component, index) => {
-      const componentAudit = baseComponentRows[index] || null;
-      const available = component?.available === true && componentAudit?.available !== false;
-      const score = baseComponentAtomicNumber(component?.normalized_score);
-      const effectiveWeight = baseComponentAtomicNumber(
-        componentAudit ? componentAudit.storedEffectiveWeight : component?.effective_local_weight,
-      );
-      const contribution = baseComponentAtomicNumber(
-        componentAudit ? componentAudit.storedContribution : component?.weighted_contribution,
-      );
-      const confidence = baseComponentAtomicNumber(component?.confidence);
-      const structuredReason = component?.suppression_reason || component?.missing_reason;
-      const reasonPrefix = component?.suppression_reason ? "职责门禁" : "数据缺失";
-      const reasons = [];
-      if (structuredReason) {
-        reasons.push(`${reasonPrefix}：${baseComponentReasonMeta[structuredReason] || `未识别原因（${structuredReason}）`}`);
-      } else if (!available) {
-        reasons.push("未通过当前组件的计分条件");
-      }
-      for (const issue of componentAudit?.issues || []) {
-        reasons.push(baseComponentIssueMeta[issue] || `未识别审计差异（${issue}）`);
-      }
-      const rowTone = !available ? "unavailable" : componentAudit?.valid === false ? "invalid" : "valid";
-      return `<div class="player-score-base-component ${rowTone}">
-        <span class="identity">
-          <strong>${escapeHtml(component?.label || component?.key || "基础评分模型")}</strong>
-          <small>${escapeHtml(baseComponentComparisonText(component))}</small>
-          <em>可信度 ${confidence == null ? "--" : `${Math.round(confidence)}%`}</em>
-          ${reasons.length ? `<span class="player-score-base-component-reason">${escapeHtml(reasons.join("；"))}</span>` : ""}
-        </span>
-        <span><small>原子分</small><b>${available && score != null ? score.toFixed(2) : "未计分"}</b></span>
-        <span><small>有效权重</small><b>${available && effectiveWeight != null ? `${effectiveWeight.toFixed(2)}%` : "--"}</b></span>
-        <span><small>对维度贡献</small><b>${available && contribution != null ? contribution.toFixed(2) : "--"}</b></span>
-      </div>`;
-    }).join("");
-    const baseScoreTolerance = 0.05;
-    const recomputedBaseScore = playerScoreNumber(baseComponentAudit?.recomputedScore);
-    const serverBaseScore = playerScoreNumber(audit?.baseScore);
-    const baseAuditSupported = baseComponentRows.length > 0
-      && recomputedBaseScore != null
-      && serverBaseScore != null;
-    const baseAuditIssues = [...new Set([
-      ...(baseComponentAudit?.issues || []),
-      ...(audit?.issues || []),
-    ])];
-    const baseAuditValid = baseAuditSupported
-      && baseComponentAudit?.valid === true
-      && audit?.valid === true
-      && Math.abs(recomputedBaseScore - serverBaseScore) <= baseScoreTolerance;
-    const baseAuditTone = !baseAuditSupported ? "unavailable" : baseAuditValid ? "valid" : "invalid";
-    const baseAuditState = !baseAuditSupported ? "无法重算" : baseAuditValid ? "一致" : "不同";
-    const baseAuditIssueText = baseAuditIssues
-      .map((issue) => baseComponentIssueMeta[issue] || `未识别审计差异（${issue}）`)
-      .join("；");
+    const atomicAudit = renderPlayerScoreAtomicAudit({
+      components: item.baseComponents,
+      scoreAudit: item.scoreAudit,
+      reasonMeta: PLAYER_SCORE_MISSING_META,
+    });
     body = `<section class="player-score-evidence-score dimension-score-chain"><span><small>基础分</small><strong>${item.baseScore == null ? "--" : Number(item.baseScore).toFixed(2)}</strong></span><span><small>行为修正</small><strong class="${Number(item.behaviorModifier || 0) < 0 ? "negative" : Number(item.behaviorModifier || 0) > 0 ? "positive" : ""}">${signedValue(item.behaviorModifier || 0)}</strong></span><span><small>最终分</small><strong>${item.finalScore == null ? "--" : Number(item.finalScore).toFixed(2)}</strong></span></section>
-    <section class="player-score-dimension-audit ${baseAuditTone}">
-      <div class="player-score-dimension-audit-grid">
-        <span><small>基础分重算</small><strong>${recomputedBaseScore == null ? "--" : recomputedBaseScore.toFixed(2)}</strong></span>
-        <span><small>服务端基础分</small><strong>${serverBaseScore == null ? "--" : serverBaseScore.toFixed(2)}</strong></span>
-        <span><small>允许误差</small><strong>±${baseScoreTolerance.toFixed(2)}</strong></span>
-        <span><small>状态</small><strong>${baseAuditState}</strong></span>
-      </div>
-      ${baseAuditIssueText ? `<p>${escapeHtml(baseAuditIssueText)}</p>` : ""}
-      <small>位置权重 ${item.roleWeight}% · 有效权重 ${item.effectiveWeight == null ? "--" : `${Number(item.effectiveWeight).toFixed(2)}%`} · 置信度 ${item.confidence == null ? "--" : `${Math.round(item.confidence)}%`}</small>
-    </section>
-    ${baseComponents ? `<section><header>基础分组件</header><div class="player-score-base-components">${baseComponents}</div></section>` : ""}
+    ${atomicAudit.baseHtml}
+    ${atomicAudit.chainHtml}
+    <section class="player-score-dimension-audit-meta"><small>位置权重 ${item.roleWeight}% · 有效权重 ${item.effectiveWeight == null ? "--" : `${Number(item.effectiveWeight).toFixed(2)}%`} · 置信度 ${item.confidence == null ? "--" : `${Math.round(item.confidence)}%`}</small></section>
+    ${atomicAudit.componentsHtml ? `<section><header>基础分组件</header><div class="player-score-base-components">${atomicAudit.componentsHtml}</div></section>` : ""}
     ${behaviorComponents ? `<section><header>评分路径</header><div class="player-score-behavior-components">${behaviorComponents}</div></section>` : ""}
     ${item.comparison ? `<section><header>比较对象</header><div class="player-score-comparison"><strong>${escapeHtml(item.comparison.label || "本场事实")}</strong><small>${escapeHtml(item.comparison.basis || item.comparison.type || "")}</small></div></section>` : ""}
     <section><header>使用事实</header><div class="player-score-evidence-facts">${facts}</div></section>${missing ? `<section><header>缺失字段与门禁</header><div class="player-score-evidence-missing">${missing}</div></section>` : ""}<section><header>评分说明</header><p>${escapeHtml(item.score == null ? "缺失指标不会按 0 分处理，本维度从有效分母移除并降低报告置信度。" : `${item.brief}。最终分由基础分加上通过归责、去重和封顶的行为修正得到。`)}</p>${item.scoreImpact == null ? "" : `<small>对综合分贡献 ${signedValue(item.scoreImpact)}</small>`}</section>`;

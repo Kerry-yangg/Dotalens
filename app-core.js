@@ -1194,6 +1194,7 @@ export function recomputePlayerReportBaseComponents(components = []) {
     const normalizedScore = source?.normalized_score === null
       ? null
       : atomicJsonNumberOrNull(source?.normalized_score);
+    const confidence = atomicJsonNumberOrNull(source?.confidence);
     const storedEffectiveWeight = atomicJsonNumberOrNull(source?.effective_local_weight);
     const storedContribution = source?.weighted_contribution === null
       ? null
@@ -1203,10 +1204,18 @@ export function recomputePlayerReportBaseComponents(components = []) {
       || typeof source.available !== "boolean"
       || localWeight == null
       || localWeight <= 0
+      || confidence == null
+      || confidence < 0
+      || confidence > 100
       || storedEffectiveWeight == null
-      || (available && normalizedScore == null)
-      || (available && storedContribution == null)
-      || (!available && (source.normalized_score !== null || source.weighted_contribution !== null));
+      || storedEffectiveWeight < 0
+      || storedEffectiveWeight > 100
+      || (available && (normalizedScore == null || normalizedScore < 0 || normalizedScore > 100))
+      || (available && (storedContribution == null
+        || storedContribution < 0 || storedContribution > 100))
+      || (!available && (source.normalized_score !== null
+        || storedEffectiveWeight !== 0
+        || source.weighted_contribution !== null));
     return {
       index,
       key,

@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 import { HERO_META } from "../../hero-meta.js";
+import { renderPlayerScoreAtomicAudit } from "../../player-score-atomic-audit.js";
 import {
   activeTaskFromHistory,
   combatVisionStatus,
@@ -561,33 +562,29 @@ test("player report v4 exposes recomputable overall and dimension score drilldow
   assert.match(evidence, /同结果已去重/);
 });
 
-test("player score evidence renders atomic component audit fields", () => {
+test("player score evidence uses the atomic presentation boundary and responsive grid", () => {
   const appSource = readFileSync(new URL("../../app.js", import.meta.url), "utf8");
   const stylesSource = readFileSync(new URL("../../styles.css", import.meta.url), "utf8");
   const evidenceStart = appSource.indexOf("function renderPlayerScoreEvidence(model)");
   const evidenceEnd = appSource.indexOf("function renderPlayerScoreContent(model)", evidenceStart);
   const evidence = appSource.slice(evidenceStart, evidenceEnd);
 
-  assert.match(evidence, /baseComponentAudit/);
-  assert.match(evidence, /effective_local_weight/);
-  assert.match(evidence, /weighted_contribution/);
-  assert.match(evidence, /missing_reason/);
-  assert.match(evidence, /suppression_reason/);
-  assert.match(evidence, /基础分重算/);
-  assert.match(evidence, /服务端基础分/);
-  assert.match(evidence, /允许误差/);
-  assert.match(evidence, /未计分/);
-  assert.match(evidence, /原子分/);
-  assert.match(evidence, /有效权重/);
-  assert.match(evidence, /对维度贡献/);
-  assert.match(evidence, /可信度/);
-  assert.match(evidence, /base_component_score_mismatch/);
+  assert.match(appSource, /from "\.\/player-score-atomic-audit\.js"/);
+  assert.match(evidence, /renderPlayerScoreAtomicAudit/);
   assert.match(
     stylesSource,
-    /grid-template-columns:\s*minmax\(180px,\s*1fr\)\s+repeat\(3,\s*minmax\(72px,\s*92px\)\)/,
+    /\.player-score-base-component\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(72px,\s*1fr\)\)/s,
   );
   assert.match(stylesSource, /\.player-score-base-component\s+\.identity\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/s);
   assert.match(stylesSource, /\.player-score-base-component-reason\s*\{[^}]*white-space:\s*normal/s);
+  assert.match(
+    stylesSource,
+    /@supports\s*\(container-type:\s*inline-size\)[\s\S]*@container\s*\(min-width:\s*430px\)[\s\S]*grid-template-columns:\s*minmax\(180px,\s*1fr\)\s+repeat\(3,\s*minmax\(72px,\s*92px\)\)/,
+  );
+  assert.match(
+    stylesSource,
+    /@media\s*\(min-width:\s*1440px\)[\s\S]*\.player-score-workspace\s*\{[^}]*minmax\(440px,\s*460px\)[^}]*\}[\s\S]*\.player-score-workspace\.brief-reading\s+\.player-score-evidence-panel\s*\{[^}]*width:\s*460px/s,
+  );
 });
 
 test("player report review navigation selects the target entity and preroll", () => {
@@ -903,6 +900,7 @@ test("recomputePlayerReportBaseComponents renormalizes available weights", () =>
       local_weight: 60,
       effective_local_weight: 100,
       weighted_contribution: 80,
+      confidence: 90,
     },
     {
       key: "relative_xpm",
@@ -911,6 +909,7 @@ test("recomputePlayerReportBaseComponents renormalizes available weights", () =>
       local_weight: 40,
       effective_local_weight: 0,
       weighted_contribution: null,
+      confidence: 0,
       missing_reason: "counterpart_or_subject_xpm_missing",
     },
   ]);
@@ -929,6 +928,7 @@ test("recomputePlayerReportBaseComponents reports stable atomic component audit 
       local_weight: 50,
       effective_local_weight: 60,
       weighted_contribution: 99,
+      confidence: 90,
     },
     {
       key: "duplicate",
@@ -937,6 +937,7 @@ test("recomputePlayerReportBaseComponents reports stable atomic component audit 
       local_weight: Number.POSITIVE_INFINITY,
       effective_local_weight: 40,
       weighted_contribution: 1,
+      confidence: 90,
     },
   ]);
 
@@ -955,6 +956,7 @@ test("recomputePlayerReportBaseComponents rejects non-finite persisted atomic va
     local_weight: 100,
     effective_local_weight: Number.POSITIVE_INFINITY,
     weighted_contribution: 80,
+    confidence: 90,
   }]);
 
   assert.equal(audit.valid, false);
@@ -969,9 +971,11 @@ test("recomputePlayerReportBaseComponents rejects non-number atomic fields", () 
     local_weight: 100,
     effective_local_weight: 100,
     weighted_contribution: 80,
+    confidence: 90,
   });
   for (const field of [
     "normalized_score",
+    "confidence",
     "local_weight",
     "effective_local_weight",
     "weighted_contribution",
@@ -988,6 +992,288 @@ test("recomputePlayerReportBaseComponents rejects non-number atomic fields", () 
   }
 });
 
+test("recomputePlayerReportBaseComponents rejects out-of-range atomic semantics", () => {
+  const validComponent = () => ({
+    key: "relative_gpm",
+    available: true,
+    normalized_score: 80,
+    local_weight: 100,
+    effective_local_weight: 100,
+    weighted_contribution: 80,
+    confidence: 90,
+  });
+  const cases = [
+    ["normalized_score", 1000],
+    ["normalized_score", -1],
+    ["confidence", 999],
+    ["confidence", -1],
+    ["effective_local_weight", 101],
+    ["effective_local_weight", -1],
+    ["weighted_contribution", 101],
+    ["weighted_contribution", -1],
+  ];
+
+  for (const [field, value] of cases) {
+    const audit = recomputePlayerReportBaseComponents([{
+      ...validComponent(),
+      [field]: value,
+    }]);
+
+    assert.equal(audit.valid, false, `${field}=${value} must be rejected`);
+    assert.ok(audit.issues.includes("base_component_malformed"));
+    assert.equal(audit.rows[0].valid, false);
+  }
+});
+
+test("recomputePlayerReportBaseComponents rejects unavailable persisted score data", () => {
+  const unavailable = {
+    key: "relative_xpm",
+    available: false,
+    normalized_score: null,
+    local_weight: 100,
+    effective_local_weight: 0,
+    weighted_contribution: null,
+    confidence: 0,
+    missing_reason: "counterpart_or_subject_xpm_missing",
+  };
+  const cases = [
+    ["effective_local_weight", 1],
+    ["effective_local_weight", -1],
+    ["weighted_contribution", 0],
+    ["weighted_contribution", 1],
+  ];
+
+  for (const [field, value] of cases) {
+    const audit = recomputePlayerReportBaseComponents([{
+      ...unavailable,
+      [field]: value,
+    }]);
+
+    assert.equal(audit.valid, false, `${field}=${value} must be rejected`);
+    assert.ok(audit.issues.includes("base_component_malformed"));
+    assert.equal(audit.rows[0].valid, false);
+  }
+});
+
+test("player score atomic audit exposes an importable presentation boundary", () => {
+  assert.equal(typeof renderPlayerScoreAtomicAudit, "function");
+});
+
+test("player score atomic presentation pairs audit rows by key and escapes report text", () => {
+  const components = [
+    {
+      key: "zero",
+      label: "<img src=x onerror=alert(1)>",
+      available: true,
+      normalized_score: 0,
+      local_weight: 100,
+      effective_local_weight: 100,
+      weighted_contribution: 0,
+      confidence: 0,
+      comparison: { subject: 0, reference: 0, unit: "<script>unit</script>" },
+      missing_reason: null,
+      suppression_reason: null,
+    },
+    {
+      key: "suppressed",
+      label: "职责门禁组件",
+      available: false,
+      normalized_score: null,
+      local_weight: 20,
+      effective_local_weight: 0,
+      weighted_contribution: null,
+      confidence: 50,
+      comparison: {},
+      missing_reason: null,
+      suppression_reason: "gate<script>alert(2)</script>",
+    },
+    {
+      key: "missing",
+      label: "数据缺失组件",
+      available: false,
+      normalized_score: null,
+      local_weight: 20,
+      effective_local_weight: 0,
+      weighted_contribution: null,
+      confidence: 25,
+      comparison: {},
+      missing_reason: "missing<script>alert(4)</script>",
+      suppression_reason: null,
+    },
+  ];
+  const scoreAudit = {
+    available: true,
+    valid: false,
+    baseScore: 0,
+    storedModifier: 2,
+    componentModifier: 0,
+    storedFinalScore: 2,
+    recomputedFinalScore: 0,
+    issues: ["dimension_modifier_mismatch", "unknown<script>alert(3)</script>"],
+    baseComponentAudit: {
+      supported: true,
+      valid: true,
+      recomputedScore: 0,
+      issues: [],
+      rows: [
+        {
+          key: "missing",
+          available: false,
+          storedEffectiveWeight: 0,
+          storedContribution: null,
+          issues: [],
+          valid: true,
+        },
+        {
+          key: "suppressed",
+          available: false,
+          storedEffectiveWeight: 0,
+          storedContribution: null,
+          issues: [],
+          valid: true,
+        },
+        {
+          key: "zero",
+          available: true,
+          storedEffectiveWeight: 100,
+          storedContribution: 0,
+          issues: [],
+          valid: true,
+        },
+      ],
+    },
+  };
+
+  const presentation = renderPlayerScoreAtomicAudit({ components, scoreAudit });
+
+  assert.deepEqual(
+    presentation.rows.map((row) => row.key),
+    ["zero", "suppressed", "missing"],
+  );
+  assert.equal(presentation.rows[0].tone, "valid");
+  assert.equal(presentation.rows[0].scoreText, "0.00");
+  assert.equal(presentation.rows[0].effectiveWeightText, "100.00%");
+  assert.equal(presentation.rows[0].contributionText, "0.00");
+  assert.equal(presentation.rows[0].confidenceText, "0%");
+  assert.equal(presentation.rows[1].tone, "unavailable");
+  assert.equal(presentation.rows[1].scoreText, "未计分");
+  assert.equal(presentation.rows[1].effectiveWeightText, "--");
+  assert.equal(presentation.rows[1].contributionText, "--");
+  assert.equal(presentation.rows[2].tone, "unavailable");
+  assert.equal(presentation.rows[2].scoreText, "未计分");
+  assert.match(presentation.componentsHtml, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.match(presentation.componentsHtml, /&lt;script&gt;unit&lt;\/script&gt;/);
+  assert.match(presentation.componentsHtml, /gate&lt;script&gt;alert\(2\)&lt;\/script&gt;/);
+  assert.match(presentation.componentsHtml, /missing&lt;script&gt;alert\(4\)&lt;\/script&gt;/);
+  assert.doesNotMatch(presentation.componentsHtml, /<img|<script>/);
+  assert.match(presentation.chainHtml, /unknown&lt;script&gt;alert\(3\)&lt;\/script&gt;/);
+  assert.doesNotMatch(presentation.chainHtml, /<script>/);
+});
+
+test("player score atomic presentation separates base-score and dimension-chain state", () => {
+  const component = {
+    key: "base",
+    label: "基础组件",
+    available: true,
+    normalized_score: 70,
+    local_weight: 100,
+    effective_local_weight: 100,
+    weighted_contribution: 70,
+    confidence: 90,
+    comparison: {},
+    missing_reason: null,
+    suppression_reason: null,
+  };
+  const baseComponentAudit = {
+    supported: true,
+    valid: true,
+    recomputedScore: 70,
+    issues: [],
+    rows: [{
+      key: "base",
+      available: true,
+      storedEffectiveWeight: 100,
+      storedContribution: 70,
+      issues: [],
+      valid: true,
+    }],
+  };
+  const scoreAudit = {
+    available: true,
+    valid: false,
+    baseScore: 70.04,
+    storedModifier: 3,
+    componentModifier: 1,
+    storedFinalScore: 73.04,
+    recomputedFinalScore: 71.04,
+    issues: [
+      "dimension_modifier_mismatch",
+      "dimension_final_mismatch",
+      "dimension_score_alias_mismatch",
+    ],
+    baseComponentAudit,
+  };
+
+  const inTolerance = renderPlayerScoreAtomicAudit({
+    components: [component],
+    scoreAudit,
+  });
+  const outsideTolerance = renderPlayerScoreAtomicAudit({
+    components: [component],
+    scoreAudit: { ...scoreAudit, baseScore: 70.06 },
+  });
+
+  assert.equal(inTolerance.base.state, "一致");
+  assert.equal(inTolerance.base.tone, "valid");
+  assert.equal(inTolerance.chain.state, "不同");
+  assert.equal(inTolerance.chain.tone, "invalid");
+  assert.match(inTolerance.chainHtml, /行为修正与计分路径合计不同/);
+  assert.match(inTolerance.chainHtml, /最终分与本地重算不同/);
+  assert.equal(outsideTolerance.base.state, "不同");
+  assert.equal(outsideTolerance.base.tone, "invalid");
+  assert.equal(outsideTolerance.base.toleranceText, "±0.05");
+});
+
+test("player score atomic presentation hides semantically invalid finite metrics", () => {
+  const component = {
+    key: "tampered",
+    label: "篡改组件",
+    available: true,
+    normalized_score: 1000,
+    local_weight: 100,
+    effective_local_weight: 100,
+    weighted_contribution: 100,
+    confidence: 999,
+    comparison: { subject: 1, reference: 1, unit: "score" },
+    missing_reason: null,
+    suppression_reason: null,
+  };
+  const baseComponentAudit = recomputePlayerReportBaseComponents([component]);
+  const presentation = renderPlayerScoreAtomicAudit({
+    components: [component],
+    scoreAudit: {
+      available: true,
+      valid: false,
+      baseScore: 100,
+      storedModifier: 0,
+      componentModifier: 0,
+      storedFinalScore: 100,
+      recomputedFinalScore: 100,
+      issues: ["base_component_malformed"],
+      baseComponentAudit,
+    },
+  });
+
+  assert.equal(baseComponentAudit.valid, false);
+  assert.equal(presentation.rows[0].tone, "invalid");
+  assert.equal(presentation.rows[0].scoreText, "未计分");
+  assert.equal(presentation.rows[0].effectiveWeightText, "--");
+  assert.equal(presentation.rows[0].contributionText, "--");
+  assert.equal(presentation.rows[0].confidenceText, "--");
+  assert.match(presentation.componentsHtml, /原子组件字段缺失或格式错误/);
+  assert.doesNotMatch(presentation.componentsHtml, /1000\.00|999%/);
+});
+
 test("recomputePlayerReportBaseComponents matches Java 206-row weight reconciliation", () => {
   const components = [
     ...Array.from({ length: 206 }, (_, index) => ({
@@ -997,6 +1283,7 @@ test("recomputePlayerReportBaseComponents matches Java 206-row weight reconcilia
       local_weight: 0.480051,
       effective_local_weight: 0.4801,
       weighted_contribution: 0.24,
+      confidence: 90,
     })),
     {
       key: "large",
@@ -1005,6 +1292,7 @@ test("recomputePlayerReportBaseComponents matches Java 206-row weight reconcilia
       local_weight: 1.109494,
       effective_local_weight: 1.0994,
       weighted_contribution: 0.56,
+      confidence: 90,
     },
   ];
 
@@ -1028,6 +1316,7 @@ test("recomputePlayerReportBaseComponents matches Java 3001-row contribution rec
       local_weight: 0.033251,
       effective_local_weight: 0.0333,
       weighted_contribution: 0.0166,
+      confidence: 90,
     })),
     {
       key: "remainder",
@@ -1036,6 +1325,7 @@ test("recomputePlayerReportBaseComponents matches Java 3001-row contribution rec
       local_weight: 0.247,
       effective_local_weight: 0.1,
       weighted_contribution: 0.2,
+      confidence: 90,
     },
   ];
 
@@ -1059,6 +1349,7 @@ test("recomputePlayerReportBaseComponents normalizes Number.MAX_VALUE weights", 
       local_weight: Number.MAX_VALUE,
       effective_local_weight: 50,
       weighted_contribution: 25,
+      confidence: 90,
     },
     {
       key: "max_b",
@@ -1067,6 +1358,7 @@ test("recomputePlayerReportBaseComponents normalizes Number.MAX_VALUE weights", 
       local_weight: Number.MAX_VALUE,
       effective_local_weight: 50,
       weighted_contribution: 25,
+      confidence: 90,
     },
   ]);
 
@@ -1087,6 +1379,7 @@ test("recomputePlayerReportBaseComponents matches Java half-boundary reconciliat
     local_weight: 1,
     effective_local_weight: 0.1,
     weighted_contribution: index === 999 ? 0.05 : 0,
+    confidence: 90,
   }));
 
   const audit = recomputePlayerReportBaseComponents(components);
