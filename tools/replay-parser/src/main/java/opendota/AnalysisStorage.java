@@ -35,7 +35,7 @@ final class AnalysisStorage {
             "combat", "objectives", "map", "timeline", "players", "module_evidence",
             "coordinate_system", "ability_metadata");
     private static final Set<String> EAGER_MODULES = Set.of(
-            "snapshots", "development", "laning", "objectives", "map", "players",
+            "development", "laning", "objectives", "map",
             "module_evidence", "coordinate_system", "ability_metadata");
     static final List<String> SNAPSHOT_FIELDS = List.of(
             "second", "gold", "networth", "xp", "lh", "x", "y", "region",
@@ -57,6 +57,7 @@ final class AnalysisStorage {
 
         JsonObject storedValues = new JsonObject();
         JsonObject moduleFiles = new JsonObject();
+        JsonObject moduleSchemas = new JsonObject();
         List<String> available = new ArrayList<>();
         try {
             for (String name : MODULE_NAMES) {
@@ -72,6 +73,12 @@ final class AnalysisStorage {
                 file.addProperty("encoding", "gzip");
                 file.addProperty("bytes", Files.size(target));
                 moduleFiles.add(name, file);
+                if (stored.isJsonObject()) {
+                    JsonElement schema = stored.getAsJsonObject().get("schema");
+                    if (schema != null && schema.isJsonPrimitive()) {
+                        moduleSchemas.add(name, schema.deepCopy());
+                    }
+                }
                 available.add(name);
                 if (EAGER_MODULES.contains(name)) storedValues.add(name, stored);
             }
@@ -97,6 +104,7 @@ final class AnalysisStorage {
             storage.add("lazy_modules", strings(available.stream().filter(name -> !EAGER_MODULES.contains(name)).toList()));
             storage.add("available_modules", strings(available));
             storage.add("module_files", moduleFiles);
+            storage.add("module_schemas", moduleSchemas);
             compact.add("analysis_storage", storage);
 
             Files.writeString(summaryPart, GSON.toJson(compact), StandardCharsets.UTF_8);
@@ -111,26 +119,46 @@ final class AnalysisStorage {
         Path path = analysisDirectory.resolve("summary.json");
         if (!Files.isRegularFile(path)) return null;
         JsonElement parsed = JsonParser.parseString(Files.readString(path, StandardCharsets.UTF_8));
-        return parsed.isJsonObject() ? parsed.getAsJsonObject() : null;
+        if (!parsed.isJsonObject()) return null;
+        JsonObject summary = parsed.getAsJsonObject();
+        boolean compacted = false;
+        if (STORAGE_SCHEMA.equals(string(object(summary, "analysis_storage"), "schema"))) {
+            JsonObject modules = object(summary, "modules");
+            for (String name : MODULE_NAMES) {
+                if (!EAGER_MODULES.contains(name) && modules.has(name)
+                        && moduleFile(analysisDirectory, summary, name) != null) {
+                    modules.remove(name);
+                    compacted = true;
+                }
+            }
+            summary.add("modules", modules);
+        }
+        if (compacted) persistCompactedSummary(path, summary);
+        return summary;
     }
 
     static JsonElement readModule(Path analysisDirectory, JsonObject summary, String moduleName) throws IOException {
         if (!MODULE_NAMES.contains(moduleName)) return null;
-        JsonObject storage = object(summary, "analysis_storage");
-        String base = string(storage, "module_base");
-        if (STORAGE_SCHEMA.equals(string(storage, "schema")) && base != null) {
-            Path normalizedRoot = analysisDirectory.toAbsolutePath().normalize();
-            Path path = normalizedRoot.resolve(base).resolve(moduleName + ".json.gz").normalize();
-            if (path.startsWith(normalizedRoot) && Files.isRegularFile(path)) {
-                try (GZIPInputStream input = new GZIPInputStream(Files.newInputStream(path));
-                        InputStreamReader reader = new InputStreamReader(input, StandardCharsets.UTF_8)) {
-                    return JsonParser.parseReader(reader);
-                }
+        Path path = moduleFile(analysisDirectory, summary, moduleName);
+        if (path != null) {
+            try (GZIPInputStream input = new GZIPInputStream(Files.newInputStream(path));
+                    InputStreamReader reader = new InputStreamReader(input, StandardCharsets.UTF_8)) {
+                return JsonParser.parseReader(reader);
             }
         }
         JsonObject modules = object(summary, "modules");
         JsonElement embedded = modules.get(moduleName);
         return embedded == null ? null : embedded.deepCopy();
+    }
+
+    static Path moduleFile(Path analysisDirectory, JsonObject summary, String moduleName) {
+        if (!MODULE_NAMES.contains(moduleName)) return null;
+        JsonObject storage = object(summary, "analysis_storage");
+        String base = string(storage, "module_base");
+        if (!STORAGE_SCHEMA.equals(string(storage, "schema")) || base == null) return null;
+        Path normalizedRoot = analysisDirectory.toAbsolutePath().normalize();
+        Path path = normalizedRoot.resolve(base).resolve(moduleName + ".json.gz").normalize();
+        return path.startsWith(normalizedRoot) && Files.isRegularFile(path) ? path : null;
     }
 
     static JsonObject readWithModules(Path analysisDirectory, Set<String> moduleNames) throws IOException {
@@ -213,6 +241,20 @@ final class AnalysisStorage {
                 Files.newOutputStream(path), 1024 * 256);
                 OutputStreamWriter writer = new OutputStreamWriter(output, StandardCharsets.UTF_8)) {
             GSON.toJson(value, writer);
+        }
+    }
+
+    private static void persistCompactedSummary(Path path, JsonObject summary) {
+        Path part = path.resolveSibling(path.getFileName() + ".compact.part");
+        try {
+            Files.writeString(part, GSON.toJson(summary), StandardCharsets.UTF_8);
+            moveReplacing(part, path);
+        } catch (IOException ignored) {
+            try {
+                Files.deleteIfExists(part);
+            } catch (IOException cleanupIgnored) {
+                // Compaction is optional; reading the in-memory summary still succeeds.
+            }
         }
     }
 

@@ -162,6 +162,9 @@
             <button id="detail-more-toggle" class="detail-more-toggle icon-button quiet" type="button" title="查看更多比赛信息" aria-label="查看更多比赛信息" aria-expanded="false">
               <i data-lucide="ellipsis"></i>
             </button>
+            <button id="switch-match-subject" class="subject-switch-button" type="button" title="切换分析玩家">
+              <i data-lucide="user-round-search"></i><span><small>分析玩家</small><strong id="detail-subject-name">--</strong></span><i data-lucide="chevron-down"></i>
+            </button>
             <button id="coverage-shortcut" class="source-button" type="button">
               <span class="status-led available"></span><span><small>数据来源</small><strong id="detail-data-source">本地 Replay</strong></span><i data-lucide="chevron-right"></i>
             </button>
@@ -185,6 +188,25 @@
             <button data-detail-view="players" type="button" title="玩家对比"><i data-lucide="users"></i><span>玩家对比</span></button>
             <button data-detail-view="coverage" type="button" title="数据覆盖"><i data-lucide="database-zap"></i><span>数据覆盖</span></button>
           </nav>
+
+          <div id="player-report-review-bar" class="player-report-review-bar" hidden>
+            <span class="player-report-review-origin">
+              <i data-lucide="badge-check"></i>
+              <span><small id="player-report-review-origin">来自玩家报告</small><strong id="player-report-review-title">复盘这一波</strong></span>
+            </span>
+            <span class="player-report-review-meta">
+              <time id="player-report-review-range">--:--</time>
+              <em id="player-report-review-location">对应模块</em>
+            </span>
+            <span class="player-report-review-actions">
+              <button class="command-button compact" type="button" data-player-report-review-play>
+                <i data-lucide="play"></i><span>从头播放</span>
+              </button>
+              <button class="text-command" type="button" data-player-report-review-return>
+                <i data-lucide="arrow-left"></i><span>返回玩家报告</span>
+              </button>
+            </span>
+          </div>
 
           <div class="detail-workspace">
             <section id="detail-development" class="detail-view active" data-detail-panel="development">
@@ -256,7 +278,7 @@
                 </section>
 
                 <section class="workspace-panel farm-resource-panel" aria-label="地图资源刷新时钟">
-                  <div class="farm-resource-title"><span class="panel-kicker">7.41d 资源时钟</span><strong id="farm-phase-label">前 20 分钟</strong></div>
+                  <div class="farm-resource-title"><span id="farm-resource-patch" class="panel-kicker">资源时钟</span><strong id="farm-phase-label">前 20 分钟</strong></div>
                   <div id="farm-resource-clock" class="farm-resource-clock"></div>
                 </section>
 
@@ -504,9 +526,32 @@
 
                   <div class="combat-detail-grid">
                     <section class="workspace-panel combat-contribution-panel">
-                      <header class="panel-header"><div><span class="panel-kicker">按职责核对</span><h2>十人贡献与责任审计</h2></div><span class="evidence-tag aggregate">前 7 分钟分路 + 资源推断</span></header>
-                      <div class="combat-contribution-head"><span>玩家 / 英雄</span><span>职责</span><span>伤害</span><span>技能</span><span>控制</span><span>治疗</span><span>在场</span><span>评分</span></div>
-                      <div id="combat-contribution-table" class="combat-contribution-table"></div>
+                      <header class="panel-header combat-contribution-header">
+                        <div>
+                          <span class="panel-kicker">按职责核对</span>
+                          <h2>十人贡献与责任审计</h2>
+                          <small id="combat-contribution-sample" class="combat-contribution-sample">当前团战</small>
+                        </div>
+                        <div id="combat-contribution-scope" class="segmented-control mini" aria-label="贡献统计范围">
+                          <button class="active" data-combat-contribution-scope="current" type="button">当前团战</button>
+                          <button data-combat-contribution-scope="all" type="button">全场累计</button>
+                        </div>
+                      </header>
+                      <div id="combat-contribution-metrics" class="combat-contribution-metrics" role="tablist" aria-label="贡献维度">
+                        <button class="active" data-combat-contribution-metric="responsibility" role="tab" aria-selected="true" type="button">职责评分</button>
+                        <button data-combat-contribution-metric="damage" role="tab" aria-selected="false" type="button">伤害</button>
+                        <button data-combat-contribution-metric="damage_taken" role="tab" aria-selected="false" type="button">承伤</button>
+                        <button data-combat-contribution-metric="control" role="tab" aria-selected="false" type="button">控制</button>
+                        <button data-combat-contribution-metric="healing" role="tab" aria-selected="false" type="button">治疗</button>
+                        <button data-combat-contribution-metric="presence" role="tab" aria-selected="false" type="button">在场</button>
+                        <button data-combat-contribution-metric="arrival" role="tab" aria-selected="false" type="button">到场</button>
+                        <button data-combat-contribution-metric="vision" role="tab" aria-selected="false" type="button">视野准备</button>
+                      </div>
+                      <div class="combat-contribution-chart-shell">
+                        <div id="combat-contribution-chart" class="combat-contribution-chart" aria-hidden="true"></div>
+                        <div id="combat-contribution-labels" class="combat-contribution-labels"></div>
+                      </div>
+                      <div id="combat-contribution-accessible" class="sr-only" aria-live="polite"></div>
                     </section>
                     <section class="workspace-panel combat-inspector-panel">
                       <header class="panel-header combat-inspector-header">
@@ -518,6 +563,11 @@
                         <strong id="combat-audit-score" class="large-number">--</strong>
                       </header>
                       <div id="combat-audit-pane" class="combat-inspector-pane active">
+                        <div class="combat-audit-visuals">
+                          <div id="combat-responsibility-radar" class="combat-responsibility-radar"></div>
+                          <div id="combat-score-components" class="combat-score-components"></div>
+                        </div>
+                        <div id="combat-dimension-detail" class="combat-dimension-detail"></div>
                         <div id="combat-player-audit" class="combat-player-audit"></div>
                         <div id="damage-breakdown" class="damage-breakdown"></div>
                       </div>
@@ -619,6 +669,10 @@
                 <section class="workspace-panel coverage-summary-panel">
                   <div class="coverage-score"><span class="status-led available"></span><strong id="coverage-complete-label">完整 Replay</strong><small id="coverage-object-count">等待解析摘要</small></div>
                   <div class="coverage-meta"><span><small>Parser</small><strong>odota/parser a03b9e5</strong></span><span><small>Replay Patch</small><strong id="coverage-patch">--</strong></span><span><small>Schema</small><strong id="coverage-schema">dota-lens/0.6</strong></span><span><small>生成时间</small><strong id="coverage-generated-at">--</strong></span></div>
+                  <div class="coverage-impact-section">
+                    <header><span class="panel-kicker">结论影响</span><strong id="coverage-impact-summary">等待模块证据</strong></header>
+                    <div id="coverage-impact-list" class="coverage-impact-list"></div>
+                  </div>
                 </section>
                 <section class="workspace-panel coverage-table-panel">
                   <header class="panel-header"><div><span class="panel-kicker">数据层级</span><h2>覆盖与精度</h2></div><button class="command-button secondary" type="button"><i data-lucide="rotate-cw"></i><span>重新验证</span></button></header>
@@ -663,8 +717,6 @@
               <button class="active" data-settings-panel="account" type="button"><i data-lucide="user-round"></i><span>账号</span></button>
               <button data-settings-panel="dota" type="button"><i data-lucide="gamepad-2"></i><span>Dota 与 Replay</span></button>
               <button data-settings-panel="parser" type="button"><i data-lucide="cpu"></i><span>解析器</span></button>
-              <button data-settings-panel="data" type="button"><i data-lucide="hard-drive"></i><span>数据</span></button>
-              <button data-settings-panel="display" type="button"><i data-lucide="monitor-cog"></i><span>显示</span></button>
               <button data-settings-panel="diagnostics" type="button"><i data-lucide="stethoscope"></i><span>诊断</span></button>
             </nav>
             <div class="settings-content workspace-panel">
@@ -673,29 +725,28 @@
                 <div class="settings-form">
                   <label><span>account_id</span><div class="field-row"><input id="settings-account-id" inputmode="numeric" placeholder="Steam 32 位数字 ID" autocomplete="off"><button id="settings-verify-account" class="command-button secondary" type="button">验证</button></div></label>
                   <label><span>SteamID64</span><input id="settings-steam-id64" value="--" readonly></label>
-                  <label><span>默认分析英雄</span><select><option>账号本人</option><option>上次选择</option></select></label>
                 </div>
-                <footer><button class="command-button" type="button"><i data-lucide="save"></i><span>保存更改</span></button></footer>
               </section>
               <section id="settings-dota" class="settings-panel" data-settings-content="dota">
                 <header><span class="panel-kicker">本地路径</span><h2>Dota 与 Replay</h2></header>
                 <div class="settings-form">
                   <label><span>Dota 安装目录</span><div class="field-row"><input id="settings-dota-path" data-settings-path="dota" value="D:\steam\steamapps\common\dota 2 beta" autocomplete="off" spellcheck="false"><button class="icon-button directory-picker" type="button" data-directory-picker="dota" data-directory-target="settings-dota-path" title="选择 Dota 安装目录" aria-label="选择 Dota 安装目录"><i data-lucide="folder-open"></i></button></div></label>
                   <label><span>Replay 目录</span><div class="field-row"><input id="settings-replay-path" data-settings-path="replay" value="D:\steam\steamapps\common\dota 2 beta\game\dota\replays" autocomplete="off" spellcheck="false"><button class="icon-button directory-picker" type="button" data-directory-picker="replay" data-directory-target="settings-replay-path" title="选择 Replay 目录" aria-label="选择 Replay 目录"><i data-lucide="folder-open"></i></button></div></label>
-                  <label class="toggle-row"><span><strong>自动扫描 Replay</strong><small>应用启动后检查新增文件</small></span><input type="checkbox" checked></label>
                 </div>
               </section>
               <section id="settings-parser" class="settings-panel" data-settings-content="parser">
                 <header><span class="panel-kicker">本地服务</span><h2>解析器</h2></header>
                 <div class="settings-form">
-                  <label><span>最大内存</span><div class="stepper"><button type="button">−</button><input value="2048 MB"><button type="button">＋</button></div></label>
+                  <label><span>最大内存</span><input id="settings-parser-memory" value="由运行中的 Parser 报告" readonly></label>
                   <label><span>临时目录</span><div class="field-row"><input id="settings-temp-path" data-settings-path="temp" placeholder="由桌面端自动管理" autocomplete="off" spellcheck="false"><button class="icon-button directory-picker" type="button" data-directory-picker="temp" data-directory-target="settings-temp-path" data-directory-create="true" title="选择临时目录" aria-label="选择临时目录"><i data-lucide="folder-open"></i></button></div></label>
-                  <label class="toggle-row"><span><strong>解析完成后压缩</strong><small>生成 gzip 分片分析包</small></span><input type="checkbox" checked></label>
+                  <label><span>分析包格式</span><input value="gzip 分片模块（固定启用）" readonly></label>
                 </div>
               </section>
-              <section id="settings-data" class="settings-panel" data-settings-content="data"><header><span class="panel-kicker">保留策略</span><h2>数据</h2></header><div class="settings-form"><label><span>原始 JSONL</span><select><option>分析完成后删除</option><option>保留 7 天</option><option>永久保留</option></select></label><label><span>Replay 文件</span><select><option>永久保留</option><option>保留 90 天</option></select></label><label class="toggle-row"><span><strong>自动清理临时文件</strong><small>仅删除可安全重建的中间文件</small></span><input type="checkbox" checked></label></div></section>
-              <section id="settings-display" class="settings-panel" data-settings-content="display"><header><span class="panel-kicker">界面</span><h2>显示</h2></header><div class="settings-form"><label><span>界面缩放</span><select><option>跟随系统</option><option>100%</option><option>125%</option></select></label><label><span>语言</span><select><option>简体中文</option></select></label><label><span>地图版本</span><select><option>跟随比赛 Patch</option><option>始终最新</option></select></label></div></section>
-              <section id="settings-diagnostics" class="settings-panel" data-settings-content="diagnostics"><header><span class="panel-kicker">环境状态</span><h2>诊断</h2></header><div class="diagnostics-list"><span><i data-lucide="circle-check"></i><strong>Java 21.0.11</strong><small>可用</small></span><span><i data-lucide="circle-check"></i><strong>OpenDota parser</strong><small>a03b9e5</small></span><span><i data-lucide="circle-check"></i><strong>Replay 目录</strong><small>可读写</small></span><span><i data-lucide="circle-check"></i><strong>本地端口 5600</strong><small>可用</small></span></div><footer><button class="command-button secondary" type="button"><i data-lucide="package-open"></i><span>导出诊断包</span></button></footer></section>
+              <section id="settings-diagnostics" class="settings-panel" data-settings-content="diagnostics">
+                <header><span class="panel-kicker">实时环境</span><h2>诊断</h2></header>
+                <div id="settings-diagnostics-list" class="diagnostics-list"></div>
+                <footer><button id="settings-export-diagnostics" class="command-button secondary" type="button"><i data-lucide="file-down"></i><span>导出诊断信息</span></button></footer>
+              </section>
             </div>
           </div>
         </section>
@@ -738,6 +789,30 @@
       <button id="match-dialog-cancel" class="command-button secondary" type="button">取消</button>
       <button id="match-dialog-reparse" class="command-button secondary hidden" type="button"><i data-lucide="rotate-cw"></i><span>重新解析</span></button>
       <button id="match-dialog-confirm" class="command-button" type="button"><i data-lucide="play"></i><span>开始解析</span></button>
+    </div>
+  </dialog>
+
+  <dialog id="match-subject-dialog" class="match-subject-dialog" aria-labelledby="match-subject-title">
+    <div class="match-dialog-header">
+      <span class="match-dialog-icon subject"><i data-lucide="user-round-search"></i></span>
+      <div><span class="panel-kicker">个人复盘归属</span><h2 id="match-subject-title">这场比赛要分析谁？</h2></div>
+      <button id="match-subject-close" class="icon-button quiet" type="button" title="关闭"><i data-lucide="x"></i></button>
+    </div>
+    <p id="match-subject-message" class="match-subject-message">当前 Steam ID 未能与录像阵容自动对应，请确认本场使用的英雄。</p>
+    <div class="match-subject-teams">
+      <section aria-labelledby="match-subject-radiant-label">
+        <header><span class="team-sigil radiant"></span><strong id="match-subject-radiant-label">天辉</strong><small>5 名玩家</small></header>
+        <div id="match-subject-radiant" class="match-subject-roster"></div>
+      </section>
+      <section aria-labelledby="match-subject-dire-label">
+        <header><span class="team-sigil dire"></span><strong id="match-subject-dire-label">夜魇</strong><small>5 名玩家</small></header>
+        <div id="match-subject-dire" class="match-subject-roster"></div>
+      </section>
+    </div>
+    <div class="match-dialog-actions">
+      <span id="match-subject-selection" class="match-subject-selection">尚未选择玩家</span>
+      <button id="match-subject-cancel" class="command-button secondary" type="button">取消</button>
+      <button id="match-subject-confirm" class="command-button" type="button" disabled><i data-lucide="circle-check"></i><span>确认玩家</span></button>
     </div>
   </dialog>
 

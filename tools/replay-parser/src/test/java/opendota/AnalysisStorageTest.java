@@ -31,25 +31,62 @@ class AnalysisStorageTest {
         Files.move(summaryPart, analysisDirectory.resolve("summary.json"));
 
         JsonObject modules = stored.getAsJsonObject("modules");
-        JsonObject snapshots = modules.getAsJsonObject("snapshots");
-        assertEquals(AnalysisStorage.SNAPSHOT_SCHEMA, snapshots.get("schema").getAsString());
-        assertEquals(2, snapshots.getAsJsonObject("by_slot").getAsJsonArray("0").size());
-        assertEquals(AnalysisStorage.SNAPSHOT_FIELDS.size(), snapshots.getAsJsonObject("by_slot")
-                .getAsJsonArray("0").get(0)
-                .getAsJsonArray().size());
-        assertEquals(2, snapshots.getAsJsonArray("omitted_repeated_fields").size());
+        assertFalse(modules.has("snapshots"));
+        assertFalse(modules.has("players"));
         assertFalse(modules.has("combat"));
         assertFalse(modules.has("farm"));
         assertEquals("exact", modules.getAsJsonObject("ability_metadata")
                 .get("match").getAsString());
         assertEquals("split-gzip-modules",
                 stored.getAsJsonObject("analysis_storage").get("layout").getAsString());
+        assertEquals("player-report/4.0", stored.getAsJsonObject("analysis_storage")
+                .getAsJsonObject("module_schemas").get("players").getAsString());
+        assertTrue(AnalysisSummary.isCurrent(stored));
 
         JsonElement combat = AnalysisStorage.readModule(analysisDirectory, stored, "combat");
         assertNotNull(combat);
         assertEquals(1, combat.getAsJsonObject().getAsJsonArray("fights").size());
+        JsonObject snapshots = AnalysisStorage.readModule(analysisDirectory, stored, "snapshots").getAsJsonObject();
+        assertEquals(AnalysisStorage.SNAPSHOT_SCHEMA, snapshots.get("schema").getAsString());
+        assertEquals(2, snapshots.getAsJsonObject("by_slot").getAsJsonArray("0").size());
+        assertEquals(AnalysisStorage.SNAPSHOT_FIELDS.size(), snapshots.getAsJsonObject("by_slot")
+                .getAsJsonArray("0").get(0)
+                .getAsJsonArray().size());
+        assertEquals(2, snapshots.getAsJsonArray("omitted_repeated_fields").size());
+        assertNotNull(AnalysisStorage.moduleFile(analysisDirectory, stored, "snapshots"));
+        JsonObject storedPlayers = AnalysisStorage.readModule(analysisDirectory, stored, "players")
+                .getAsJsonObject();
+        assertNotNull(storedPlayers);
+        assertEquals("player-report/4.0", storedPlayers.get("schema").getAsString());
+        JsonObject storedReport = storedPlayers.getAsJsonObject("by_slot")
+                .getAsJsonObject("0").getAsJsonObject("report");
+        assertEquals("player-report-score-audit/1.0", storedReport.getAsJsonObject("score_card")
+                .getAsJsonObject("audit").get("model").getAsString());
+        assertTrue(storedReport.getAsJsonObject("score_card").getAsJsonObject("audit")
+                .get("recomputation_valid").getAsBoolean());
         String moduleBase = stored.getAsJsonObject("analysis_storage").get("module_base").getAsString();
         assertTrue(Files.size(analysisDirectory.resolve(moduleBase).resolve("combat.json.gz")) > 0);
+    }
+
+    @Test
+    void stripsPreviouslyEmbeddedLazyModulesWhenReadingSplitSummary() throws Exception {
+        Path analysisDirectory = temporaryDirectory.resolve("existing-split");
+        Files.createDirectories(analysisDirectory);
+        JsonObject analysis = analysis();
+        Path summaryPart = analysisDirectory.resolve("summary.json.part");
+        JsonObject stored = AnalysisStorage.write(analysisDirectory, summaryPart, analysis);
+        JsonElement snapshots = AnalysisStorage.readModule(analysisDirectory, stored, "snapshots");
+        stored.getAsJsonObject("modules").add("snapshots", snapshots);
+        Files.writeString(analysisDirectory.resolve("summary.json"), stored.toString(), StandardCharsets.UTF_8);
+
+        JsonObject loaded = AnalysisStorage.readSummary(analysisDirectory);
+
+        assertFalse(loaded.getAsJsonObject("modules").has("snapshots"));
+        assertNotNull(AnalysisStorage.readModule(analysisDirectory, loaded, "snapshots"));
+        JsonObject persisted = com.google.gson.JsonParser.parseString(
+                Files.readString(analysisDirectory.resolve("summary.json"), StandardCharsets.UTF_8))
+                .getAsJsonObject();
+        assertFalse(persisted.getAsJsonObject("modules").has("snapshots"));
     }
 
     @Test
@@ -79,7 +116,7 @@ class AnalysisStorageTest {
         analysis.addProperty("raw_bytes", 1000);
 
         JsonObject modules = new JsonObject();
-        modules.addProperty("schema", "product-modules/2.7");
+        modules.addProperty("schema", ProductAnalysis.CURRENT_SCHEMA);
         modules.add("time_contract", new JsonObject());
         JsonObject snapshots = new JsonObject();
         JsonArray rows = new JsonArray();
@@ -91,7 +128,22 @@ class AnalysisStorageTest {
         modules.add("laning", new JsonObject());
         modules.add("objectives", new JsonObject());
         modules.add("map", new JsonObject());
-        modules.add("players", new JsonObject());
+        JsonObject players = new JsonObject();
+        players.addProperty("schema", PlayerReportAnalysis.SCHEMA);
+        JsonObject bySlot = new JsonObject();
+        JsonObject player = new JsonObject();
+        JsonObject report = new JsonObject();
+        report.addProperty("model", PlayerReportAnalysis.SCHEMA);
+        JsonObject scoreCard = new JsonObject();
+        JsonObject audit = new JsonObject();
+        audit.addProperty("model", PlayerReportScoringV4.AUDIT_MODEL);
+        audit.addProperty("recomputation_valid", true);
+        scoreCard.add("audit", audit);
+        report.add("score_card", scoreCard);
+        player.add("report", report);
+        bySlot.add("0", player);
+        players.add("by_slot", bySlot);
+        modules.add("players", players);
         modules.add("module_evidence", new JsonObject());
         modules.add("coordinate_system", new JsonObject());
         JsonObject abilityMetadata = new JsonObject();

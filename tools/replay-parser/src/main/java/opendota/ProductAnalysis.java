@@ -32,6 +32,7 @@ final class ProductAnalysis {
     private final MapCoordinateService coordinates;
     private final GoldReasonCatalog goldReasons;
     private final PatchAbilityMetadata abilityMetadata;
+    private final boolean negativeScoringEnabled;
     private final Map<String, Integer> heroSlots = new HashMap<>();
     private final Map<Integer, NavigableMap<Integer, Snapshot>> snapshots = new TreeMap<>();
     private final Map<Integer, Integer> actionCounts = new HashMap<>();
@@ -55,13 +56,18 @@ final class ProductAnalysis {
     private int eventId;
 
     ProductAnalysis() {
-        this("unknown");
+        this("unknown", true);
     }
 
     ProductAnalysis(String patchName) {
+        this(patchName, true);
+    }
+
+    ProductAnalysis(String patchName, boolean negativeScoringEnabled) {
         coordinates = new MapCoordinateService(patchName);
         goldReasons = new GoldReasonCatalog(patchName);
         abilityMetadata = PatchAbilityMetadata.load(patchName);
+        this.negativeScoringEnabled = negativeScoringEnabled;
     }
 
     void accept(JsonObject event) {
@@ -4358,33 +4364,20 @@ final class ProductAnalysis {
             int setupObserver = wardSetupCount(slot, "observer", start, end, position, wardRows);
             int setupSentry = wardSetupCount(slot, "sentry", start, end, position, wardRows);
             ResponsibilityGate responsibilityGate = buildResponsibilityGate(slot, start, end);
-            boolean spellJudgmentAllowed = responsibilityGate.status.equals("passed")
+            boolean spellJudgmentAllowed = negativeScoringEnabled
+                    && responsibilityGate.status.equals("passed")
                     && responsibilityGate.opportunitySeconds >= 2;
             boolean sentryCheckRequired = sentryCheckRequired(position);
             double damageShare = teamDamage == 0 ? 0 : damage / (double) teamDamage;
             double damageTakenShare = teamDamageTaken == 0 ? 0 : damageTaken / (double) teamDamageTaken;
             double conversionShare = damage == 0 ? 0 : damageToKills / (double) damage;
-            int score;
+            FightResponsibilityScore.Result scoreResult = FightResponsibilityScore.calculate(
+                    new FightResponsibilityScore.Input(
+                            playerPosition, damageShare, conversionShare, damageTakenShare,
+                            abilityCasts, itemUses, controlSeconds, healing,
+                            setupObserver, setupSentry, presencePct, arrivalDelay, playerDeaths));
+            int score = scoreResult.score();
             List<String> issues = new ArrayList<>();
-            score = switch (playerPosition) {
-                case 1 -> (int) Math.round(24 + Math.min(38, damageShare * 100)
-                        + Math.min(12, conversionShare * 14) + Math.min(10, abilityCasts * 2.5)
-                        + presencePct * 0.14 - playerDeaths * 7);
-                case 2 -> (int) Math.round(24 + Math.min(34, damageShare * 100)
-                        + Math.min(14, abilityCasts * 3) + Math.min(10, controlSeconds * 2)
-                        + Math.max(0, 10 - arrivalDelay * 2) + presencePct * 0.12 - playerDeaths * 6);
-                case 3 -> (int) Math.round(24 + Math.min(24, damageShare * 100)
-                        + Math.min(18, damageTakenShare * 100) + Math.min(18, controlSeconds * 3)
-                        + Math.min(8, abilityCasts * 2) + presencePct * 0.12 - playerDeaths * 4);
-                case 4 -> (int) Math.round(26 + Math.min(20, abilityCasts * 4)
-                        + Math.min(20, controlSeconds * 3) + Math.min(10, healing / 220.0)
-                        + Math.min(10, (setupObserver + setupSentry) * 5)
-                        + Math.min(8, itemUses * 2) + presencePct * 0.10 - playerDeaths * 5);
-                default -> (int) Math.round(26 + Math.min(18, abilityCasts * 4)
-                        + Math.min(18, controlSeconds * 3) + Math.min(16, healing / 180.0)
-                        + Math.min(12, (setupObserver + setupSentry) * 6)
-                        + Math.min(8, itemUses * 2) + presencePct * 0.10 - playerDeaths * 5);
-            };
             if (abilityCasts == 0 && spellJudgmentAllowed) {
                 issues.add(playerPosition <= 3 ? "no_spell_output" : "no_spell_cast");
             }
@@ -4419,12 +4412,20 @@ final class ProductAnalysis {
                 }
                 if (presencePct < 35 && arrivalDelay > 4) issues.add("late_or_absent");
             }
-            score = Math.max(0, Math.min(100, score));
             int evidenceCount = abilityCasts + itemUses + (int) Math.ceil(controlSeconds) + (damage > 0 ? 2 : 0)
                     + (healing > 0 ? 1 : 0);
             int confidence = responsibilityGate.status.equals("insufficient_evidence")
                     ? Math.min(62, 42 + evidenceCount * 2)
                     : Math.min(94, 58 + evidenceCount * 3 + (presencePct > 0 ? 8 : 0));
+            JsonObject responsibilityGateRow = responsibilityGate.toJson();
+            if (!negativeScoringEnabled) {
+                issues.clear();
+                confidence = Math.min(confidence, 50);
+                responsibilityGateRow.addProperty("status", "insufficient_evidence");
+                responsibilityGateRow.addProperty("reason", "patch_resolution_gate");
+                responsibilityGateRow.addProperty("negative_scoring_enabled", false);
+            }
+            String responsibilityStatus = stringValue(responsibilityGateRow, "status");
 
             JsonObject row = new JsonObject();
             row.addProperty("slot", slot);
@@ -4433,6 +4434,7 @@ final class ProductAnalysis {
             row.addProperty("position", playerPosition);
             row.addProperty("role_confidence", roleConfidence);
             row.addProperty("responsibility_model", "position-responsibility/1.0");
+            row.addProperty("score_model", "position-responsibility/1.1");
             row.addProperty("damage", damage);
             row.addProperty("damageTaken", damageTaken);
             row.addProperty("teamDamageShare", Math.round(damageShare * 1000) / 10.0);
@@ -4451,17 +4453,132 @@ final class ProductAnalysis {
             row.addProperty("setupSentries", setupSentry);
             row.addProperty("sentryCheckRequired", sentryCheckRequired);
             row.addProperty("responsibilityScore", score);
-            row.addProperty("status", responsibilityGate.status.equals("insufficient_evidence") || roleConfidence < 65
+            row.addProperty("status", responsibilityStatus.equals("insufficient_evidence") || roleConfidence < 65
                     ? "insufficient_evidence" : score >= 72 ? "ok" : score >= 48 ? "watch" : "issue");
             row.addProperty("confidence", confidence);
+            row.addProperty("negative_scoring_enabled", negativeScoringEnabled);
             JsonArray issueRows = new JsonArray();
             issues.forEach(issueRows::add);
             row.add("issues", issueRows);
-            row.add("responsibility_gate", responsibilityGate.toJson());
+            row.add("responsibility_gate", responsibilityGateRow);
+            row.add("score_components", scoreResult.toJson(
+                    !responsibilityStatus.equals("passed") || roleConfidence < 65));
+            row.add("dimension_evidence", buildContributionDimensionEvidence(
+                    slot, start, end, arrivalDelay, position,
+                    fightDamage, fightHeals, fightControls, fightUsages, wardRows));
             row.addProperty("evidence", "facts_plus_hard_opportunity_gate");
             rows.add(row);
         }
         return rows;
+    }
+
+    private JsonObject buildContributionDimensionEvidence(int slot, int start, int end,
+            int arrivalDelay, Position position, List<DamagePoint> fightDamage,
+            List<HealPoint> fightHeals, List<ControlPoint> fightControls,
+            List<ActorEvent> fightUsages, List<JsonObject> wardRows) {
+        List<JsonObject> damage = new ArrayList<>();
+        List<JsonObject> damageTaken = new ArrayList<>();
+        List<JsonObject> control = new ArrayList<>();
+        List<JsonObject> healing = new ArrayList<>();
+        List<JsonObject> abilityCasts = new ArrayList<>();
+        List<JsonObject> itemUses = new ArrayList<>();
+        List<JsonObject> visionSetup = new ArrayList<>();
+        List<JsonObject> arrival = new ArrayList<>();
+
+        for (DamagePoint point : fightDamage) {
+            String key = point.inflictor == null ? "attack" : point.inflictor;
+            if (Integer.valueOf(slot).equals(point.attackerSlot)) {
+                damage.add(compactEvidence(point.stamp, "damage", key, point.value));
+            }
+            if (Integer.valueOf(slot).equals(point.targetSlot)) {
+                damageTaken.add(compactEvidence(point.stamp, "damage_taken", key, point.value));
+            }
+        }
+        for (ControlPoint point : fightControls) {
+            if (!Integer.valueOf(slot).equals(point.attackerSlot)) continue;
+            String key = point.inflictor == null ? point.controlType : point.inflictor;
+            control.add(compactEvidence(point.stamp, "control", key,
+                    Math.round(point.duration * 10) / 10.0));
+        }
+        for (HealPoint point : fightHeals) {
+            if (!Integer.valueOf(slot).equals(point.attackerSlot)) continue;
+            healing.add(compactEvidence(point.stamp, "healing",
+                    point.inflictor == null ? "heal" : point.inflictor, point.value));
+        }
+        for (ActorEvent point : fightUsages) {
+            if (!Integer.valueOf(slot).equals(point.slot)) continue;
+            if (point.kind.equals("ability_use")) {
+                abilityCasts.add(compactEvidence(point.stamp, "ability_cast", point.key, point.value));
+            } else if (point.kind.equals("item_use")) {
+                itemUses.add(compactEvidence(point.stamp, "item_use", point.key, point.value));
+            }
+        }
+        for (JsonObject ward : wardRows) {
+            if (!Integer.valueOf(slot).equals(integerValue(ward, "playerSlot"))
+                    || intValue(ward, "placedAt", 0) < start - 90
+                    || intValue(ward, "placedAt", 0) > end
+                    || wardDistance(position, ward) > 16.0) {
+                continue;
+            }
+            JsonObject reference = new JsonObject();
+            Long timeMs = longValue(ward, "placedAtMs");
+            Long eventSequence = longValue(ward, "placedEventSeq");
+            if (timeMs != null) reference.addProperty("game_time_ms", timeMs);
+            if (eventSequence != null && eventSequence >= 0) {
+                reference.addProperty("event_seq", eventSequence);
+            }
+            reference.addProperty("kind", "vision_setup");
+            reference.addProperty("key", stringValue(ward, "type"));
+            reference.addProperty("value", 1);
+            visionSetup.add(reference);
+        }
+
+        JsonObject arrivalReference = new JsonObject();
+        arrivalReference.addProperty("game_time_ms", (start + Math.max(0, arrivalDelay)) * 1000L);
+        arrivalReference.addProperty("kind", "spatial_arrival_legacy");
+        arrivalReference.addProperty("key", "fight_arrival");
+        arrivalReference.addProperty("value", Math.max(0, arrivalDelay));
+        arrivalReference.addProperty("source", "contribution_arrival");
+        arrival.add(arrivalReference);
+
+        JsonObject result = new JsonObject();
+        addDimensionEvidence(result, "damage", damage);
+        addDimensionEvidence(result, "damage_taken", damageTaken);
+        addDimensionEvidence(result, "control", control);
+        addDimensionEvidence(result, "healing", healing);
+        addDimensionEvidence(result, "ability_casts", abilityCasts);
+        addDimensionEvidence(result, "item_uses", itemUses);
+        addDimensionEvidence(result, "vision_setup", visionSetup);
+        addDimensionEvidence(result, "arrival", arrival);
+        return result;
+    }
+
+    private static JsonObject compactEvidence(EventStamp stamp, String kind, String key, Number value) {
+        JsonObject row = new JsonObject();
+        row.addProperty("game_time_ms", stamp.gameTimeMs);
+        row.addProperty("event_seq", stamp.eventSequence);
+        row.addProperty("kind", kind);
+        row.addProperty("key", key == null ? kind : key);
+        row.addProperty("value", value);
+        return row;
+    }
+
+    private static void addDimensionEvidence(JsonObject target, String key, List<JsonObject> references) {
+        references.sort((left, right) -> {
+            int time = Long.compare(
+                    longValue(left, "game_time_ms") == null ? Long.MAX_VALUE : longValue(left, "game_time_ms"),
+                    longValue(right, "game_time_ms") == null ? Long.MAX_VALUE : longValue(right, "game_time_ms"));
+            if (time != 0) return time;
+            return Long.compare(
+                    longValue(left, "event_seq") == null ? Long.MAX_VALUE : longValue(left, "event_seq"),
+                    longValue(right, "event_seq") == null ? Long.MAX_VALUE : longValue(right, "event_seq"));
+        });
+        JsonArray rows = new JsonArray();
+        references.stream().limit(12).forEach(rows::add);
+        target.add(key, rows);
+        if (references.size() > 12) {
+            target.addProperty(key + "_total_count", references.size());
+        }
     }
 
     private ResponsibilityGate buildResponsibilityGate(int slot, int start, int end) {

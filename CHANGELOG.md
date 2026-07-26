@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.4.5 - 2026-07-25
+
+### Added
+
+- Persist a per-match analysis subject in `subject.json`, with account matching and manual player selection that survives restarts.
+- Validate the declared match ID against the Replay's internal `CDemoFileInfo` match ID and return structured mismatch details.
+- Resolve Patch provenance as confirmed, time-inferred, boundary-ambiguous, or unknown before building Patch-scoped analysis.
+- Add a two-team player chooser and a compact switch-player command in the match detail header.
+
+### Changed
+
+- Keep manually imported participant Replays fully usable without an OpenDota connection.
+- Disable Patch-dependent map, ability, and negative-scoring gates when Patch provenance is ambiguous or unknown.
+- Align PowerShell and Electron parser version checks with Parser API `1.6.0`.
+
+### Fixed
+
+- Never select the first Replay player when the configured Steam account is absent from the ten-player roster.
+- Preserve existing analysis and the user's source file when an imported Replay has the wrong filename match ID; only parser cache copies are removed.
+- Show whether the displayed Patch was confirmed or inferred instead of presenting an unqualified version label.
+
+## 0.4.4 - 2026-07-25
+
+### Added
+
+- Detect private 8500+ Immortal Draft histories and explain why public APIs return no matches.
+- Import participant-owned `.dem` and `.dem.bz2` files directly into the local parser.
+- Scan a user-selected Replay directory in the Windows client and parse a selected file.
+- Reconstruct private-match result, duration, players, account IDs, heroes, last hits and denies from Replay events.
+
+### Fixed
+
+- Preserve Replay Epilogue metadata during summary projection so private matches can select the account owner.
+- Invalidate an older decompressed DEM when a newer compressed Replay is imported.
+- Keep PowerShell and Electron parser version checks aligned with Parser API `1.5.3`.
+
 ## 0.4.2 - 2026-07-24
 
 ### Added

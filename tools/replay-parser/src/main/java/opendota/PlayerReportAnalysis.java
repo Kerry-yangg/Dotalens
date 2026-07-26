@@ -11,7 +11,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 final class PlayerReportAnalysis {
-    static final String SCHEMA = "player-report/3.0";
+    static final String SCHEMA = PlayerReportScoringV4.SCHEMA;
 
     private PlayerReportAnalysis() {
     }
@@ -123,8 +123,16 @@ final class PlayerReportAnalysis {
                     .sorted(Comparator.comparingInt(item -> item.score.score)).limit(2)
                     .forEach(item -> improvements.add(item.key));
             report.add("improvements", improvements);
+            JsonObject combatTiming = PlayerCombatTimingAnalysis.analyze(
+                    modules,
+                    slot,
+                    position,
+                    intValue(facts, "role_confidence", 0),
+                    duration);
+            report.add("combat_timing", combatTiming);
             PlayerReportNarrativeV3.enrich(modules, report, facts, slot, position, counterpart,
                     reportConfidence, overall, dimensionRows, phaseScores);
+            PlayerReportScoringV4.apply(report);
             facts.add("report", report);
         }
 

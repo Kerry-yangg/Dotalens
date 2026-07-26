@@ -15,6 +15,79 @@ import com.google.gson.JsonObject;
 
 class PlayerReportNarrativeV3Test {
     @Test
+    void replacesGenericCombatDutyCopyWithAConcreteRepeatedTimingPattern() {
+        JsonObject modules = combatTimingReportModules();
+
+        PlayerReportAnalysis.enrich(modules, null, 1800);
+
+        JsonObject report = modules.getAsJsonObject("players").getAsJsonObject("by_slot")
+                .getAsJsonObject("5").getAsJsonObject("report");
+        assertNotNull(report.getAsJsonObject("combat_timing"));
+        assertEquals("player-combat-timing/1.0",
+                report.getAsJsonObject("combat_timing").get("model").getAsString());
+
+        JsonObject insight = findInsight(report, "combat_timing", "improvement");
+        assertNotNull(insight);
+        assertEquals(2, insight.getAsJsonArray("occurrences").size());
+        assertTrue(insight.get("fact").getAsString().contains("分别晚于"));
+        assertTrue(insight.get("ordinary_eligible").getAsBoolean());
+        boolean hasCombatReference = false;
+        for (JsonElement reference : insight.getAsJsonArray("evidence_refs")) {
+            if ("combat:fight-timing-1:5".equals(reference.getAsString())) {
+                hasCombatReference = true;
+            }
+        }
+        assertTrue(hasCombatReference);
+
+        for (JsonElement element : report.getAsJsonArray("insights")) {
+            JsonObject candidate = element.getAsJsonObject();
+            assertFalse("combat_duty".equals(candidate.get("category").getAsString())
+                    && "improvement".equals(candidate.get("kind").getAsString())
+                    && candidate.get("title").getAsString().contains("职责完成不足"));
+        }
+    }
+
+    @Test
+    void keepsMajorLaneVerdictsConsistentAcrossReviewStoryAndBrief() {
+        JsonObject modules = new JsonObject();
+        JsonObject players = new JsonObject();
+        JsonObject bySlot = new JsonObject();
+        bySlot.add("0", playerFacts(0, 3, 69, 571, 17_563));
+        bySlot.add("5", playerFacts(5, 3, -69, 313, 7_797));
+        players.add("by_slot", bySlot);
+        modules.add("players", players);
+
+        JsonObject laning = new JsonObject();
+        JsonObject matchups = new JsonObject();
+        matchups.addProperty("0", 5);
+        matchups.addProperty("5", 0);
+        laning.add("matchup_slot_by_slot", matchups);
+        JsonObject reviews = new JsonObject();
+        reviews.add("0", coreLaneReview(0, 69, "major_advantage", 37, 1, 946));
+        reviews.add("5", coreLaneReview(5, -69, "major_disadvantage", -37, -1, -946));
+        laning.add("reviews_by_slot", reviews);
+        modules.add("laning", laning);
+
+        PlayerReportAnalysis.enrich(modules, null, 1883);
+
+        JsonObject winningReport = bySlot.getAsJsonObject("0").getAsJsonObject("report");
+        JsonObject losingReport = bySlot.getAsJsonObject("5").getAsJsonObject("report");
+        JsonObject winningStory = findStory(winningReport, "story:lane");
+        JsonObject losingStory = findStory(losingReport, "story:lane");
+
+        assertNotNull(winningStory);
+        assertNotNull(losingStory);
+        assertEquals("major_advantage", winningStory.get("verdict").getAsString());
+        assertEquals("major_disadvantage", losingStory.get("verdict").getAsString());
+        assertTrue(winningReport.getAsJsonObject("brief").get("verdict").getAsString().contains("大优势"));
+        assertTrue(losingReport.getAsJsonObject("brief").get("verdict").getAsString().contains("大劣势"));
+        assertNotNull(findInsight(winningReport, "lane_execution", "strength"));
+        assertNotNull(findInsight(losingReport, "lane_execution", "improvement"));
+        assertTrue(findDimension(winningReport, "lane_execution").get("score").getAsInt() > 50);
+        assertTrue(findDimension(losingReport, "lane_execution").get("score").getAsInt() < 50);
+    }
+
+    @Test
     void keepsSupportAdviceOnSupportResponsibilitiesEvenWhenFarmRouteExists() {
         JsonObject modules = new JsonObject();
         JsonObject players = new JsonObject();
@@ -56,7 +129,7 @@ class PlayerReportNarrativeV3Test {
 
         JsonObject report = bySlot.getAsJsonObject("0").getAsJsonObject("report");
         assertNotNull(report);
-        assertEquals("player-report/3.0", report.get("model").getAsString());
+        assertEquals("player-report/4.0", report.get("model").getAsString());
         assertEquals(10, report.getAsJsonArray("dimensions").size());
         JsonObject supportAdvice = findInsight(report, "lane_support_route", "improvement");
         assertNotNull(supportAdvice);
@@ -149,6 +222,56 @@ class PlayerReportNarrativeV3Test {
         assertEquals(linkedInsight.get("id").getAsString(), component.get("insight_id").getAsString());
         assertEquals(component.get("root_cause_id").getAsString(),
                 linkedInsight.get("root_cause_id").getAsString());
+        assertEquals("player-report-localization/1.0",
+                report.get("localization_model").getAsString());
+        JsonObject jump = linkedInsight.getAsJsonObject("jump_target");
+        assertEquals("combat", jump.get("module").getAsString());
+        assertEquals("fight", jump.get("entity_type").getAsString());
+        assertEquals("fight-passed", jump.get("entity_id").getAsString());
+        assertEquals(892, jump.get("range_start").getAsInt());
+        assertEquals(923, jump.get("range_end").getAsInt());
+        assertEquals("L3", jump.get("location_level").getAsString());
+        assertTrue(linkedInsight.get("ordinary_eligible").getAsBoolean());
+        JsonObject mapFocus = jump.getAsJsonObject("map_focus");
+        assertEquals(56.5, mapFocus.get("x").getAsDouble(), 0.001);
+        assertEquals(45.0, mapFocus.get("y").getAsDouble(), 0.001);
+        assertEquals("map_percent", mapFocus.get("coordinate_space").getAsString());
+    }
+
+    @Test
+    void keepsAggregateStrengthOutOfOrdinaryReport() {
+        JsonObject modules = new JsonObject();
+        JsonObject players = new JsonObject();
+        JsonObject bySlot = new JsonObject();
+        bySlot.add("0", playerFacts(0, 1, 80, 900, 30_000));
+        bySlot.add("5", playerFacts(5, 1, -80, 300, 9_000));
+        players.add("by_slot", bySlot);
+        modules.add("players", players);
+
+        PlayerReportAnalysis.enrich(modules, null, 1800);
+
+        JsonObject report = bySlot.getAsJsonObject("0").getAsJsonObject("report");
+        JsonObject aggregate = findInsightByIdPrefix(report, "insight:aggregate:");
+        assertNotNull(aggregate);
+        assertFalse(aggregate.get("ordinary_eligible").getAsBoolean());
+        assertEquals("L0",
+                aggregate.getAsJsonObject("jump_target").get("location_level").getAsString());
+    }
+
+    @Test
+    void downgradesOutOfBoundsMapPercentCoordinatesToRegionLocalization() {
+        JsonObject fight = fight("fight-bad-coordinate", "passed", 82, 88);
+        fight.addProperty("x", 180);
+
+        JsonObject jump = PlayerReportLocalization.forFight(fight, 0);
+
+        assertEquals("L2", jump.get("location_level").getAsString());
+        JsonObject mapFocus = jump.getAsJsonObject("map_focus");
+        assertFalse(mapFocus.has("coordinate_valid"));
+        assertFalse(mapFocus.has("x"));
+        assertFalse(mapFocus.has("y"));
+        assertEquals("roshan_pit", mapFocus.get("region").getAsString());
+        assertTrue(PlayerReportLocalization.ordinaryEligible(jump));
     }
 
     @Test
@@ -293,6 +416,149 @@ class PlayerReportNarrativeV3Test {
         return facts;
     }
 
+    private static JsonObject combatTimingReportModules() {
+        JsonObject modules = new JsonObject();
+        JsonObject players = new JsonObject();
+        JsonObject bySlot = new JsonObject();
+        bySlot.add("5", playerFacts(5, 4, 0, 460, 16_000));
+        players.add("by_slot", bySlot);
+        modules.add("players", players);
+
+        JsonObject snapshots = new JsonObject();
+        JsonArray fields = new JsonArray();
+        for (String field : new String[] {
+                "second", "x", "y", "region", "life_state", "move_speed"
+        }) {
+            fields.add(field);
+        }
+        snapshots.add("fields", fields);
+        JsonObject snapshotSlots = new JsonObject();
+        snapshotSlots.add("5", new JsonArray());
+        snapshotSlots.add("6", new JsonArray());
+        snapshotSlots.add("7", new JsonArray());
+        snapshots.add("by_slot", snapshotSlots);
+        modules.add("snapshots", snapshots);
+
+        JsonObject combat = new JsonObject();
+        JsonArray fights = new JsonArray();
+        fights.add(timingNarrativeFight("fight-timing-1", 100, "mid_lane", true));
+        fights.add(timingNarrativeFight("fight-timing-2", 200, "river", false));
+        combat.add("fights", fights);
+        modules.add("combat", combat);
+        addTimingSnapshotWindow(snapshotSlots, 100, 9);
+        addTimingSnapshotWindow(snapshotSlots, 200, 11);
+
+        JsonObject build = new JsonObject();
+        build.add("by_slot", new JsonObject());
+        modules.add("build", build);
+        return modules;
+    }
+
+    private static JsonObject timingNarrativeFight(String id, int contactTime,
+            String region, boolean adverse) {
+        JsonObject fight = new JsonObject();
+        fight.addProperty("id", id);
+        fight.addProperty("kind", "teamfight");
+        fight.addProperty("start", contactTime - 10);
+        fight.addProperty("review_start", contactTime - 10);
+        fight.addProperty("contact_start", contactTime);
+        fight.addProperty("contact_end", contactTime + 20);
+        fight.addProperty("end", contactTime + 20);
+        fight.addProperty("x", 50.0);
+        fight.addProperty("y", 50.0);
+        fight.addProperty("region", region);
+        fight.addProperty("coordinate_valid", true);
+        fight.addProperty("coordinate_space", "map_percent");
+        fight.addProperty("scatter_radius_pct", 4.0);
+
+        JsonObject classification = new JsonObject();
+        classification.addProperty("confidence", 90);
+        fight.add("classification", classification);
+        JsonObject importance = new JsonObject();
+        importance.addProperty("tier", "routine");
+        fight.add("importance", importance);
+
+        JsonArray participants = new JsonArray();
+        for (int slot : new int[] { 0, 1, 5, 6, 7 }) participants.add(slot);
+        fight.add("participants", participants);
+
+        JsonArray phases = new JsonArray();
+        JsonObject initiation = new JsonObject();
+        initiation.addProperty("kind", "initiation");
+        initiation.addProperty("start", contactTime);
+        initiation.addProperty("end", contactTime + 6);
+        initiation.addProperty("x", 50.0);
+        initiation.addProperty("y", 50.0);
+        initiation.addProperty("coordinate_valid", true);
+        phases.add(initiation);
+        fight.add("phases", phases);
+
+        JsonArray events = new JsonArray();
+        events.add(timingNarrativeEvent("ability_use", contactTime, 6, 0, "test_initiation"));
+        events.add(timingNarrativeEvent("control", contactTime, 7, 1, "test_stun"));
+        events.add(timingNarrativeEvent("ability_use", contactTime + 12, 5, 0, "test_follow_up"));
+        if (adverse) {
+            events.add(timingNarrativeEvent("hero_death", contactTime + 4, 0, 6, "enemy_kill"));
+        }
+        fight.add("events", events);
+
+        JsonObject contribution = new JsonObject();
+        contribution.addProperty("slot", 5);
+        contribution.addProperty("role_confidence", 94);
+        contribution.addProperty("responsibilityScore", 26);
+        contribution.addProperty("presencePct", 0);
+        contribution.addProperty("arrivalDelay", 0);
+        contribution.addProperty("damage", 300);
+        contribution.addProperty("controlSeconds", 0);
+        contribution.addProperty("abilityCasts", 0);
+        contribution.addProperty("itemUses", 0);
+        contribution.addProperty("confidence", 90);
+        contribution.addProperty("status", "issue");
+        JsonObject gate = new JsonObject();
+        gate.addProperty("status", "passed");
+        contribution.add("responsibility_gate", gate);
+        JsonArray contributions = new JsonArray();
+        contributions.add(contribution);
+        fight.add("contributions", contributions);
+        return fight;
+    }
+
+    private static void addTimingSnapshotWindow(JsonObject slots, int contactTime, int arrivalDelta) {
+        JsonArray playerRows = slots.getAsJsonArray("5");
+        JsonArray allySixRows = slots.getAsJsonArray("6");
+        JsonArray allySevenRows = slots.getAsJsonArray("7");
+        for (int second = contactTime - 10; second <= contactTime + 25; second++) {
+            boolean arrived = second >= contactTime + arrivalDelta;
+            playerRows.add(timingNarrativeSnapshot(second, arrived ? 51.0 : 60.0,
+                    arrived ? 50.0 : 60.0, 0, 320));
+            allySixRows.add(timingNarrativeSnapshot(second, 49.5, 50.0, 0, 315));
+            allySevenRows.add(timingNarrativeSnapshot(second, 51.0, 49.5, 0, 310));
+        }
+    }
+
+    private static JsonArray timingNarrativeSnapshot(int second, double x, double y,
+            int lifeState, int moveSpeed) {
+        JsonArray row = new JsonArray();
+        row.add(second);
+        row.add(x);
+        row.add(y);
+        row.add(4);
+        row.add(lifeState);
+        row.add(moveSpeed);
+        return row;
+    }
+
+    private static JsonObject timingNarrativeEvent(String kind, int time,
+            int actorSlot, int targetSlot, String key) {
+        JsonObject event = new JsonObject();
+        event.addProperty("kind", kind);
+        event.addProperty("time", time);
+        event.addProperty("actor_slot", actorSlot);
+        event.addProperty("target_slot", targetSlot);
+        event.addProperty("key", key);
+        return event;
+    }
+
     private static JsonObject phase(String name, int start, int end, int networthGain,
             int kills, int deaths, int assists) {
         JsonObject phase = new JsonObject();
@@ -345,14 +611,49 @@ class PlayerReportNarrativeV3Test {
         return review;
     }
 
+    private static JsonObject coreLaneReview(int slot, int score, String verdict,
+            int lastHitsDiff, int levelDiff, int xpDiff) {
+        JsonObject review = new JsonObject();
+        review.addProperty("slot", slot);
+        review.addProperty("position", 3);
+        review.addProperty("lane", "top");
+        review.addProperty("score", score);
+        review.addProperty("verdict", verdict);
+        review.addProperty("confidence", 88);
+
+        JsonObject checkpoint = new JsonObject();
+        checkpoint.addProperty("time", 600);
+        checkpoint.addProperty("score", score);
+        checkpoint.addProperty("verdict", verdict);
+        checkpoint.addProperty("last_hits_diff", lastHitsDiff);
+        checkpoint.addProperty("level_diff", levelDiff);
+        checkpoint.addProperty("core_xp_diff", xpDiff);
+        checkpoint.addProperty("pair_xp_diff", xpDiff);
+        checkpoint.addProperty("support_xp_diff", 0);
+        checkpoint.addProperty("networth_diff", xpDiff);
+        JsonArray checkpoints = new JsonArray();
+        checkpoints.add(checkpoint);
+        review.add("checkpoints", checkpoints);
+        return review;
+    }
+
     private static JsonObject fight(String id, String gateStatus, int score, int confidence) {
         JsonObject fight = new JsonObject();
         fight.addProperty("id", id);
         fight.addProperty("kind", "teamfight");
         fight.addProperty("start", 900);
         fight.addProperty("end", 920);
+        fight.addProperty("review_start", 892);
         fight.addProperty("contact_start", 902);
         fight.addProperty("contact_end", 918);
+        fight.addProperty("region", "roshan_pit");
+        fight.addProperty("coordinate_valid", true);
+        fight.addProperty("x", 56.5);
+        fight.addProperty("y", 45.0);
+        fight.addProperty("coordinate_space", "map_percent");
+        fight.addProperty("coordinate_source", "test_fixture");
+        fight.addProperty("coordinate_version", "map-coordinate/test");
+        fight.addProperty("location_confidence", 91);
         JsonObject contribution = new JsonObject();
         contribution.addProperty("slot", 0);
         contribution.addProperty("teamDamageShare", 28);
@@ -407,6 +708,14 @@ class PlayerReportNarrativeV3Test {
         return null;
     }
 
+    private static JsonObject findStory(JsonObject report, String id) {
+        for (JsonElement element : report.getAsJsonArray("story_nodes")) {
+            JsonObject story = element.getAsJsonObject();
+            if (id.equals(story.get("id").getAsString())) return story;
+        }
+        return null;
+    }
+
     private static JsonObject findMetric(JsonObject dimension, String key) {
         for (JsonElement element : dimension.getAsJsonArray("evidence")) {
             JsonObject metric = element.getAsJsonObject();
@@ -422,6 +731,14 @@ class PlayerReportNarrativeV3Test {
                     && kind.equals(insight.get("kind").getAsString())) {
                 return insight;
             }
+        }
+        return null;
+    }
+
+    private static JsonObject findInsightByIdPrefix(JsonObject report, String prefix) {
+        for (JsonElement element : report.getAsJsonArray("insights")) {
+            JsonObject insight = element.getAsJsonObject();
+            if (insight.get("id").getAsString().startsWith(prefix)) return insight;
         }
         return null;
     }

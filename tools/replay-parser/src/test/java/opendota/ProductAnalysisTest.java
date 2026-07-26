@@ -242,6 +242,22 @@ class ProductAnalysisTest {
         assertEquals(1, support.get("setupSentries").getAsInt());
         assertEquals("position-responsibility/1.0", support.get("responsibility_model").getAsString());
         assertTrue(support.get("role").getAsString().startsWith("position_"));
+        assertNotNull(support.get("score_model"));
+        assertNotNull(support.get("score_components"));
+        assertNotNull(support.get("dimension_evidence"));
+        assertEquals("position-responsibility/1.1", support.get("score_model").getAsString());
+        assertTrue(support.getAsJsonObject("score_components").has("base"));
+        assertTrue(support.getAsJsonObject("score_components").has("control"));
+        assertEquals(
+                support.get("responsibilityScore").getAsInt(),
+                Math.round(sumComponentPoints(support.getAsJsonObject("score_components"))));
+
+        JsonObject evidence = support.getAsJsonObject("dimension_evidence");
+        assertTrue(evidence.getAsJsonArray("damage").size() >= 1);
+        assertTrue(evidence.getAsJsonArray("control").size() >= 1);
+        assertTrue(evidence.getAsJsonArray("healing").size() >= 1);
+        assertTrue(evidence.getAsJsonArray("vision_setup").size() >= 1);
+        assertTrue(evidence.getAsJsonArray("damage").get(0).getAsJsonObject().has("game_time_ms"));
     }
 
     @Test
@@ -1216,6 +1232,20 @@ class ProductAnalysisTest {
         assertFalse(contribution.getAsJsonArray("issues").toString().contains("no_spell_output"));
     }
 
+    @Test
+    void suppressesResponsibilityJudgmentWhenPatchGateDisablesNegativeScoring() {
+        ProductAnalysis analysis = responsibilityFight(0.0, 100, 800, "7.41d", false);
+        JsonObject contribution = contributionForSlot(analysis.build(610), 0);
+
+        assertEquals("insufficient_evidence", contribution.getAsJsonObject("responsibility_gate")
+                .get("status").getAsString());
+        assertEquals("patch_resolution_gate", contribution.getAsJsonObject("responsibility_gate")
+                .get("reason").getAsString());
+        assertEquals("insufficient_evidence", contribution.get("status").getAsString());
+        assertFalse(contribution.get("negative_scoring_enabled").getAsBoolean());
+        assertTrue(contribution.getAsJsonArray("issues").isEmpty());
+    }
+
     private static JsonObject json(String value) {
         return JsonParser.parseString(value).getAsJsonObject();
     }
@@ -1245,7 +1275,12 @@ class ProductAnalysisTest {
 
     private static ProductAnalysis responsibilityFight(double cooldown, int mana, int castRange,
             String patch) {
-        ProductAnalysis analysis = new ProductAnalysis(patch);
+        return responsibilityFight(cooldown, mana, castRange, patch, true);
+    }
+
+    private static ProductAnalysis responsibilityFight(double cooldown, int mana, int castRange,
+            String patch, boolean negativeScoringEnabled) {
+        ProductAnalysis analysis = new ProductAnalysis(patch, negativeScoringEnabled);
         for (int time = 600; time <= 603; time++) {
             analysis.accept(json(String.format(java.util.Locale.ROOT,
                     "{\"type\":\"interval\",\"slot\":0,\"time\":%d,\"unit\":\"CDOTA_Unit_Hero_Axe\",\"x\":128,\"y\":128,\"life_state\":0,\"mana\":%d,\"networth\":7000,\"hero_abilities\":[{\"id\":\"axe_battle_hunger\",\"ability_level\":1,\"cooldown\":%.1f,\"cooldown_length\":16,\"mana_cost\":80,\"cast_range\":%d}]} ",
@@ -1274,6 +1309,14 @@ class ProductAnalysisTest {
             if (contribution.get("slot").getAsInt() == slot) return contribution;
         }
         throw new AssertionError("contribution missing for slot " + slot);
+    }
+
+    private static double sumComponentPoints(JsonObject components) {
+        double total = 0;
+        for (String key : components.keySet()) {
+            total += components.getAsJsonObject(key).get("points").getAsDouble();
+        }
+        return Math.max(0, Math.min(100, total));
     }
 
     private static ProductAnalysis towerFight(boolean towerHit) {

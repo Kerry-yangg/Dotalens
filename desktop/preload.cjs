@@ -9,4 +9,16 @@ contextBridge.exposeInMainWorld("dotaLensDesktop", Object.freeze({
       allowCreate: options.allowCreate === true,
     });
   },
+  scanReplayDirectory(directory) {
+    return ipcRenderer.invoke("dota-lens:scan-replay-directory", {
+      directory: typeof directory === "string" ? directory : "",
+    });
+  },
+  importReplayPath(options = {}) {
+    return ipcRenderer.invoke("dota-lens:import-replay-path", {
+      filePath: typeof options.filePath === "string" ? options.filePath : "",
+      matchId: typeof options.matchId === "string" ? options.matchId : "",
+      accountId: typeof options.accountId === "string" ? options.accountId : "",
+    });
+  },
 }));

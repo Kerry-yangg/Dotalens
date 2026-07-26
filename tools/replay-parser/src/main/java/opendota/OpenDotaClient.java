@@ -47,6 +47,18 @@ final class OpenDotaClient {
         return requestJson("GET", recentMatchesPath(accountId));
     }
 
+    JsonObject getPlayerProfile(long accountId) throws IOException, InterruptedException {
+        JsonElement result = requestJson("GET", playerProfilePath(accountId));
+        if (!result.isJsonObject()) {
+            throw new IOException("OpenDota player response is not an object");
+        }
+        return result.getAsJsonObject();
+    }
+
+    static String playerProfilePath(long accountId) {
+        return "/players/" + accountId;
+    }
+
     static String recentMatchesPath(long accountId) {
         StringBuilder path = new StringBuilder("/players/")
                 .append(accountId)

@@ -21,7 +21,9 @@ final class AnalysisSummary {
     static final String CURRENT_SCHEMA = "dota-lens/1.0";
     private static final String[] MATCH_FIELDS = {
             "match_id", "start_time", "duration", "game_mode", "lobby_type", "radiant_win",
-            "radiant_score", "dire_score", "cluster", "version", "patch", "patch_name", "region", "replay_url"
+            "radiant_score", "dire_score", "cluster", "version", "patch", "patch_name", "region",
+            "replay_url", "metadata_source", "replay_match_id", "replay_end_time",
+            "patch_resolution"
     };
     private static final String[] PLAYER_FIELDS = {
             "account_id", "player_slot", "hero_id", "personaname", "name", "kills", "deaths",
@@ -35,7 +37,7 @@ final class AnalysisSummary {
             "type", "slot", "time", "demo_tick", "raw_game_time_ms", "game_time_ms",
             "event_seq", "visible_radiant", "visible_dire");
     private static final Set<String> FULL_ANALYSIS_TYPES = Set.of(
-            "interval", "unit_enter", "unit_state", "unit_left", "visibility",
+            "interval", "epilogue", "unit_enter", "unit_state", "unit_left", "visibility",
             "DOTA_COMBATLOG_PURCHASE", "DOTA_ABILITY_LEVEL",
             "DOTA_COMBATLOG_ITEM", "DOTA_COMBATLOG_ABILITY",
             "DOTA_COMBATLOG_GOLD", "DOTA_COMBATLOG_DEATH", "DOTA_COMBATLOG_DAMAGE",
@@ -49,7 +51,23 @@ final class AnalysisSummary {
 
     static JsonObject build(Path rawJsonl, JsonObject matchDetail, long accountId) throws IOException {
         ReplayTimeNormalizer timeNormalizer = ReplayTimeNormalizer.scan(rawJsonl);
-        ProductAnalysis productAnalysis = new ProductAnalysis(stringValue(matchDetail, "patch_name", "unknown"));
+        Long suppliedMatchId = longValue(matchDetail, "match_id");
+        JsonObject resolvedMatchDetail = ReplayMatchMetadata.enrich(
+                rawJsonl, matchDetail, suppliedMatchId == null ? 0 : suppliedMatchId);
+        Long replayMatchId = longValue(resolvedMatchDetail, "replay_match_id");
+        if (suppliedMatchId != null && suppliedMatchId > 0 && replayMatchId != null
+                && replayMatchId > 0 && !suppliedMatchId.equals(replayMatchId)) {
+            throw new ReplayIdentityException(suppliedMatchId, replayMatchId);
+        }
+        JsonObject patchResolution = DotaPatchResolver.resolve(resolvedMatchDetail);
+        resolvedMatchDetail.add("patch_resolution", patchResolution);
+        JsonObject patchGates = patchResolution.getAsJsonObject("gates");
+        boolean negativeScoringEnabled = patchGates != null
+                && patchGates.has("negative_scoring")
+                && patchGates.get("negative_scoring").getAsBoolean();
+        ProductAnalysis productAnalysis = new ProductAnalysis(
+                stringValue(resolvedMatchDetail, "patch_name", "unknown"),
+                negativeScoringEnabled);
         Map<String, Long> eventCounts = new LinkedHashMap<>();
         Map<String, Long> clockCoverage = new LinkedHashMap<>();
         clockCoverage.put("demo_tick", 0L);
@@ -150,7 +168,7 @@ final class AnalysisSummary {
             }
         }
 
-        Integer detailDuration = integerValue(matchDetail, "duration");
+        Integer detailDuration = integerValue(resolvedMatchDetail, "duration");
         int matchDuration = detailDuration == null ? (gameEnd == null ? 1 : gameEnd) : detailDuration;
         boolean sequenceContiguous = firstSequence != null
                 && lastSequence != null
@@ -209,7 +227,7 @@ final class AnalysisSummary {
         summary.add("integrity", buildIntegrity(invalidLines, epilogueCount, intervalSlots.size(),
                 timelineComplete, sequenceContiguous, invalidCoordinates));
 
-        JsonObject compactMatch = compactMatch(matchDetail, accountId);
+        JsonObject compactMatch = compactMatch(resolvedMatchDetail, accountId);
         PlayerReportAnalysis.enrich(modules, compactMatch, matchDuration);
         summary.add("match", compactMatch);
         summary.add("coverage", buildCoverage(eventCounts, visibilityAnchors, gameStart, gameEnd,
@@ -234,12 +252,28 @@ final class AnalysisSummary {
         JsonObject modules = summary.getAsJsonObject("modules");
         JsonObject players = modules.has("players") && modules.get("players").isJsonObject()
                 ? modules.getAsJsonObject("players") : null;
+        JsonObject storage = summary.has("analysis_storage") && summary.get("analysis_storage").isJsonObject()
+                ? summary.getAsJsonObject("analysis_storage") : null;
+        JsonObject moduleSchemas = storage != null && storage.has("module_schemas")
+                && storage.get("module_schemas").isJsonObject()
+                        ? storage.getAsJsonObject("module_schemas") : null;
+        String storedPlayerSchema = moduleSchemas != null && moduleSchemas.has("players")
+                ? moduleSchemas.get("players").getAsString() : null;
+        boolean splitPlayersAvailable = storage != null
+                && AnalysisStorage.STORAGE_SCHEMA.equals(stringValue(storage, "schema", ""))
+                && storage.has("available_modules")
+                && storage.get("available_modules").isJsonArray()
+                && storage.getAsJsonArray("available_modules").contains(
+                        new com.google.gson.JsonPrimitive("players"));
+        boolean playersCurrent = players != null
+                ? players.has("schema") && PlayerReportAnalysis.SCHEMA.equals(players.get("schema").getAsString())
+                : storedPlayerSchema != null
+                        ? PlayerReportAnalysis.SCHEMA.equals(storedPlayerSchema)
+                        : splitPlayersAvailable;
         return modules.has("laning")
                 && modules.has("schema")
                 && ProductAnalysis.CURRENT_SCHEMA.equals(modules.get("schema").getAsString())
-                && players != null
-                && players.has("schema")
-                && PlayerReportAnalysis.SCHEMA.equals(players.get("schema").getAsString());
+                && playersCurrent;
     }
 
     private static JsonObject compactMatch(JsonObject source, long accountId) {

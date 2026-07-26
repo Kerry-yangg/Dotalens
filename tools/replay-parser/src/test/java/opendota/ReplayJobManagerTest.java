@@ -2,17 +2,25 @@ package opendota;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.Test;
@@ -25,6 +33,38 @@ import com.sun.net.httpserver.HttpServer;
 class ReplayJobManagerTest {
     @TempDir
     Path temporaryDirectory;
+
+    @Test
+    void importsParticipantReplayIntoTheLocalCache() throws Exception {
+        byte[] replay = "PBDEMS2-local-participant-replay".getBytes(StandardCharsets.US_ASCII);
+
+        try (ReplayJobManager manager = new ReplayJobManager(temporaryDirectory,
+                new OpenDotaClient("http://127.0.0.1:1", ""))) {
+            Path imported = manager.importReplay(9973575401L, new ByteArrayInputStream(replay), false);
+
+            assertEquals("9973575401.dem", imported.getFileName().toString());
+            assertTrue(manager.hasReplayCache(9973575401L));
+            assertEquals(replay.length, Files.size(imported));
+        }
+    }
+
+    @Test
+    void compressedImportInvalidatesAnOlderDecompressedReplay() throws Exception {
+        Path replayDirectory = temporaryDirectory.resolve("replays");
+        Files.createDirectories(replayDirectory);
+        Files.writeString(replayDirectory.resolve("9973575402.dem"), "PBDEMS2-old",
+                StandardCharsets.US_ASCII);
+        byte[] compressed = "BZh-new-participant-replay".getBytes(StandardCharsets.US_ASCII);
+
+        try (ReplayJobManager manager = new ReplayJobManager(temporaryDirectory,
+                new OpenDotaClient("http://127.0.0.1:1", ""))) {
+            Path imported = manager.importReplay(9973575402L,
+                    new ByteArrayInputStream(compressed), true);
+
+            assertEquals("9973575402.dem.bz2", imported.getFileName().toString());
+            assertFalse(Files.exists(replayDirectory.resolve("9973575402.dem")));
+        }
+    }
 
     @Test
     void detectsRecoverableReplayFilesButIgnoresPartialDownloads() throws Exception {
@@ -60,6 +100,91 @@ class ReplayJobManagerTest {
         assertFalse(Files.exists(replayDirectory.resolve("202.dem")));
         assertTrue(Files.isRegularFile(replayDirectory.resolve("203.dem")));
         assertTrue(Files.isRegularFile(replayDirectory.resolve("202.dem.bz2")));
+    }
+
+    @Test
+    void incompleteSummaryDoesNotChangeAnExistingManualSubject() throws Exception {
+        JsonObject originalMatch = new JsonObject();
+        originalMatch.add("players", com.google.gson.JsonParser.parseString("""
+                [
+                  {"player_slot":0,"account_id":111,"hero_id":1},
+                  {"player_slot":128,"account_id":222,"hero_id":2}
+                ]
+                """).getAsJsonArray());
+        MatchSubjectStore store = new MatchSubjectStore(temporaryDirectory);
+        store.select(600L, originalMatch, 128);
+
+        JsonObject incomplete = new JsonObject();
+        incomplete.addProperty("complete", false);
+        incomplete.addProperty("account_id", 222);
+        JsonObject changedMatch = new JsonObject();
+        changedMatch.add("players", com.google.gson.JsonParser.parseString("""
+                [
+                  {"player_slot":0,"account_id":111,"hero_id":1},
+                  {"player_slot":128,"account_id":333,"hero_id":3}
+                ]
+                """).getAsJsonArray());
+        incomplete.add("match", changedMatch);
+
+        try (ReplayJobManager manager = new ReplayJobManager(temporaryDirectory,
+                new OpenDotaClient("http://127.0.0.1:1", ""))) {
+            assertThrows(IOException.class,
+                    () -> manager.applySubjectToCompletedSummary(600L, incomplete));
+        }
+
+        JsonObject persisted = new MatchSubjectStore(temporaryDirectory).read(600L);
+        assertEquals("manual_selected", persisted.get("status").getAsString());
+        assertEquals(128, persisted.get("selected_player_slot").getAsInt());
+        assertEquals(222, persisted.get("selected_account_id").getAsLong());
+    }
+
+    @Test
+    void concurrentForcedStartsReuseTheSameActiveMatchJob() throws Exception {
+        CountDownLatch upstreamStarted = new CountDownLatch(1);
+        CountDownLatch releaseUpstream = new CountDownLatch(1);
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/matches/999", exchange -> {
+            upstreamStarted.countDown();
+            try {
+                releaseUpstream.await(10, TimeUnit.SECONDS);
+                byte[] body = "{\"match_id\":999}".getBytes(StandardCharsets.UTF_8);
+                exchange.sendResponseHeaders(200, body.length);
+                try (OutputStream output = exchange.getResponseBody()) {
+                    output.write(body);
+                }
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        server.start();
+
+        ExecutorService callers = Executors.newFixedThreadPool(12);
+        CountDownLatch callersReady = new CountDownLatch(12);
+        CountDownLatch startTogether = new CountDownLatch(1);
+        try (ReplayJobManager manager = new ReplayJobManager(temporaryDirectory,
+                new OpenDotaClient("http://127.0.0.1:" + server.getAddress().getPort(), ""))) {
+            List<Future<JsonObject>> futures = new ArrayList<>();
+            for (int index = 0; index < 12; index++) {
+                futures.add(callers.submit(() -> {
+                    callersReady.countDown();
+                    startTogether.await(3, TimeUnit.SECONDS);
+                    return manager.start(999L, 123456789L, true);
+                }));
+            }
+            assertTrue(callersReady.await(3, TimeUnit.SECONDS));
+            startTogether.countDown();
+            Set<String> ids = new HashSet<>();
+            for (Future<JsonObject> future : futures) {
+                ids.add(future.get(3, TimeUnit.SECONDS).get("id").getAsString());
+            }
+
+            assertEquals(1, ids.size());
+            assertTrue(upstreamStarted.await(3, TimeUnit.SECONDS));
+        } finally {
+            releaseUpstream.countDown();
+            callers.shutdownNow();
+            server.stop(0);
+        }
     }
 
     @Test
@@ -129,5 +254,108 @@ class ReplayJobManagerTest {
             assertEquals("dota-lens/0.8", analysis.get("schema").getAsString());
             assertFalse(Files.exists(analysisDirectory.resolve("summary.json.upgrade")));
         }
+    }
+
+    @Test
+    void overlaysAnAccountMatchedSubjectWhenReadingLegacyAnalysis() throws Exception {
+        Path analysisDirectory = temporaryDirectory.resolve("analyses").resolve("457");
+        Files.createDirectories(analysisDirectory);
+        Files.writeString(analysisDirectory.resolve("summary.json"), """
+                {
+                  "schema":"dota-lens/0.8",
+                  "account_id":222,
+                  "match":{
+                    "match_id":457,
+                    "players":[
+                      {"player_slot":0,"account_id":111,"hero_id":1},
+                      {"player_slot":128,"account_id":222,"hero_id":2}
+                    ]
+                  },
+                  "modules":{"schema":"product-modules/2.4"}
+                }
+                """, StandardCharsets.UTF_8);
+
+        try (ReplayJobManager manager = new ReplayJobManager(temporaryDirectory,
+                new OpenDotaClient("http://127.0.0.1:1", ""))) {
+            JsonObject analysis = manager.readAnalysis(457L);
+            JsonObject match = analysis.getAsJsonObject("match");
+            JsonObject subject = match.getAsJsonObject("subject");
+
+            assertEquals("matched", subject.get("status").getAsString());
+            assertEquals(128, subject.get("selected_player_slot").getAsInt());
+            assertEquals(128, match.get("selected_player_slot").getAsInt());
+        }
+    }
+
+    @Test
+    void persistsManualSubjectSelectionWithoutRewritingTheAnalysis() throws Exception {
+        Path analysisDirectory = temporaryDirectory.resolve("analyses").resolve("458");
+        Files.createDirectories(analysisDirectory);
+        Path summary = analysisDirectory.resolve("summary.json");
+        Files.writeString(summary, """
+                {
+                  "schema":"dota-lens/0.8",
+                  "account_id":999,
+                  "match":{
+                    "match_id":458,
+                    "players":[
+                      {"player_slot":0,"account_id":111,"hero_id":1},
+                      {"player_slot":128,"account_id":222,"hero_id":2}
+                    ]
+                  },
+                  "modules":{"schema":"product-modules/2.4"}
+                }
+                """, StandardCharsets.UTF_8);
+        String originalSummary = Files.readString(summary, StandardCharsets.UTF_8);
+
+        try (ReplayJobManager manager = new ReplayJobManager(temporaryDirectory,
+                new OpenDotaClient("http://127.0.0.1:1", ""))) {
+            JsonObject unresolved = manager.readAnalysis(458L);
+            assertEquals("manual_required", unresolved.getAsJsonObject("match")
+                    .getAsJsonObject("subject").get("status").getAsString());
+
+            JsonObject selected = manager.selectSubject(458L, 128);
+            assertEquals("manual_selected", selected.get("status").getAsString());
+            assertEquals(originalSummary, Files.readString(summary, StandardCharsets.UTF_8));
+        }
+
+        try (ReplayJobManager restarted = new ReplayJobManager(temporaryDirectory,
+                new OpenDotaClient("http://127.0.0.1:1", ""))) {
+            JsonObject analysis = restarted.readAnalysis(458L);
+            JsonObject match = analysis.getAsJsonObject("match");
+            assertEquals(128, match.get("selected_player_slot").getAsInt());
+            assertEquals("manual_selected",
+                    match.getAsJsonObject("subject").get("status").getAsString());
+        }
+    }
+
+    @Test
+    void mapsReplayIdentityMismatchToStructuredErrorContext() {
+        ReplayIdentityException error = new ReplayIdentityException(9001L, 9002L);
+
+        assertEquals("replay_match_id_mismatch", ReplayJobManager.errorCode(error));
+        JsonObject context = ReplayJobManager.errorContext(error);
+        assertEquals(9001L, context.get("declared_match_id").getAsLong());
+        assertEquals(9002L, context.get("internal_match_id").getAsLong());
+    }
+
+    @Test
+    void removesOnlyDeclaredParserReplayCacheCopiesAfterIdentityMismatch() throws Exception {
+        Path replayDirectory = temporaryDirectory.resolve("replays");
+        Path userDirectory = temporaryDirectory.resolve("user-files");
+        Files.createDirectories(replayDirectory);
+        Files.createDirectories(userDirectory);
+        Files.writeString(replayDirectory.resolve("9001.dem"), "PBDEMS2-wrong");
+        Files.writeString(replayDirectory.resolve("9001.dem.bz2"), "BZh-wrong");
+        Files.writeString(replayDirectory.resolve("9002.dem"), "PBDEMS2-other");
+        Path original = userDirectory.resolve("original.dem");
+        Files.writeString(original, "PBDEMS2-user-source");
+
+        ReplayJobManager.cleanupReplayIdentityMismatch(temporaryDirectory, 9001L);
+
+        assertFalse(Files.exists(replayDirectory.resolve("9001.dem")));
+        assertFalse(Files.exists(replayDirectory.resolve("9001.dem.bz2")));
+        assertTrue(Files.exists(replayDirectory.resolve("9002.dem")));
+        assertTrue(Files.exists(original));
     }
 }

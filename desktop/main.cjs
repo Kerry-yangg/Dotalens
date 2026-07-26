@@ -2,12 +2,20 @@ const { app, BrowserWindow, Menu, dialog, ipcMain, protocol, session } = require
 const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const { replayIdentity, scanReplayDirectory } = require("./replay-files.cjs");
 
 const APP_SCHEME = "dotalens";
 const APP_URL = `${APP_SCHEME}://app/`;
 const API_STATUS_URL = "http://127.0.0.1:5600/api/status";
 const API_SHUTDOWN_URL = "http://127.0.0.1:5600/api/shutdown";
-const PARSER_API_VERSION = "1.5.2";
+const API_BASE_URL = "http://127.0.0.1:5600/api";
+const PARSER_API_VERSION = "1.6.0";
+const userDataOverride = process.env.DOTA_LENS_USER_DATA_DIR
+  ? path.resolve(process.env.DOTA_LENS_USER_DATA_DIR)
+  : null;
+const parserDataOverride = process.env.DOTA_LENS_DATA_DIR
+  ? path.resolve(process.env.DOTA_LENS_DATA_DIR)
+  : null;
 const qaCapturePath = process.env.DOTA_LENS_QA_CAPTURE ? path.resolve(process.env.DOTA_LENS_QA_CAPTURE) : null;
 const qaViews = new Set([
   "matches", "replays", "tasks", "settings",
@@ -20,21 +28,28 @@ const qaHeight = Math.max(720, Number.parseInt(process.env.DOTA_LENS_QA_HEIGHT |
 const qaScoreboardStress = process.env.DOTA_LENS_QA_SCOREBOARD_STRESS === "1";
 const qaDirectoryPickers = process.env.DOTA_LENS_QA_DIRECTORY_PICKERS === "1";
 const qaDirectoryRoot = process.env.DOTA_LENS_QA_DIRECTORY_ROOT || "C:\\Dota Lens QA";
-const qaSettingsPanel = new Set(["account", "dota", "parser", "data", "display", "diagnostics"]).has(process.env.DOTA_LENS_QA_SETTINGS_PANEL)
+const qaSettingsPanel = new Set(["account", "dota", "parser", "diagnostics"]).has(process.env.DOTA_LENS_QA_SETTINGS_PANEL)
   ? process.env.DOTA_LENS_QA_SETTINGS_PANEL
   : "dota";
+
+if (userDataOverride) {
+  app.setPath("userData", userDataOverride);
+}
 
 if (qaCapturePath) {
   app.disableHardwareAcceleration();
   app.commandLine.appendSwitch("disable-gpu");
   app.commandLine.appendSwitch("disable-gpu-sandbox");
   app.commandLine.appendSwitch("in-process-gpu");
-  app.setPath("userData", path.join(process.env.TEMP || __dirname, `dota-lens-electron-qa-${process.pid}`));
+  if (!userDataOverride) {
+    app.setPath("userData", path.join(process.env.TEMP || __dirname, `dota-lens-electron-qa-${process.pid}`));
+  }
 }
 
 let mainWindow = null;
 let parserProcess = null;
 let ownsParser = false;
+const approvedReplayFiles = new Set();
 
 protocol.registerSchemesAsPrivileged([{
   scheme: APP_SCHEME,
@@ -55,13 +70,13 @@ function runtimePaths() {
     return {
       java: path.join(process.resourcesPath, "jre", "bin", "java.exe"),
       jar: path.join(process.resourcesPath, "parser", "stats-0.1.0.jar"),
-      data: path.join(app.getPath("userData"), "data"),
+      data: parserDataOverride || path.join(app.getPath("userData"), "data"),
     };
   }
   return {
     java: projectPath("tools", "runtime", "jdk-21", "bin", "java.exe"),
     jar: projectPath("tools", "replay-parser", "target", "stats-0.1.0.jar"),
-    data: projectPath("tools", "runtime", "dota-lens-data"),
+    data: parserDataOverride || projectPath("tools", "runtime", "dota-lens-data"),
   };
 }
 
@@ -133,6 +148,60 @@ function registerIpcHandlers() {
       filePath: result.filePaths[0] || null,
       source: "dialog",
     };
+  });
+
+  ipcMain.handle("dota-lens:scan-replay-directory", async (event, request = {}) => {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
+      throw new Error("Replay 扫描请求来自未知窗口");
+    }
+    const results = scanReplayDirectory(request.directory);
+    approvedReplayFiles.clear();
+    results.forEach((replay) => approvedReplayFiles.add(path.resolve(replay.filePath)));
+    return results;
+  });
+
+  ipcMain.handle("dota-lens:import-replay-path", async (event, request = {}) => {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
+      throw new Error("Replay 导入请求来自未知窗口");
+    }
+    const filePath = path.resolve(String(request.filePath || ""));
+    if (!approvedReplayFiles.has(filePath)) {
+      throw new Error("请先扫描 Replay 目录，再导入该文件");
+    }
+    const identity = replayIdentity(path.basename(filePath));
+    if (!identity || identity.matchId !== String(request.matchId || "")) {
+      throw new Error("Replay 文件名与比赛 ID 不一致");
+    }
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile() || stat.size <= 0) throw new Error("Replay 文件为空或不可读取");
+
+    const accountId = /^\d{1,10}$/.test(String(request.accountId || ""))
+      ? String(request.accountId)
+      : "";
+    const response = await fetch(`${API_BASE_URL}/replays/${identity.matchId}/import`, {
+      method: "POST",
+      body: fs.createReadStream(filePath),
+      duplex: "half",
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "Content-Length": String(stat.size),
+        "X-Dota-Lens-File-Name": path.basename(filePath),
+        "X-Dota-Lens-Account-Id": accountId,
+      },
+    });
+    const text = await response.text();
+    let payload = {};
+    try {
+      payload = text ? JSON.parse(text) : {};
+    } catch {
+      throw new Error(`本地解析器返回了无效响应（HTTP ${response.status}）`);
+    }
+    if (!response.ok) {
+      const error = new Error(payload.message || `本地解析器返回 HTTP ${response.status}`);
+      error.code = payload.error || "invalid_replay_file";
+      throw error;
+    }
+    return payload;
   });
 }
 

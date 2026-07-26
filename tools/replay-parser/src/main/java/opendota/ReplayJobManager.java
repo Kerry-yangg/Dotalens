@@ -43,9 +43,11 @@ final class ReplayJobManager implements AutoCloseable {
     private static final int DEFAULT_REPLAY_WAIT_SECONDS = 180;
     private static final int DEFAULT_REPLAY_DOWNLOAD_WAIT_SECONDS = 600;
     private static final int DEFAULT_DECOMPRESSED_CACHE_COUNT = 2;
+    private static final long MAX_IMPORTED_REPLAY_BYTES = 1_500_000_000L;
 
     private final Path dataDirectory;
     private final OpenDotaClient openDota;
+    private final MatchSubjectStore subjectStore;
     private final ExecutorService executor;
     private final ConcurrentHashMap<String, JobState> jobs = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Long, String> matchJobs = new ConcurrentHashMap<>();
@@ -53,6 +55,7 @@ final class ReplayJobManager implements AutoCloseable {
     ReplayJobManager(Path dataDirectory, OpenDotaClient openDota) throws IOException {
         this.dataDirectory = dataDirectory.toAbsolutePath().normalize();
         this.openDota = openDota;
+        this.subjectStore = new MatchSubjectStore(this.dataDirectory);
         this.executor = Executors.newSingleThreadExecutor(runnable -> {
             Thread thread = new Thread(runnable, "dota-lens-replay-worker");
             thread.setDaemon(true);
@@ -63,15 +66,15 @@ final class ReplayJobManager implements AutoCloseable {
         Files.createDirectories(this.dataDirectory.resolve("analyses"));
     }
 
-    JsonObject start(long matchId, long accountId, boolean force) {
-        if (!force) {
-            String existingId = matchJobs.get(matchId);
-            if (existingId != null) {
-                JobState existing = jobs.get(existingId);
-                if (existing != null && existing.shouldReuse()) {
-                    return existing.snapshot();
-                }
+    synchronized JsonObject start(long matchId, long accountId, boolean force) {
+        String existingId = matchJobs.get(matchId);
+        if (existingId != null) {
+            JobState existing = jobs.get(existingId);
+            if (existing != null && (existing.isActive() || !force && existing.shouldReuse())) {
+                return existing.snapshot();
             }
+        }
+        if (!force) {
             if (Files.isRegularFile(summaryPath(matchId))) {
                 JobState completed = JobState.completed(matchId, accountId);
                 jobs.put(completed.id, completed);
@@ -114,6 +117,7 @@ final class ReplayJobManager implements AutoCloseable {
     synchronized JsonObject readAnalysis(long matchId) throws IOException {
         JsonObject analysis = AnalysisStorage.readSummary(analysisDirectory(matchId));
         if (analysis == null) return null;
+        subjectStore.overlay(matchId, analysis);
         if (AnalysisSummary.isCurrent(analysis)) {
             analysis.addProperty("schema_status", "current");
             analysis.addProperty("upgrade_required", false);
@@ -127,10 +131,33 @@ final class ReplayJobManager implements AutoCloseable {
         return analysis;
     }
 
+    synchronized JsonObject selectSubject(long matchId, int playerSlot) throws IOException {
+        JsonObject analysis = AnalysisStorage.readSummary(analysisDirectory(matchId));
+        if (analysis == null) return null;
+        JsonObject match = analysis.has("match") && analysis.get("match").isJsonObject()
+                ? analysis.getAsJsonObject("match") : new JsonObject();
+        return subjectStore.select(matchId, match, playerSlot);
+    }
+
+    JsonObject applySubjectToCompletedSummary(long matchId, JsonObject summary) throws IOException {
+        if (summary == null || !summary.has("complete")
+                || !summary.get("complete").getAsBoolean()) {
+            throw new IOException("Parsed JSONL did not pass completeness checks");
+        }
+        subjectStore.overlay(matchId, summary);
+        return summary;
+    }
+
     synchronized JsonElement readAnalysisModule(long matchId, String moduleName) throws IOException {
         JsonObject analysis = AnalysisStorage.readSummary(analysisDirectory(matchId));
         return analysis == null ? null
                 : AnalysisStorage.readModule(analysisDirectory(matchId), analysis, moduleName);
+    }
+
+    synchronized Path readAnalysisModuleFile(long matchId, String moduleName) throws IOException {
+        JsonObject analysis = AnalysisStorage.readSummary(analysisDirectory(matchId));
+        return analysis == null ? null
+                : AnalysisStorage.moduleFile(analysisDirectory(matchId), analysis, moduleName);
     }
 
     boolean hasAnalysis(long matchId) {
@@ -138,9 +165,45 @@ final class ReplayJobManager implements AutoCloseable {
     }
 
     boolean hasReplayCache(long matchId) {
+        return cachedReplay(matchId) != null;
+    }
+
+    Path importReplay(long matchId, InputStream input, boolean compressed) throws IOException {
         Path replayDirectory = dataDirectory.resolve("replays");
-        return nonEmptyFile(replayDirectory.resolve(matchId + ".dem"))
-                || nonEmptyFile(replayDirectory.resolve(matchId + ".dem.bz2"));
+        Files.createDirectories(replayDirectory);
+        Path replayFile = replayDirectory.resolve(matchId + (compressed ? ".dem.bz2" : ".dem"));
+        Path part = replayFile.resolveSibling(replayFile.getFileName() + ".import.part");
+        long copied = 0;
+        try {
+            Files.deleteIfExists(part);
+            try (InputStream source = new BufferedInputStream(input);
+                    OutputStream target = new BufferedOutputStream(Files.newOutputStream(part), 1024 * 1024)) {
+                byte[] buffer = new byte[1024 * 256];
+                int read;
+                while ((read = source.read(buffer)) >= 0) {
+                    if (read == 0) continue;
+                    copied += read;
+                    if (copied > MAX_IMPORTED_REPLAY_BYTES) {
+                        throw new IOException("Replay file exceeds the 1.5 GB import limit");
+                    }
+                    target.write(buffer, 0, read);
+                }
+            }
+            if (copied == 0) throw new EOFException("Imported Replay file is empty");
+            if (!compressed && !validDem(part)) {
+                throw new IOException("Imported file is not a valid Dota 2 DEM Replay");
+            }
+            if (compressed && !validBzip2(part)) {
+                throw new IOException("Imported file is not a valid BZip2 Replay archive");
+            }
+            moveReplacing(part, replayFile);
+            if (compressed) {
+                Files.deleteIfExists(replayDirectory.resolve(matchId + ".dem"));
+            }
+            return replayFile;
+        } finally {
+            Files.deleteIfExists(part);
+        }
     }
 
     int activeJobs() {
@@ -169,23 +232,28 @@ final class ReplayJobManager implements AutoCloseable {
             job.throwIfCanceled();
             Files.createDirectories(analysisDirectory);
             job.update("resolving", 8, "Resolving match and Replay metadata");
-            JsonObject matchDetail = resolveMatch(job);
+            Path localReplay = cachedReplay(job.matchId);
+            JsonObject matchDetail = resolveMatch(job, localReplay);
             job.throwIfCanceled();
             addPatchName(matchDetail);
-            Files.writeString(analysisDirectory.resolve("match.json"), PRETTY_GSON.toJson(matchDetail),
-                    StandardCharsets.UTF_8);
             job.recordPhase("resolving", phaseStarted);
 
-            URI replayUrl = OpenDotaClient.replayUrl(matchDetail);
-            if (replayUrl == null) {
-                throw new IOException("Replay URL is unavailable after OpenDota parse request");
-            }
             phaseStarted = System.nanoTime();
-            Path downloadedReplay = acquireReplay(job, replayUrl);
+            URI replayUrl = OpenDotaClient.replayUrl(matchDetail);
+            Path downloadedReplay;
+            if (localReplay != null) {
+                job.update("downloaded", 48, "Using participant Replay from local cache");
+                downloadedReplay = localReplay;
+            } else {
+                if (replayUrl == null) {
+                    throw new IOException("Replay URL is unavailable after OpenDota parse request");
+                }
+                downloadedReplay = acquireReplay(job, replayUrl);
+            }
             job.throwIfCanceled();
             job.recordPhase("acquiring_replay", phaseStarted);
             phaseStarted = System.nanoTime();
-            Path replayFile = prepareReplay(job, downloadedReplay, replayUrl);
+            Path replayFile = prepareReplay(job, downloadedReplay);
             job.recordPhase("decompressing", phaseStarted);
 
             job.update("parsing", 56, "Parsing Replay events");
@@ -215,6 +283,9 @@ final class ReplayJobManager implements AutoCloseable {
             summary.addProperty("raw_archive_bytes", Files.size(rawArchivePart));
             summary.addProperty("replay_file", downloadedReplay.getFileName().toString());
             summary.addProperty("replay_bytes", Files.size(downloadedReplay));
+            applySubjectToCompletedSummary(job.matchId, summary);
+            writeMatchMetadata(analysisDirectory,
+                    summary.getAsJsonObject("match").deepCopy());
 
             job.update("indexing", 97, "Writing compact analysis modules");
             phaseStarted = System.nanoTime();
@@ -236,7 +307,14 @@ final class ReplayJobManager implements AutoCloseable {
             if (job.cancelRequested()) job.markCanceled("Canceled by user");
             else {
                 logFailure(job, error);
-                job.fail(errorCode(error), safeMessage(error), error);
+                if (error instanceof ReplayIdentityException identityError) {
+                    try {
+                        cleanupReplayIdentityMismatch(dataDirectory, identityError.declaredMatchId());
+                    } catch (IOException cleanupError) {
+                        error.addSuppressed(cleanupError);
+                    }
+                }
+                job.fail(errorCode(error), safeMessage(error), error, errorContext(error));
             }
         } finally {
             job.clearCancellationResource(null);
@@ -275,7 +353,8 @@ final class ReplayJobManager implements AutoCloseable {
                 replayDirectory.resolve(matchId + ".dem.bz2.part"),
                 analysisDirectory.resolve(matchId + ".raw.jsonl.part"),
                 analysisDirectory.resolve(matchId + ".raw.jsonl.gz.part"),
-                analysisDirectory.resolve("summary.json.part") }) {
+                analysisDirectory.resolve("summary.json.part"),
+                analysisDirectory.resolve("match.json.part") }) {
             try {
                 Files.deleteIfExists(path);
             } catch (IOException ignored) {
@@ -284,11 +363,28 @@ final class ReplayJobManager implements AutoCloseable {
         }
     }
 
-    private JsonObject resolveMatch(JobState job) throws IOException, InterruptedException {
+    static void cleanupReplayIdentityMismatch(Path dataDirectory, long declaredMatchId)
+            throws IOException {
+        Path replayDirectory = dataDirectory.toAbsolutePath().normalize().resolve("replays");
+        for (String suffix : new String[] {
+                ".dem", ".dem.bz2", ".dem.part", ".dem.bz2.part",
+                ".dem.import.part", ".dem.bz2.import.part" }) {
+            Files.deleteIfExists(replayDirectory.resolve(declaredMatchId + suffix));
+        }
+    }
+
+    private JsonObject resolveMatch(JobState job, Path localReplay) throws IOException, InterruptedException {
         JsonObject cachedMatch = readCachedMatch(job.matchId);
-        Path cachedReplay = dataDirectory.resolve("replays").resolve(job.matchId + ".dem");
-        if (cachedMatch != null && OpenDotaClient.replayUrl(cachedMatch) != null && hasReplayCache(job.matchId)) {
+        if (localReplay != null) {
             job.update("resolving", 10, "Using cached match metadata and Replay");
+            if (cachedMatch != null) return cachedMatch;
+            JsonObject local = new JsonObject();
+            local.addProperty("match_id", job.matchId);
+            local.addProperty("metadata_source", "local_replay");
+            return local;
+        }
+        if (cachedMatch != null && OpenDotaClient.replayUrl(cachedMatch) != null) {
+            job.update("resolving", 10, "Using cached match metadata");
             return cachedMatch;
         }
         JsonObject match;
@@ -456,9 +552,9 @@ final class ReplayJobManager implements AutoCloseable {
                 ? downloadError.statusCode() : null;
     }
 
-    private Path prepareReplay(JobState job, Path downloadedReplay, URI replayUrl)
+    private Path prepareReplay(JobState job, Path downloadedReplay)
             throws IOException, InterruptedException {
-        if (!replayUrl.getPath().endsWith(".bz2")) {
+        if (!downloadedReplay.getFileName().toString().endsWith(".bz2")) {
             return downloadedReplay;
         }
         Path demFile = downloadedReplay.resolveSibling(job.matchId + ".dem");
@@ -559,6 +655,15 @@ final class ReplayJobManager implements AutoCloseable {
         return new String(header, StandardCharsets.US_ASCII).equals("PBDEMS2");
     }
 
+    private static boolean validBzip2(Path path) throws IOException {
+        if (!Files.isRegularFile(path) || Files.size(path) < 3) return false;
+        byte[] header = new byte[3];
+        try (InputStream input = Files.newInputStream(path)) {
+            if (input.read(header) != header.length) return false;
+        }
+        return new String(header, StandardCharsets.US_ASCII).equals("BZh");
+    }
+
     private void parseReplay(JobState job, Path replayFile, Path outputFile)
             throws IOException, InterruptedException {
         long inputSize = Files.size(replayFile);
@@ -643,6 +748,14 @@ final class ReplayJobManager implements AutoCloseable {
         return analysisDirectory(matchId).resolve("summary.json");
     }
 
+    private static void writeMatchMetadata(Path analysisDirectory, JsonObject match)
+            throws IOException {
+        Path target = analysisDirectory.resolve("match.json");
+        Path part = analysisDirectory.resolve("match.json.part");
+        Files.writeString(part, PRETTY_GSON.toJson(match), StandardCharsets.UTF_8);
+        moveReplacing(part, target);
+    }
+
     private static void moveReplacing(Path source, Path target) throws IOException {
         try {
             Files.move(source, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
@@ -659,6 +772,14 @@ final class ReplayJobManager implements AutoCloseable {
         }
     }
 
+    private Path cachedReplay(long matchId) {
+        Path replayDirectory = dataDirectory.resolve("replays");
+        Path dem = replayDirectory.resolve(matchId + ".dem");
+        if (nonEmptyFile(dem)) return dem;
+        Path compressed = replayDirectory.resolve(matchId + ".dem.bz2");
+        return nonEmptyFile(compressed) ? compressed : null;
+    }
+
     private static int intEnvironment(String name, int fallback) {
         try {
             return Integer.parseInt(Optional.ofNullable(System.getenv(name)).orElse(""));
@@ -667,7 +788,8 @@ final class ReplayJobManager implements AutoCloseable {
         }
     }
 
-    private static String errorCode(Exception error) {
+    static String errorCode(Exception error) {
+        if (error instanceof ReplayIdentityException) return "replay_match_id_mismatch";
         if (error instanceof OpenDotaClient.ReplayDownloadException downloadError) {
             if (downloadError.statusCode() == 429) return "rate_limited";
             if (downloadError.statusCode() >= 500) return "replay_server_unavailable";
@@ -687,6 +809,15 @@ final class ReplayJobManager implements AutoCloseable {
             return "replay_corrupt";
         }
         return "parse_failed";
+    }
+
+    static JsonObject errorContext(Exception error) {
+        if (!(error instanceof ReplayIdentityException identityError)) return null;
+        JsonObject context = new JsonObject();
+        context.addProperty("declared_match_id", identityError.declaredMatchId());
+        context.addProperty("internal_match_id", identityError.internalMatchId());
+        context.addProperty("action", "rename_or_reimport_with_internal_match_id");
+        return context;
     }
 
     private static String safeMessage(Exception error) {
@@ -762,6 +893,7 @@ final class ReplayJobManager implements AutoCloseable {
         long bytesProcessed;
         long bytesTotal = -1;
         JsonObject result;
+        JsonObject errorContext;
         volatile boolean cancelRequested;
         volatile Future<?> task;
         volatile AutoCloseable cancellationResource;
@@ -894,6 +1026,10 @@ final class ReplayJobManager implements AutoCloseable {
         }
 
         synchronized void fail(String code, String detail, Exception error) {
+            fail(code, detail, error, null);
+        }
+
+        synchronized void fail(String code, String detail, Exception error, JsonObject context) {
             if (cancelRequested) {
                 markCanceled("Canceled by user");
                 return;
@@ -903,6 +1039,7 @@ final class ReplayJobManager implements AutoCloseable {
             stage = "failed";
             message = detail;
             errorCode = code;
+            errorContext = context == null ? null : context.deepCopy();
             httpStatus = replayHttpStatus(error);
             retryable = error instanceof IOException ioError && isRetryableReplayError(ioError);
             nextRetryAt = null;
@@ -938,6 +1075,7 @@ final class ReplayJobManager implements AutoCloseable {
             if (errorCode != null) {
                 object.addProperty("error_code", errorCode);
             }
+            if (errorContext != null) object.add("error_context", errorContext.deepCopy());
             if (failedStage != null) object.addProperty("failed_stage", failedStage);
             if (retryAttempt > 0) object.addProperty("retry_attempt", retryAttempt);
             if (nextRetryAt != null) object.addProperty("next_retry_at", nextRetryAt);

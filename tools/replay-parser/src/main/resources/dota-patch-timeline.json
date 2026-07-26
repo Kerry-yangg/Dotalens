@@ -1,0 +1,21 @@
+{
+  "schema": "dota-patch-timeline/1.0",
+  "uncertainty_seconds": 43200,
+  "confidence_outside_boundary": 0.92,
+  "entries": [
+    {
+      "patch_name": "7.41",
+      "release_date": "2026-03-24",
+      "released_at": 1774353600,
+      "time_basis": "official_date_midpoint_proxy",
+      "metadata_profile": "7.41"
+    },
+    {
+      "patch_name": "7.41d",
+      "release_date": "2026-06-05",
+      "released_at": 1780660800,
+      "time_basis": "official_date_midpoint_proxy",
+      "metadata_profile": "7.41d"
+    }
+  ]
+}
