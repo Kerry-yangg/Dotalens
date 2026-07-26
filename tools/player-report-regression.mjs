@@ -1898,19 +1898,12 @@ export function compareGolden(expected, actual, policy = {}) {
         expectedRow?.dedupe_status,
         actualRow?.dedupe_status,
       );
-      if (recordChange(
+      recordChange(
         changes,
         path,
         expectedRow?.applied_delta,
         actualRow?.applied_delta,
-      )) {
-        addApproval(
-          path,
-          expectedRow?.applied_delta,
-          actualRow?.applied_delta,
-          "applied_delta_drift",
-        );
-      }
+      );
     }
   }
 

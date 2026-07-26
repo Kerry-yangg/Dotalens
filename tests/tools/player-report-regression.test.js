@@ -1089,6 +1089,60 @@ test("score and component drift exactly at thresholds remains valid", () => {
   assert.deepEqual(diff.approvalRequired, []);
 });
 
+test("coherent sub-threshold applied-delta drift is recorded without approval", () => {
+  const expectedReport = atomicReportFixture();
+  const actualReport = atomicReportFixture();
+  const scoringComponent = {
+    key: "effect:one",
+    dimension: "lane_execution",
+    score_path: "modifier",
+    applied_delta: 0,
+    dedupe_key: "effect:one",
+    dedupe_status: "applied_unique",
+  };
+  expectedReport.score_card.dimensions[0].scoring_components = [
+    structuredClone(scoringComponent),
+  ];
+  actualReport.score_card.dimensions[0].scoring_components = [{
+    ...scoringComponent,
+    applied_delta: -2,
+  }];
+  Object.assign(actualReport.score_card.dimensions[0], {
+    behavior_modifier: -2,
+    final_score: 68,
+    score: 68,
+  });
+  Object.assign(actualReport.score_card, {
+    behavior_modifier: -0.3,
+    final_score: 69.7,
+    overall_score: 69.7,
+  });
+  const expected = projectGoldenReport({
+    matchId: "fixture",
+    slot: 0,
+    report: expectedReport,
+  });
+  const actual = projectGoldenReport({
+    matchId: "fixture",
+    slot: 0,
+    report: actualReport,
+  });
+
+  const diff = compareGolden(expected, actual, {
+    scoreTolerance: 3,
+    componentTolerance: 5,
+  });
+
+  assert.ok(diff.changes.some((item) =>
+    item.path
+      === "dimensions.lane_execution.scoring_components.effect:one.applied_delta"
+    && item.expected === 0
+    && item.actual === -2));
+  assert.deepEqual(diff.hardFailures, []);
+  assert.deepEqual(diff.approvalRequired, []);
+  assert.equal(diff.valid, true);
+});
+
 test("score and atomic component drift over policy thresholds need approval", () => {
   const expectedReport = atomicReportFixture();
   const actualReport = atomicReportFixture();
