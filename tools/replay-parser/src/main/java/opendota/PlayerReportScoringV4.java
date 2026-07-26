@@ -185,7 +185,11 @@ final class PlayerReportScoringV4 {
         row.addProperty("effective_weight", round4(dimension.effectiveWeight));
         row.add("comparison", comparison(dimension.key));
         row.add("scoring_components", new JsonArray());
-        row.add("base_components", new JsonArray());
+        JsonArray baseComponents = array(row, "base_components");
+        if (baseComponents == null || baseComponents.isEmpty()) {
+            baseComponents = new JsonArray();
+            row.add("base_components", baseComponents);
+        }
         if (!dimension.available) {
             row.remove("base_score");
             row.remove("behavior_modifier");
@@ -201,6 +205,7 @@ final class PlayerReportScoringV4 {
         }
 
         row.addProperty("base_score", round2(dimension.baseScore));
+        if (!baseComponents.isEmpty()) return;
         JsonObject component = new JsonObject();
         component.addProperty("key", "existing_dimension_model");
         component.addProperty("label", "现有维度基础模型");
@@ -210,7 +215,7 @@ final class PlayerReportScoringV4 {
         component.addProperty("confidence", number(row, "confidence", 0));
         JsonArray refs = array(row, "metric_refs");
         component.add("evidence_refs", refs == null ? new JsonArray() : refs.deepCopy());
-        row.getAsJsonArray("base_components").add(component);
+        baseComponents.add(component);
     }
 
     private static List<ImpactState> collectImpacts(JsonArray roots,
