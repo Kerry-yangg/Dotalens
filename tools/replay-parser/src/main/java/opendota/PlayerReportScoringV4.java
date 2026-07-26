@@ -9,6 +9,7 @@ import java.util.Set;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 
 final class PlayerReportScoringV4 {
@@ -48,7 +49,10 @@ final class PlayerReportScoringV4 {
             dimensionRows = new JsonArray();
             report.add("dimensions", dimensionRows);
         }
-        LinkedHashMap<String, DimensionState> dimensions = dimensions(dimensionRows);
+        boolean currentAtomicModel = PlayerReportBaseComponents.MODEL.equals(
+                stringValue(report, "base_component_model", ""));
+        LinkedHashMap<String, DimensionState> dimensions = dimensions(
+                dimensionRows, currentAtomicModel);
         double availableWeight = dimensions.values().stream()
                 .filter(item -> item.available)
                 .mapToDouble(item -> item.roleWeight)
@@ -116,7 +120,14 @@ final class PlayerReportScoringV4 {
         audit.addProperty("recomputed_final_score", finalOverall);
         audit.addProperty("recomputed_behavior_modifier", behaviorModifier);
         audit.addProperty("recomputation_tolerance", RECOMPUTE_TOLERANCE);
-        audit.addProperty("recomputation_valid", true);
+        audit.addProperty("recomputation_valid", dimensions.values().stream()
+                .allMatch(item -> !item.currentAtomicModel || item.baseComponentValid));
+        audit.addProperty("base_component_model", currentAtomicModel
+                ? PlayerReportBaseComponents.MODEL : "existing_dimension_model");
+        audit.addProperty("atomic_dimension_count", dimensions.values().stream()
+                .filter(item -> item.currentAtomicModel && item.atomicComponentsPresent).count());
+        audit.addProperty("aggregate_fallback_count", dimensions.values().stream()
+                .filter(item -> item.aggregateFallback).count());
         audit.add("score_path_counts", pathCounts.deepCopy());
         audit.addProperty("duplicate_suppressed_count", impacts.stream()
                 .filter(item -> "suppressed_duplicate".equals(item.dedupeStatus)).count());
@@ -162,7 +173,8 @@ final class PlayerReportScoringV4 {
                 .filter(item -> item.available).count());
     }
 
-    private static LinkedHashMap<String, DimensionState> dimensions(JsonArray rows) {
+    private static LinkedHashMap<String, DimensionState> dimensions(JsonArray rows,
+            boolean currentAtomicModel) {
         LinkedHashMap<String, DimensionState> result = new LinkedHashMap<>();
         for (JsonElement element : rows) {
             if (!element.isJsonObject()) continue;
@@ -175,7 +187,8 @@ final class PlayerReportScoringV4 {
                     ? clamp(number(row, "base_score", number(row, "score", 0)), 0, 100)
                     : 0;
             double roleWeight = Math.max(0, number(row, "weight", 0));
-            result.put(key, new DimensionState(row, key, available, roleWeight, base));
+            result.put(key, new DimensionState(row, key, available, roleWeight, base,
+                    currentAtomicModel));
         }
         return result;
     }
@@ -186,7 +199,9 @@ final class PlayerReportScoringV4 {
         row.add("comparison", comparison(dimension.key));
         row.add("scoring_components", new JsonArray());
         JsonArray baseComponents = array(row, "base_components");
-        if (baseComponents == null || baseComponents.isEmpty()) {
+        if (dimension.currentAtomicModel) {
+            prepareAtomicBaseComponents(dimension, baseComponents);
+        } else if (baseComponents == null || baseComponents.isEmpty()) {
             baseComponents = new JsonArray();
             row.add("base_components", baseComponents);
         }
@@ -200,12 +215,13 @@ final class PlayerReportScoringV4 {
             JsonObject recomputation = new JsonObject();
             recomputation.addProperty("status", "excluded_missing_dimension");
             recomputation.addProperty("included_in_overall", false);
+            addBaseComponentRecomputation(recomputation, dimension);
             row.add("recomputation", recomputation);
             return;
         }
 
         row.addProperty("base_score", round2(dimension.baseScore));
-        if (!baseComponents.isEmpty()) return;
+        if (dimension.currentAtomicModel || !baseComponents.isEmpty()) return;
         JsonObject component = new JsonObject();
         component.addProperty("key", "existing_dimension_model");
         component.addProperty("label", "现有维度基础模型");
@@ -216,6 +232,54 @@ final class PlayerReportScoringV4 {
         JsonArray refs = array(row, "metric_refs");
         component.add("evidence_refs", refs == null ? new JsonArray() : refs.deepCopy());
         baseComponents.add(component);
+        dimension.aggregateFallback = true;
+    }
+
+    private static void prepareAtomicBaseComponents(DimensionState dimension,
+            JsonArray baseComponents) {
+        if (baseComponents == null || baseComponents.isEmpty()) {
+            dimension.baseComponentValid = false;
+            return;
+        }
+        try {
+            PlayerReportBaseComponents.Calculation calculation =
+                    PlayerReportBaseComponents.fromJson(baseComponents);
+            dimension.atomicComponentsPresent = true;
+            dimension.baseComponentRecomputedScore = calculation.score();
+            dimension.baseComponentWeightSum = calculation.components().stream()
+                    .filter(component -> component.input().available())
+                    .mapToDouble(PlayerReportBaseComponents.ComponentResult::effectiveLocalWeight)
+                    .sum();
+            dimension.row.add("base_components", PlayerReportBaseComponents.toJson(calculation));
+
+            if (!dimension.available) {
+                dimension.baseComponentValid = true;
+                return;
+            }
+            double storedBaseScore = number(dimension.row, "base_score",
+                    number(dimension.row, "score", 0));
+            dimension.baseComponentValid = calculation.available()
+                    && calculation.score() != null
+                    && Math.abs(calculation.score() - storedBaseScore)
+                            <= PlayerReportBaseComponents.SCORE_TOLERANCE
+                    && Math.abs(dimension.baseComponentWeightSum - 100.0)
+                            <= PlayerReportBaseComponents.WEIGHT_TOLERANCE;
+        } catch (RuntimeException ignored) {
+            dimension.baseComponentValid = false;
+        }
+    }
+
+    private static void addBaseComponentRecomputation(JsonObject recomputation,
+            DimensionState dimension) {
+        if (!dimension.currentAtomicModel) return;
+        recomputation.addProperty("base_component_model", PlayerReportBaseComponents.MODEL);
+        recomputation.addProperty("base_component_valid", dimension.baseComponentValid);
+        recomputation.add("base_component_recomputed_score",
+                dimension.baseComponentRecomputedScore == null ? JsonNull.INSTANCE
+                        : new com.google.gson.JsonPrimitive(
+                                round2(dimension.baseComponentRecomputedScore)));
+        recomputation.addProperty("base_component_weight_sum",
+                round4(dimension.baseComponentWeightSum));
     }
 
     private static List<ImpactState> collectImpacts(JsonArray roots,
@@ -430,6 +494,7 @@ final class PlayerReportScoringV4 {
             recomputation.addProperty("stored_final_score", finalScore);
             recomputation.addProperty("difference", 0);
             recomputation.addProperty("valid", true);
+            addBaseComponentRecomputation(recomputation, dimension);
             dimension.row.add("recomputation", recomputation);
         }
 
@@ -783,21 +848,28 @@ final class PlayerReportScoringV4 {
         private final boolean available;
         private final double roleWeight;
         private final double baseScore;
+        private final boolean currentAtomicModel;
         private double effectiveWeight;
         private double behaviorModifier;
         private double finalScore;
+        private boolean atomicComponentsPresent;
+        private boolean aggregateFallback;
+        private boolean baseComponentValid;
+        private Double baseComponentRecomputedScore;
+        private double baseComponentWeightSum;
         private double beforeDimensionCap;
         private double afterDimensionCap;
         private double negativeDimensionFactor = 1;
         private double positiveDimensionFactor = 1;
 
         private DimensionState(JsonObject row, String key, boolean available,
-                double roleWeight, double baseScore) {
+                double roleWeight, double baseScore, boolean currentAtomicModel) {
             this.row = row;
             this.key = key;
             this.available = available;
             this.roleWeight = roleWeight;
             this.baseScore = baseScore;
+            this.currentAtomicModel = currentAtomicModel;
             this.finalScore = baseScore;
         }
     }

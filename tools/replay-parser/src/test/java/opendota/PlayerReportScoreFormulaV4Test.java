@@ -183,6 +183,92 @@ class PlayerReportScoreFormulaV4Test {
         assertFalse(attribution.get("explanation").getAsString().isBlank());
     }
 
+    @Test
+    void preservesAtomicBaseComponentsAndRecomputesBaseScore() {
+        JsonObject lane = dimension("lane_execution", "lane", 100, 70, true);
+        lane.add("base_components", components(
+                component("lane_model_score", 80, 75),
+                component("core_lane_opportunity_conversion", 40, 25)));
+        JsonObject report = report(lane);
+        report.addProperty("base_component_model", PlayerReportBaseComponents.MODEL);
+
+        PlayerReportScoringV4.apply(report);
+
+        JsonObject scored = findDimension(report, "lane_execution");
+        assertEquals(2, scored.getAsJsonArray("base_components").size());
+        assertEquals(70.0, scored.get("base_score").getAsDouble(), EPSILON);
+        assertTrue(scored.getAsJsonObject("recomputation")
+                .get("base_component_valid").getAsBoolean());
+        assertEquals(PlayerReportBaseComponents.MODEL,
+                scored.getAsJsonObject("recomputation")
+                        .get("base_component_model").getAsString());
+        assertEquals(70.0, scored.getAsJsonObject("recomputation")
+                .get("base_component_recomputed_score").getAsDouble(), EPSILON);
+        assertEquals(100.0, scored.getAsJsonObject("recomputation")
+                .get("base_component_weight_sum").getAsDouble(), EPSILON);
+        JsonObject audit = report.getAsJsonObject("score_card").getAsJsonObject("audit");
+        assertEquals(PlayerReportBaseComponents.MODEL,
+                audit.get("base_component_model").getAsString());
+        assertEquals(1, audit.get("atomic_dimension_count").getAsInt());
+        assertEquals(0, audit.get("aggregate_fallback_count").getAsInt());
+    }
+
+    @Test
+    void marksCurrentAtomicModelInvalidWhenStoredBaseDoesNotRecompute() {
+        JsonObject lane = dimension("lane_execution", "lane", 100, 99, true);
+        lane.add("base_components", components(
+                component("lane_model_score", 80, 75),
+                component("core_lane_opportunity_conversion", 40, 25)));
+        JsonObject report = report(lane);
+        report.addProperty("base_component_model", PlayerReportBaseComponents.MODEL);
+
+        PlayerReportScoringV4.apply(report);
+
+        assertFalse(report.getAsJsonObject("score_card")
+                .getAsJsonObject("audit")
+                .get("recomputation_valid").getAsBoolean());
+    }
+
+    @Test
+    void retainsAggregateFallbackOnlyForLegacyInput() {
+        JsonObject report = report(
+                dimension("lane_execution", "lane", 100, 70, true));
+        PlayerReportScoringV4.apply(report);
+
+        assertEquals("existing_dimension_model",
+                findDimension(report, "lane_execution")
+                        .getAsJsonArray("base_components")
+                        .get(0).getAsJsonObject().get("key").getAsString());
+    }
+
+    @Test
+    void acceptsAtomicComponentsWhenDimensionIsUnavailableByGate() {
+        JsonObject lane = dimension("lane_execution", "lane", 100, 0, false);
+        lane.add("base_components", components(
+                component("lane_model_score", 80, 75),
+                component("core_lane_opportunity_conversion", 40, 25)));
+        JsonObject report = report(lane);
+        report.addProperty("base_component_model", PlayerReportBaseComponents.MODEL);
+
+        PlayerReportScoringV4.apply(report);
+
+        assertTrue(report.getAsJsonObject("score_card").getAsJsonObject("audit")
+                .get("recomputation_valid").getAsBoolean());
+        assertTrue(findDimension(report, "lane_execution").getAsJsonObject("recomputation")
+                .get("base_component_valid").getAsBoolean());
+    }
+
+    @Test
+    void doesNotCountUnavailableLegacyDimensionsAsAggregateFallbacks() {
+        JsonObject report = report(
+                dimension("lane_execution", "lane", 100, 0, false));
+
+        PlayerReportScoringV4.apply(report);
+
+        assertEquals(0, report.getAsJsonObject("score_card").getAsJsonObject("audit")
+                .get("aggregate_fallback_count").getAsInt());
+    }
+
     private static JsonObject report(JsonObject... dimensions) {
         JsonObject report = new JsonObject();
         report.addProperty("model", "player-report/3.0");
@@ -224,6 +310,28 @@ class PlayerReportScoreFormulaV4Test {
         row.add("evidence", new JsonArray());
         row.add("missing", new JsonArray());
         return row;
+    }
+
+    private static JsonObject component(String key, double score, double weight) {
+        JsonObject row = new JsonObject();
+        row.addProperty("key", key);
+        row.addProperty("label", key);
+        row.addProperty("available", true);
+        row.addProperty("normalized_score", score);
+        row.addProperty("local_weight", weight);
+        row.addProperty("effective_local_weight", weight);
+        row.addProperty("weighted_contribution", score * weight / 100.0);
+        row.addProperty("confidence", 90);
+        row.add("comparison", new JsonObject());
+        row.add("raw_metrics", new JsonObject());
+        row.add("evidence_refs", new JsonArray());
+        return row;
+    }
+
+    private static JsonArray components(JsonObject... rows) {
+        JsonArray result = new JsonArray();
+        for (JsonObject row : rows) result.add(row);
+        return result;
     }
 
     private static JsonObject root(String id, String category, String kind, int confidence,
