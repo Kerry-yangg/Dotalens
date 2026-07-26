@@ -122,4 +122,19 @@ class PlayerReportBaseComponentsTest {
 
         assertEquals(50.0, calculation.score(), 0.05);
     }
+
+    @Test
+    void normalizesFiniteWeightsWhenTheirSumOverflows() {
+        var calculation = PlayerReportBaseComponents.calculate(List.of(
+                PlayerReportBaseComponents.available(
+                        "max_a", "Max A", 50, Double.MAX_VALUE, 80,
+                        new JsonObject(), new JsonObject(), List.of()),
+                PlayerReportBaseComponents.available(
+                        "max_b", "Max B", 50, Double.MAX_VALUE, 80,
+                        new JsonObject(), new JsonObject(), List.of())));
+
+        assertEquals(50.0, calculation.score(), 0.05);
+        assertEquals(50.0, calculation.components().get(0).effectiveLocalWeight(), 0.01);
+        assertEquals(50.0, calculation.components().get(1).effectiveLocalWeight(), 0.01);
+    }
 }

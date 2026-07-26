@@ -66,11 +66,16 @@ final class PlayerReportBaseComponents {
 
     static Calculation calculate(List<ComponentInput> inputs) {
         validateInputs(inputs);
-        double denominator = inputs.stream()
+        double maximumWeight = inputs.stream()
                 .filter(ComponentInput::available)
                 .mapToDouble(ComponentInput::localWeight)
+                .max()
+                .orElse(0);
+        double scaledDenominator = inputs.stream()
+                .filter(ComponentInput::available)
+                .mapToDouble(input -> input.localWeight() / maximumWeight)
                 .sum();
-        if (denominator <= 0) {
+        if (scaledDenominator <= 0 || !Double.isFinite(scaledDenominator)) {
             return new Calculation(false, null, inputs.stream()
                     .map(input -> new ComponentResult(input, 0, null))
                     .toList());
@@ -87,7 +92,8 @@ final class PlayerReportBaseComponents {
                 results.add(new ComponentResult(input, 0, null));
                 continue;
             }
-            double effectiveWeight = input.localWeight() * 100.0 / denominator;
+            double effectiveWeight = input.localWeight() / maximumWeight
+                    * 100.0 / scaledDenominator;
             double exactContribution = clampScore(input.normalizedScore())
                     * effectiveWeight / 100.0;
             double roundedWeight = round4(effectiveWeight);
