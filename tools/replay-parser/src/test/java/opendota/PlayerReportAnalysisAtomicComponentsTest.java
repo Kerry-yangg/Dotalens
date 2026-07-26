@@ -5,6 +5,7 @@ import static opendota.PlayerReportAtomicTestFixture.blockEveryFightDutyGate;
 import static opendota.PlayerReportAtomicTestFixture.player;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -153,9 +154,23 @@ class PlayerReportAnalysisAtomicComponentsTest {
 
         JsonObject duty = dimension(report(modules, 0), "combat_duty");
         assertFalse(duty.get("available").getAsBoolean());
+        assertFalse(duty.has("score"));
+        assertFalse(duty.has("base_score"));
+        assertFalse(duty.has("final_score"));
+        assertEquals(0.0, duty.get("effective_weight").getAsDouble(), 0.01);
         assertEquals("no_passed_responsibility_gate_fights",
                 component(duty, "hard_gated_duty_average")
                         .get("missing_reason").getAsString());
+        assertFalse(component(duty, "team_utility_share_vs_role_target")
+                .get("available").getAsBoolean());
+        assertEquals("responsibility_gate_not_passed",
+                component(duty, "team_utility_share_vs_role_target")
+                        .get("suppression_reason").getAsString());
+        var calculation = PlayerReportBaseComponents.fromJson(
+                duty.getAsJsonArray("base_components"));
+        assertFalse(calculation.available());
+        assertNull(calculation.score());
+        assertUnavailableDimensionCannotContribute(report(modules, 0), duty);
     }
 
     private static JsonObject report(JsonObject modules, int slot) {
@@ -201,6 +216,19 @@ class PlayerReportAnalysisAtomicComponentsTest {
             if (expected.equals(element.getAsString())) return;
         }
         throw new AssertionError("Missing evidence reference " + expected);
+    }
+
+    private static void assertUnavailableDimensionCannotContribute(JsonObject report,
+            JsonObject unavailableDimension) {
+        assertFalse(unavailableDimension.get("available").getAsBoolean());
+        int availableWeight = 0;
+        for (JsonElement element : report.getAsJsonArray("dimensions")) {
+            JsonObject dimension = element.getAsJsonObject();
+            if (dimension.get("available").getAsBoolean()) {
+                availableWeight += dimension.get("weight").getAsInt();
+            }
+        }
+        assertEquals(availableWeight, report.get("available_weight").getAsInt());
     }
 
     private static void assertDimensionRecomputes(JsonObject report,

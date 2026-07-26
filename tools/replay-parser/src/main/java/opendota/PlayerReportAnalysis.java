@@ -417,10 +417,17 @@ final class PlayerReportAnalysis {
                     combatFightRefs(slot)));
         }
         if (teamUtility > 0) {
-            dutyInputs.add(shareComponent("team_utility_share_vs_role_target",
-                    "团队效用占比相对位置目标", ownUtility, teamUtility, utilityTarget, 25,
-                    moduleConfidence(modules, "combat", 80), "utility",
-                    List.of("players:slot:" + slot + ":utility")));
+            if (fight.passedDutyFights == 0) {
+                dutyInputs.add(suppressedComponent("team_utility_share_vs_role_target",
+                        "团队效用占比相对位置目标", 25, moduleConfidence(modules, "combat", 80),
+                        "responsibility_gate_not_passed",
+                        List.of("players:slot:" + slot + ":utility")));
+            } else {
+                dutyInputs.add(shareComponent("team_utility_share_vs_role_target",
+                        "团队效用占比相对位置目标", ownUtility, teamUtility, utilityTarget, 25,
+                        moduleConfidence(modules, "combat", 80), "utility",
+                        List.of("players:slot:" + slot + ":utility")));
+            }
         } else {
             dutyMissing.add("team_utility_share_inputs_missing");
             dutyInputs.add(missingComponent("team_utility_share_vs_role_target",
@@ -431,8 +438,7 @@ final class PlayerReportAnalysis {
         int dutyConfidence = fight.passedDutyFights == 0 ? Math.min(50, fight.averageDutyConfidence)
                 : Math.min(moduleConfidence(modules, "combat", 80), fight.averageDutyConfidence);
         scores.put("utility", dimensionFromComponents(dutyInputs, dutyConfidence,
-                dutyMissing.isEmpty() ? "gated" : "partial", dutyMissing,
-                fight.passedDutyFights > 0));
+                dutyMissing.isEmpty() ? "gated" : "partial", dutyMissing));
 
         double ownVision = visionValue(own);
         double visionTarget = switch (position) {
@@ -926,6 +932,11 @@ final class PlayerReportAnalysis {
         return PlayerReportBaseComponents.missing(key, label, weight, confidence, reason, evidenceRefs);
     }
 
+    private static PlayerReportBaseComponents.ComponentInput suppressedComponent(String key, String label,
+            double weight, int confidence, String reason, List<String> evidenceRefs) {
+        return PlayerReportBaseComponents.suppressed(key, label, weight, confidence, reason, evidenceRefs);
+    }
+
     private static PlayerReportBaseComponents.ComponentInput shareComponent(String key, String label,
             double subjectValue, double teamTotal, double roleTargetShare, double weight,
             int confidence, String unit, List<String> evidenceRefs) {
@@ -964,16 +975,10 @@ final class PlayerReportAnalysis {
     private static DimensionScore dimensionFromComponents(
             List<PlayerReportBaseComponents.ComponentInput> inputs, int confidence,
             String evidenceLevel, List<String> missing) {
-        return dimensionFromComponents(inputs, confidence, evidenceLevel, missing, true);
-    }
-
-    private static DimensionScore dimensionFromComponents(
-            List<PlayerReportBaseComponents.ComponentInput> inputs, int confidence,
-            String evidenceLevel, List<String> missing, boolean availabilityGate) {
         var calculation = PlayerReportBaseComponents.calculate(inputs);
         int normalizedConfidence = clamp(confidence, 0, 100);
-        boolean available = availabilityGate && calculation.available() && normalizedConfidence >= 55;
-        return new DimensionScore(calculation.score() == null ? 50 : calculation.score(),
+        boolean available = calculation.available() && normalizedConfidence >= 55;
+        return new DimensionScore(available ? calculation.score() : null,
                 normalizedConfidence, available, available ? evidenceLevel : "partial",
                 List.copyOf(missing), calculation);
     }
@@ -993,14 +998,15 @@ final class PlayerReportAnalysis {
             List<String> missing) {
         int normalizedConfidence = clamp(confidence, 0, 100);
         boolean available = normalizedConfidence >= 55;
-        return new DimensionScore(clamp(score, 0, 100), normalizedConfidence, available,
+        return new DimensionScore(available ? (double) clamp(score, 0, 100) : null,
+                normalizedConfidence, available,
                 available ? evidenceLevel : "partial", List.copyOf(missing),
                 new PlayerReportBaseComponents.Calculation(false, null, List.of()));
     }
 
     private static DimensionScore missing(int confidence, List<String> missing) {
         List<String> reasons = missing.isEmpty() ? List.of("minimum_evidence_not_met") : List.copyOf(missing);
-        return new DimensionScore(50, clamp(confidence, 0, 54), false, "missing", reasons,
+        return new DimensionScore(null, clamp(confidence, 0, 54), false, "missing", reasons,
                 new PlayerReportBaseComponents.Calculation(false, null, List.of()));
     }
 
@@ -1279,7 +1285,7 @@ final class PlayerReportAnalysis {
     private record Profile(List<DimensionSpec> dimensions) {
     }
 
-    private record DimensionScore(double score, int confidence, boolean available,
+    private record DimensionScore(Double score, int confidence, boolean available,
             String evidenceLevel, List<String> missing,
             PlayerReportBaseComponents.Calculation baseCalculation) {
     }
@@ -1308,7 +1314,7 @@ final class PlayerReportAnalysis {
 
         DimensionScore dimension(String key) {
             return values.getOrDefault(key,
-                    new DimensionScore(50, 0, false, "missing",
+                    new DimensionScore(null, 0, false, "missing",
                             List.of("dimension_not_implemented"),
                             new PlayerReportBaseComponents.Calculation(false, null, List.of())));
         }
