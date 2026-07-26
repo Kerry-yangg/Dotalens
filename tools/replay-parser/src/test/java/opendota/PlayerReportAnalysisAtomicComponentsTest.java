@@ -173,6 +173,96 @@ class PlayerReportAnalysisAtomicComponentsTest {
         assertUnavailableDimensionCannotContribute(report(modules, 0), duty);
     }
 
+    @Test
+    void emitsSurvivalObjectiveTempoAndExecutionComponents() {
+        JsonObject modules = completeModulesForPosition(2);
+        PlayerReportAnalysis.enrich(modules, null, 1800);
+
+        JsonObject report = report(modules, 0);
+        assertComponentKeys(report, "survival_risk",
+                "deaths_vs_same_position", "dead_time_percentage_score");
+        assertComponentKeys(report, "objective_conversion",
+                "team_tower_damage_share_vs_role_target",
+                "tower_roshan_finish_contribution");
+        assertComponentKeys(report, "map_tempo",
+                "team_tempo_share_vs_role_target",
+                "tp_rune_activation_relative_score", "fight_presence_vs_role_target");
+        assertComponentKeys(report, "observable_execution",
+                "action_continuity_apm", "observable_uses_per_minute_vs_opponent");
+
+        assertEquals(65.0, component(dimension(report, "survival_risk"),
+                "deaths_vs_same_position").get("local_weight").getAsDouble(), 0.01);
+        assertEquals(35.0, component(dimension(report, "survival_risk"),
+                "dead_time_percentage_score").get("local_weight").getAsDouble(), 0.01);
+        assertEquals(75.0, component(dimension(report, "objective_conversion"),
+                "team_tower_damage_share_vs_role_target").get("local_weight").getAsDouble(), 0.01);
+        assertEquals(25.0, component(dimension(report, "objective_conversion"),
+                "tower_roshan_finish_contribution").get("local_weight").getAsDouble(), 0.01);
+        assertEquals(45.0, component(dimension(report, "map_tempo"),
+                "team_tempo_share_vs_role_target").get("local_weight").getAsDouble(), 0.01);
+        assertEquals(25.0, component(dimension(report, "map_tempo"),
+                "tp_rune_activation_relative_score").get("local_weight").getAsDouble(), 0.01);
+        assertEquals(30.0, component(dimension(report, "map_tempo"),
+                "fight_presence_vs_role_target").get("local_weight").getAsDouble(), 0.01);
+        assertEquals(60.0, component(dimension(report, "observable_execution"),
+                "action_continuity_apm").get("local_weight").getAsDouble(), 0.01);
+        assertEquals(40.0, component(dimension(report, "observable_execution"),
+                "observable_uses_per_minute_vs_opponent").get("local_weight").getAsDouble(), 0.01);
+
+        JsonObject activation = component(dimension(report, "map_tempo"),
+                "tp_rune_activation_relative_score");
+        JsonObject activationMetrics = activation.getAsJsonObject("raw_metrics");
+        assertTrue(activation.getAsJsonObject("comparison").has("subject"));
+        assertTrue(activationMetrics.has("tp_subject"));
+        assertTrue(activationMetrics.has("tp_reference"));
+        assertTrue(activationMetrics.has("tp_score"));
+        assertTrue(activationMetrics.has("rune_subject"));
+        assertTrue(activationMetrics.has("rune_reference"));
+        assertTrue(activationMetrics.has("rune_score"));
+        assertHasEvidenceRef(activation, "players:slot:0:teleport_uses");
+        assertHasEvidenceRef(activation, "players:slot:5:teleport_uses");
+
+        assertDimensionRecomputes(report, "survival_risk");
+        assertDimensionRecomputes(report, "objective_conversion");
+        assertDimensionRecomputes(report, "map_tempo");
+        assertDimensionRecomputes(report, "observable_execution");
+        assertAllAvailableDimensionsRecompute(report);
+    }
+
+    @Test
+    void doesNotTurnActionContinuityIntoPerfectScoreWhenOpponentUsesAreMissing() {
+        JsonObject modules = completeModulesForPosition(2);
+        JsonObject counterpart = player(modules, 5);
+        counterpart.remove("ability_casts");
+        counterpart.remove("item_uses");
+        PlayerReportAnalysis.enrich(modules, null, 1800);
+
+        JsonObject execution = dimension(report(modules, 0), "observable_execution");
+        JsonObject continuity = component(execution, "action_continuity_apm");
+        JsonObject relativeUses = component(execution,
+                "observable_uses_per_minute_vs_opponent");
+        assertFalse(relativeUses.get("available").getAsBoolean());
+        assertEquals(100.0,
+                continuity.get("effective_local_weight").getAsDouble(), 0.01);
+        assertTrue(continuity.get("normalized_score").getAsDouble() < 100);
+        assertDimensionRecomputes(report(modules, 0), "observable_execution");
+    }
+
+    @Test
+    void keepsUnavailableTpSubmetricsNullInsteadOfZero() {
+        JsonObject modules = completeModulesForPosition(2);
+        player(modules, 5).remove("teleport_uses");
+        PlayerReportAnalysis.enrich(modules, null, 1800);
+
+        JsonObject activationMetrics = component(dimension(report(modules, 0), "map_tempo"),
+                "tp_rune_activation_relative_score").getAsJsonObject("raw_metrics");
+        assertFalse(activationMetrics.get("tp_available").getAsBoolean());
+        assertTrue(activationMetrics.get("tp_subject").isJsonNull());
+        assertTrue(activationMetrics.get("tp_reference").isJsonNull());
+        assertTrue(activationMetrics.get("tp_score").isJsonNull());
+        assertTrue(activationMetrics.get("rune_score").isJsonPrimitive());
+    }
+
     private static JsonObject report(JsonObject modules, int slot) {
         return PlayerReportAtomicTestFixture.player(modules, slot)
                 .getAsJsonObject("report");
@@ -229,6 +319,15 @@ class PlayerReportAnalysisAtomicComponentsTest {
             }
         }
         assertEquals(availableWeight, report.get("available_weight").getAsInt());
+    }
+
+    private static void assertAllAvailableDimensionsRecompute(JsonObject report) {
+        for (JsonElement element : report.getAsJsonArray("dimensions")) {
+            JsonObject row = element.getAsJsonObject();
+            if (!row.get("available").getAsBoolean()) continue;
+            assertTrue(row.getAsJsonArray("base_components").size() > 0);
+            assertDimensionRecomputes(report, row.get("key").getAsString());
+        }
     }
 
     private static void assertDimensionRecomputes(JsonObject report,
