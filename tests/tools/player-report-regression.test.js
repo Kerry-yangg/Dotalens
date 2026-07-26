@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -47,6 +48,246 @@ const PLAYER_REPORT_RUNTIME = resolve(
   "player-report-regression",
 );
 const round4 = (value) => Math.round(value * 10000) / 10000;
+
+const MOCK_PARSER_SOURCE = String.raw`
+import http from "node:http";
+import { appendFileSync, writeFileSync } from "node:fs";
+
+const port = Number(process.env.PLAYER_REPORT_MOCK_PORT);
+const eventsPath = process.env.PLAYER_REPORT_MOCK_EVENTS;
+const readyPath = process.env.PLAYER_REPORT_MOCK_READY;
+const config = JSON.parse(process.env.PLAYER_REPORT_MOCK_CONFIG || "{}");
+const jobs = new Map();
+let unavailableStatusRequests = Number(config.unavailable_status_requests || 0);
+const event = (entry) => appendFileSync(eventsPath, JSON.stringify(entry) + "\n");
+const activeJobs = () => [...jobs.values()].filter((job) =>
+  !["completed", "failed", "canceled"].includes(job.status)).length;
+const statusesFor = (matchId) => config.statuses?.[matchId] || ["completed"];
+
+const server = http.createServer((request, response) => {
+  const url = new URL(request.url, "http://127.0.0.1:" + port);
+  const send = (status, value) => {
+    response.writeHead(status, { "content-type": "application/json" });
+    response.end(JSON.stringify(value));
+  };
+  if (request.method === "GET" && url.pathname === "/api/status") {
+    if (unavailableStatusRequests > 0) {
+      unavailableStatusRequests -= 1;
+      event({ type: "status_unavailable" });
+      send(503, { error: "fixture unavailable" });
+      return;
+    }
+    event({ type: "status", active_jobs: activeJobs() });
+    send(200, { status: "ready", version: config.version || "1.6.0", active_jobs: activeJobs() });
+    return;
+  }
+  const importMatch = url.pathname.match(/^\/api\/replays\/(\d+)\/import$/);
+  if (request.method === "POST" && importMatch) {
+    const matchId = importMatch[1];
+    const job = { id: "job-" + matchId, matchId, statuses: statusesFor(matchId), polls: 0, status: "queued" };
+    jobs.set(job.id, job);
+    event({ type: "upload", match_id: matchId, file_name: request.headers["x-dota-lens-file-name"] });
+    request.resume();
+    request.on("end", () => send(200, { id: job.id, status: job.status }));
+    return;
+  }
+  const jobMatch = url.pathname.match(/^\/api\/jobs\/(.+)$/);
+  if (request.method === "GET" && jobMatch) {
+    const job = jobs.get(jobMatch[1]);
+    if (!job) return send(404, { error: "missing" });
+    if (!["completed", "failed", "canceled"].includes(job.status)) {
+      job.status = job.statuses[Math.min(job.polls, job.statuses.length - 1)];
+      job.polls += 1;
+    }
+    event({ type: "poll", job_id: job.id, status: job.status });
+    send(200, { id: job.id, status: job.status, error: job.status === "failed" ? "fixture failure" : null });
+    return;
+  }
+  if (request.method === "DELETE" && jobMatch) {
+    const job = jobs.get(jobMatch[1]);
+    if (!job) return send(404, { error: "missing" });
+    job.status = "canceled";
+    event({ type: "cancel", job_id: job.id });
+    send(200, { id: job.id, status: job.status });
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/api/shutdown") {
+    event({ type: "shutdown" });
+    send(200, { status: "stopping" });
+    setTimeout(() => server.close(() => process.exit(0)), 10);
+    return;
+  }
+  send(404, { error: "unknown" });
+});
+server.listen(port, "127.0.0.1", () => writeFileSync(readyPath, String(port)));
+`;
+
+function sleep(milliseconds) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+function getAvailablePort() {
+  const result = spawnSync(process.execPath, ["-e", String.raw`
+    import net from "node:net";
+    const server = net.createServer();
+    server.listen(0, "127.0.0.1", () => {
+      process.stdout.write(String(server.address().port));
+      server.close();
+    });
+  `], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  return Number(result.stdout);
+}
+
+function waitForFile(path) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (existsSync(path)) return;
+    sleep(25);
+  }
+  throw new Error(`Timed out waiting for ${path}`);
+}
+
+function createRunnerFixture(matchIds = ["9900000001", "9900000002"]) {
+  const root = mkdtempSync(join(tmpdir(), "player-report-runner-fixture-"));
+  const replayDirectory = join(root, "tools", "runtime", "dota-lens-data", "replays");
+  mkdirSync(replayDirectory, { recursive: true });
+  for (const matchId of matchIds) {
+    const replay = Buffer.from(`replay-${matchId}`);
+    writeFileSync(join(replayDirectory, `${matchId}.dem`), replay);
+    writeRunnerAnalysis(root, matchId);
+  }
+  return {
+    root,
+    matchIds,
+    manifestPath: join(root, "tests", "player-report-regression", "manifest.json"),
+    runtime: join(root, "tools", "runtime", "player-report-regression"),
+    replayHash(matchId) {
+      return createHash("sha256").update(`replay-${matchId}`).digest("hex");
+    },
+  };
+}
+
+function writeRunnerAnalysis(root, matchId) {
+  const analysisDirectory = join(
+    root,
+    "tools",
+    "runtime",
+    "dota-lens-data",
+    "analyses",
+    matchId,
+  );
+  const moduleBase = "modules/fixture";
+  mkdirSync(join(analysisDirectory, moduleBase), { recursive: true });
+  writeFileSync(
+    join(analysisDirectory, "summary.json"),
+    JSON.stringify({ analysis_storage: { module_base: moduleBase } }),
+  );
+  writeFileSync(
+    join(analysisDirectory, moduleBase, "players.json.gz"),
+    gzipSync(JSON.stringify(bundleFixture({ serverAudit: true }))),
+  );
+}
+
+function writeRunnerManifest(fixture, matches = fixture.matchIds) {
+  mkdirSync(dirname(fixture.manifestPath), { recursive: true });
+  writeFileSync(fixture.manifestPath, JSON.stringify({
+    schema: "player-report-regression-manifest/1.0",
+    matches: matches.map((matchId) => ({
+      match_id: matchId,
+      replay_path: `tools/runtime/dota-lens-data/replays/${matchId}.dem`,
+    })),
+  }));
+}
+
+function writeRunnerCheckpoint(fixture, matchId, overrides = {}) {
+  const directory = join(fixture.runtime, "checkpoints");
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, `${matchId}.json`), JSON.stringify({
+    schema: "player-report-regression-checkpoint/1.0",
+    match_id: matchId,
+    replay_sha256: fixture.replayHash(matchId),
+    parser_version: "1.6.0",
+    base_component_model: "player-report-base-components/1.0",
+    status: "validated",
+    ...overrides,
+  }));
+}
+
+function startMockParser(fixture, config = {}) {
+  const port = getAvailablePort();
+  const scriptPath = join(fixture.root, "mock-parser.mjs");
+  const eventsPath = join(fixture.root, "parser-events.jsonl");
+  const readyPath = join(fixture.root, "parser-ready");
+  writeFileSync(scriptPath, MOCK_PARSER_SOURCE);
+  const child = spawn(process.execPath, [scriptPath], {
+    detached: true,
+    stdio: "ignore",
+    env: {
+      ...process.env,
+      PLAYER_REPORT_MOCK_PORT: String(port),
+      PLAYER_REPORT_MOCK_EVENTS: eventsPath,
+      PLAYER_REPORT_MOCK_READY: readyPath,
+      PLAYER_REPORT_MOCK_CONFIG: JSON.stringify(config),
+    },
+  });
+  child.unref();
+  waitForFile(readyPath);
+  return {
+    apiBase: `http://127.0.0.1:${port}/api`,
+    child,
+    events() {
+      return existsSync(eventsPath)
+        ? readFileSync(eventsPath, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse)
+        : [];
+    },
+    stop() {
+      const code = String.raw`
+        import http from "node:http";
+        const request = http.request(process.argv[1], { method: "POST" }, () => process.exit(0));
+        request.on("error", () => process.exit(0));
+        request.setTimeout(500, () => { request.destroy(); process.exit(0); });
+        request.end();
+      `;
+      spawnSync(process.execPath, ["-e", code, `${this.apiBase}/shutdown`], {
+        encoding: "utf8",
+        timeout: 2000,
+      });
+      sleep(50);
+      try { process.kill(-child.pid); } catch {}
+    },
+    scriptPath,
+  };
+}
+
+function runRunnerFixture(fixture, mode, options = {}) {
+  const environment = {
+    ...process.env,
+    PLAYER_REPORT_REGRESSION_PROJECT_ROOT: fixture.root,
+    ...options.env,
+  };
+  return spawnSync("pwsh", [
+    "-NoProfile",
+    "-File",
+    PLAYER_REPORT_RUNNER,
+    "-Mode",
+    mode,
+    "-ManifestPath",
+    fixture.manifestPath,
+    "-IncludeCandidates",
+    ...(options.timeoutSeconds === undefined ? [] : ["-TimeoutSeconds", String(options.timeoutSeconds)]),
+    ...(options.keepParser ? ["-KeepParser"] : []),
+  ], { cwd: PROJECT_ROOT, encoding: "utf8", env: environment });
+}
+
+function readLatestRunnerAggregate(fixture) {
+  const runs = readdirSync(join(fixture.runtime, "runs")).sort();
+  const run = join(fixture.runtime, "runs", runs.at(-1));
+  return {
+    run,
+    json: JSON.parse(readFileSync(join(run, "aggregate.json"), "utf8")),
+    markdown: readFileSync(join(run, "aggregate.md"), "utf8"),
+  };
+}
 
 function readManifestFixture() {
   const ids = [
@@ -112,119 +353,209 @@ test("candidate manifest remains a relative-path pool before Task 10 freezes it"
     && !Object.hasOwn(row, "golden_subject")));
 });
 
-test("runner aggregates a missing candidate and writes a failed checkpoint", () => {
-  const fixtureDirectory = mkdtempSync(join(tmpdir(), "player-report-runner-"));
-  const manifestPath = join(fixtureDirectory, "manifest.json");
-  const runDirectoriesBefore = existsSync(join(PLAYER_REPORT_RUNTIME, "runs"))
-    ? new Set(readdirSync(join(PLAYER_REPORT_RUNTIME, "runs")))
-    : new Set();
-  const checkpointPath = join(
-    PLAYER_REPORT_RUNTIME,
-    "checkpoints",
-    "9999999999.json",
-  );
-
-  writeFileSync(manifestPath, JSON.stringify({
-    schema: "player-report-regression-manifest/1.0",
-    matches: [{
-      match_id: "9999999999",
-      replay_path: "tools/runtime/dota-lens-data/replays/does-not-exist.dem",
-    }],
-  }));
+test("ValidateExisting validates a fixture analysis without parser calls and replaces its checkpoint", () => {
+  const fixture = createRunnerFixture(["9900000001"]);
+  const parser = startMockParser(fixture);
+  writeRunnerManifest(fixture);
+  writeRunnerCheckpoint(fixture, "9900000001", { status: "failed", stale: true });
 
   try {
-    const result = spawnSync(
-      "pwsh",
-      [
-        "-NoProfile",
-        "-File",
-        PLAYER_REPORT_RUNNER,
-        "-Mode",
-        "ValidateExisting",
-        "-ManifestPath",
-        manifestPath,
-        "-IncludeCandidates",
-      ],
-      { cwd: PROJECT_ROOT, encoding: "utf8" },
-    );
-    assert.equal(result.status, 1, result.stderr || result.stdout);
-
-    const runDirectoriesAfter = readdirSync(join(PLAYER_REPORT_RUNTIME, "runs"));
-    const createdRunDirectories = runDirectoriesAfter.filter(
-      (name) => !runDirectoriesBefore.has(name),
-    );
-    assert.equal(createdRunDirectories.length, 1);
-
-    const runDirectory = join(
-      PLAYER_REPORT_RUNTIME,
-      "runs",
-      createdRunDirectories[0],
-    );
-    const aggregate = JSON.parse(readFileSync(join(runDirectory, "aggregate.json"), "utf8"));
-    const checkpoint = JSON.parse(readFileSync(checkpointPath, "utf8"));
-    assert.equal(aggregate.matches_total, 1);
-    assert.equal(aggregate.matches_passed, 0);
-    assert.equal(aggregate.failures.length, 1);
-    assert.equal(checkpoint.status, "failed");
-    assert.ok(existsSync(join(runDirectory, "aggregate.md")));
-    assert.ok(!JSON.stringify(aggregate).includes(fixtureDirectory));
+    const result = runRunnerFixture(fixture, "ValidateExisting", {
+      env: { PLAYER_REPORT_REGRESSION_API_BASE: parser.apiBase },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.deepEqual(parser.events(), []);
+    const checkpoint = JSON.parse(readFileSync(
+      join(fixture.runtime, "checkpoints", "9900000001.json"),
+      "utf8",
+    ));
+    assert.equal(checkpoint.status, "validated");
+    assert.equal(Object.hasOwn(checkpoint, "stale"), false);
   } finally {
-    const runDirectoriesAfter = existsSync(join(PLAYER_REPORT_RUNTIME, "runs"))
-      ? readdirSync(join(PLAYER_REPORT_RUNTIME, "runs"))
-      : [];
-    for (const name of runDirectoriesAfter) {
-      if (!runDirectoriesBefore.has(name)) {
-        rmSync(join(PLAYER_REPORT_RUNTIME, "runs", name), {
-          recursive: true,
-          force: true,
-        });
-      }
-    }
-    rmSync(checkpointPath, { force: true });
-    rmSync(fixtureDirectory, { recursive: true, force: true });
+    parser.stop();
+    rmSync(fixture.root, { recursive: true, force: true });
   }
 });
 
-test("runner never persists an absolute replay path from an invalid manifest", () => {
-  const fixtureDirectory = mkdtempSync(join(tmpdir(), "player-report-runner-"));
-  const manifestPath = join(fixtureDirectory, "manifest.json");
-  const checkpointPath = join(
-    PLAYER_REPORT_RUNTIME,
-    "checkpoints",
-    "9999999998.json",
-  );
-
-  writeFileSync(manifestPath, JSON.stringify({
-    schema: "player-report-regression-manifest/1.0",
-    matches: [{
-      match_id: "9999999998",
-      replay_path: "C:\\outside\\not-a-replay.dem",
-    }],
-  }));
+test("runner rejects traversal match IDs before checkpoint path derivation", () => {
+  const fixture = createRunnerFixture(["9900000001"]);
+  const expectedDirectory = join(fixture.root, "tests", "player-report-regression", "expected");
+  const sentinel = join(expectedDirectory, "sentinel.txt");
+  mkdirSync(expectedDirectory, { recursive: true });
+  writeFileSync(sentinel, "do not touch");
+  writeRunnerManifest(fixture, ["../tests/player-report-regression/expected/escaped"]);
 
   try {
-    const result = spawnSync(
-      "pwsh",
-      [
-        "-NoProfile",
-        "-File",
-        PLAYER_REPORT_RUNNER,
-        "-Mode",
-        "ValidateExisting",
-        "-ManifestPath",
-        manifestPath,
-        "-IncludeCandidates",
-      ],
-      { cwd: PROJECT_ROOT, encoding: "utf8" },
-    );
+    const result = runRunnerFixture(fixture, "ValidateExisting");
     assert.equal(result.status, 1, result.stderr || result.stdout);
-
-    const checkpoint = JSON.parse(readFileSync(checkpointPath, "utf8"));
-    assert.equal(checkpoint.replay_path, null);
-    assert.ok(!JSON.stringify(checkpoint).includes("C:\\outside"));
+    assert.equal(readFileSync(sentinel, "utf8"), "do not touch");
+    assert.deepEqual(readdirSync(join(fixture.runtime, "checkpoints")), []);
+    const aggregate = readLatestRunnerAggregate(fixture).json;
+    assert.equal(aggregate.failures.length, 1);
   } finally {
-    rmSync(checkpointPath, { force: true });
-    rmSync(fixtureDirectory, { recursive: true, force: true });
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("ReparseChanged reparses for each exact changed-input condition", () => {
+  const cases = [
+    ["replay hash", { replay_sha256: "wrong" }],
+    ["parser version", { parser_version: "1.5.0" }],
+    ["base component model", { base_component_model: "old-model" }],
+    ["incomplete checkpoint", { status: "failed" }],
+  ];
+  for (const [label, overrides] of cases) {
+    const fixture = createRunnerFixture(["9900000001"]);
+    const parser = startMockParser(fixture);
+    writeRunnerManifest(fixture);
+    writeRunnerCheckpoint(fixture, "9900000001", overrides);
+    try {
+      const result = runRunnerFixture(fixture, "ReparseChanged", {
+        env: { PLAYER_REPORT_REGRESSION_API_BASE: parser.apiBase },
+      });
+      assert.equal(result.status, 0, `${label}: ${result.stderr || result.stdout}`);
+      assert.equal(parser.events().filter((event) => event.type === "upload").length, 1, label);
+    } finally {
+      parser.stop();
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  }
+
+  const fixture = createRunnerFixture(["9900000001"]);
+  const parser = startMockParser(fixture);
+  writeRunnerManifest(fixture);
+  writeRunnerCheckpoint(fixture, "9900000001");
+  rmSync(join(
+    fixture.root,
+    "tools",
+    "runtime",
+    "dota-lens-data",
+    "analyses",
+    "9900000001",
+    "modules",
+    "fixture",
+    "players.json.gz",
+  ));
+  try {
+    const result = runRunnerFixture(fixture, "ReparseChanged", {
+      env: { PLAYER_REPORT_REGRESSION_API_BASE: parser.apiBase },
+    });
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+    assert.equal(parser.events().filter((event) => event.type === "upload").length, 1);
+  } finally {
+    parser.stop();
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("ReparseAll uploads matches serially through the documented endpoints", () => {
+  const fixture = createRunnerFixture();
+  const parser = startMockParser(fixture);
+  writeRunnerManifest(fixture);
+  try {
+    const result = runRunnerFixture(fixture, "ReparseAll", {
+      env: { PLAYER_REPORT_REGRESSION_API_BASE: parser.apiBase },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const events = parser.events();
+    assert.deepEqual(events.filter((event) => event.type === "upload").map((event) => event.match_id), fixture.matchIds);
+    for (const matchId of fixture.matchIds) {
+      const upload = events.findIndex((event) => event.type === "upload" && event.match_id === matchId);
+      const poll = events.findIndex((event) => event.type === "poll" && event.job_id === `job-${matchId}`);
+      assert.ok(upload >= 0 && poll > upload, matchId);
+    }
+  } finally {
+    parser.stop();
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("timeout cancellation confirms idle before the next serial upload", () => {
+  const fixture = createRunnerFixture();
+  const parser = startMockParser(fixture, {
+    statuses: { "9900000001": ["running"], "9900000002": ["completed"] },
+  });
+  writeRunnerManifest(fixture);
+  try {
+    const result = runRunnerFixture(fixture, "ReparseAll", {
+      timeoutSeconds: 0,
+      env: { PLAYER_REPORT_REGRESSION_API_BASE: parser.apiBase },
+    });
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+    const events = parser.events();
+    const firstUpload = events.findIndex((event) => event.type === "upload" && event.match_id === "9900000001");
+    const cancel = events.findIndex((event) => event.type === "cancel" && event.job_id === "job-9900000001");
+    const idleStatus = events.findIndex((event, index) =>
+      index > cancel && event.type === "status" && event.active_jobs === 0);
+    const secondUpload = events.findIndex((event) => event.type === "upload" && event.match_id === "9900000002");
+    assert.ok(firstUpload >= 0 && cancel > firstUpload);
+    assert.ok(idleStatus > cancel && secondUpload > idleStatus);
+  } finally {
+    parser.stop();
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("runner distinguishes existing and owned parser shutdown behavior", () => {
+  const existingFixture = createRunnerFixture(["9900000001"]);
+  const existingParser = startMockParser(existingFixture);
+  writeRunnerManifest(existingFixture);
+  try {
+    const result = runRunnerFixture(existingFixture, "ReparseAll", {
+      env: { PLAYER_REPORT_REGRESSION_API_BASE: existingParser.apiBase },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(existingParser.events().some((event) => event.type === "shutdown"), false);
+  } finally {
+    existingParser.stop();
+    rmSync(existingFixture.root, { recursive: true, force: true });
+  }
+});
+
+test("owned parser respects KeepParser and otherwise shuts down", () => {
+  for (const keepParser of [false, true]) {
+    const fixture = createRunnerFixture(["9900000001"]);
+    const parser = startMockParser(fixture, { unavailable_status_requests: 1 });
+    const launchScript = join(fixture.root, "owned-parser-launch.mjs");
+    writeFileSync(launchScript, "process.exit(0);\n");
+    writeRunnerManifest(fixture);
+    try {
+      const result = runRunnerFixture(fixture, "ReparseAll", {
+        keepParser,
+        env: {
+          PLAYER_REPORT_REGRESSION_API_BASE: parser.apiBase,
+          PLAYER_REPORT_REGRESSION_TEST_PARSER_LAUNCH_SCRIPT: launchScript,
+        },
+      });
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const events = parser.events();
+      assert.ok(events.some((event) => event.type === "status_unavailable"));
+      assert.equal(
+        events.some((event) => event.type === "shutdown"),
+        !keepParser,
+        JSON.stringify(events),
+      );
+    } finally {
+      parser.stop();
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("checkpoint persistence failure still writes aggregate reports", () => {
+  const fixture = createRunnerFixture(["9900000001"]);
+  writeRunnerManifest(fixture);
+  try {
+    const result = runRunnerFixture(fixture, "ValidateExisting", {
+      env: { PLAYER_REPORT_REGRESSION_TEST_FAIL_CHECKPOINT_WRITE: "9900000001" },
+    });
+    assert.equal(result.status, 1, result.stderr || result.stdout);
+    const aggregate = readLatestRunnerAggregate(fixture);
+    assert.equal(aggregate.json.failures.length, 1);
+    assert.match(aggregate.markdown, /Checkpoint persistence failed/);
+    assert.equal(existsSync(join(fixture.runtime, "checkpoints", "9900000001.json")), false);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
   }
 });
 

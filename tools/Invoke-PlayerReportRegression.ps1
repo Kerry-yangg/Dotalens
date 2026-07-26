@@ -22,19 +22,31 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
     throw 'This script requires PowerShell 7 or newer.'
 }
 
-$projectRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
+$projectRoot = if ([string]::IsNullOrWhiteSpace($env:PLAYER_REPORT_REGRESSION_PROJECT_ROOT)) {
+    [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
+} else {
+    [IO.Path]::GetFullPath($env:PLAYER_REPORT_REGRESSION_PROJECT_ROOT)
+}
 $runtimeRoot = Join-Path $projectRoot 'tools\runtime\player-report-regression'
 $checkpointDirectory = Join-Path $runtimeRoot 'checkpoints'
 $runsDirectory = Join-Path $runtimeRoot 'runs'
-$apiBase = 'http://127.0.0.1:5600/api'
+$apiBase = if ([string]::IsNullOrWhiteSpace($env:PLAYER_REPORT_REGRESSION_API_BASE)) {
+    'http://127.0.0.1:5600/api'
+} else {
+    $env:PLAYER_REPORT_REGRESSION_API_BASE.TrimEnd('/')
+}
 $parserDataDirectory = Join-Path $projectRoot 'tools\runtime\dota-lens-data'
 $java = Join-Path $PSScriptRoot 'runtime\jdk-21\bin\java.exe'
 $jar = Join-Path $PSScriptRoot 'replay-parser\target\stats-0.1.0.jar'
 $baseComponentModel = 'player-report-base-components/1.0'
-$parserProcess = $null
-$ownsParser = $false
+$parserLifecycle = [pscustomobject]@{
+    process = $null
+    owns = $false
+    upload_safe = $true
+}
 $parserStatus = $null
 $parserStartupError = $null
+$testParserLaunchScript = $env:PLAYER_REPORT_REGRESSION_TEST_PARSER_LAUNCH_SCRIPT
 
 function Get-RelativeProjectPath {
     param([Parameter(Mandatory)][string]$Path)
@@ -44,6 +56,16 @@ function Get-RelativeProjectPath {
         throw 'Path escapes the project root.'
     }
     return $relative.Replace('\', '/')
+}
+
+function Get-CanonicalMatchId {
+    param([Parameter(Mandatory)][object]$MatchId)
+
+    $value = [string]$MatchId
+    if ($value -notmatch '^\d+$') {
+        throw 'Manifest match_id must be numeric.'
+    }
+    return $value
 }
 
 function Resolve-ManifestReplayPath {
@@ -110,8 +132,8 @@ function Ensure-ParserReady {
     if ($parserStartupError) {
         throw $parserStartupError
     }
-    if ($parserStatus -and $parserStatus.status -eq 'ready') {
-        return $parserStatus
+    if (-not $parserLifecycle.upload_safe) {
+        throw 'Parser serial safety was not restored after a previous replay failure.'
     }
 
     $existing = Get-ParserStatus
@@ -126,33 +148,44 @@ function Ensure-ParserReady {
         return $existing
     }
 
-    if (-not (Test-Path -LiteralPath $java -PathType Leaf)) {
-        $script:parserStartupError = "Java 21 runtime was not found at $(Get-RelativeProjectPath -Path $java)"
-        throw $script:parserStartupError
-    }
-    if (-not (Test-Path -LiteralPath $jar -PathType Leaf)) {
-        $script:parserStartupError = "Parser JAR was not found at $(Get-RelativeProjectPath -Path $jar)"
-        throw $script:parserStartupError
-    }
-
     $parserLogs = Join-Path $runtimeRoot 'parser'
     New-Item -ItemType Directory -Force -Path $parserLogs | Out-Null
-    $previousDataDirectory = $env:DOTA_LENS_DATA_DIR
-    $previousPython = $env:DOTA_LENS_PYTHON
-    try {
-        $env:DOTA_LENS_DATA_DIR = $parserDataDirectory
-        $python = Get-Command python -ErrorAction SilentlyContinue
-        $env:DOTA_LENS_PYTHON = if ($python) { $python.Source } else { $null }
-        $script:parserProcess = Start-Process -FilePath $java `
-            -ArgumentList @('-Xmx2g', '-jar', $jar) `
+    if (-not [string]::IsNullOrWhiteSpace($testParserLaunchScript)) {
+        $node = Get-Command node -ErrorAction Stop
+        $parserLifecycle.process = Start-Process -FilePath $node.Source `
+            -ArgumentList @($testParserLaunchScript) `
             -PassThru `
             -WindowStyle Hidden `
             -RedirectStandardOutput (Join-Path $parserLogs 'parser.stdout.log') `
             -RedirectStandardError (Join-Path $parserLogs 'parser.stderr.log')
-        $script:ownsParser = $true
-    } finally {
-        $env:DOTA_LENS_DATA_DIR = $previousDataDirectory
-        $env:DOTA_LENS_PYTHON = $previousPython
+        $parserLifecycle.owns = $true
+    } else {
+        if (-not (Test-Path -LiteralPath $java -PathType Leaf)) {
+            $script:parserStartupError = "Java 21 runtime was not found at $(Get-RelativeProjectPath -Path $java)"
+            throw $script:parserStartupError
+        }
+        if (-not (Test-Path -LiteralPath $jar -PathType Leaf)) {
+            $script:parserStartupError = "Parser JAR was not found at $(Get-RelativeProjectPath -Path $jar)"
+            throw $script:parserStartupError
+        }
+
+        $previousDataDirectory = $env:DOTA_LENS_DATA_DIR
+        $previousPython = $env:DOTA_LENS_PYTHON
+        try {
+            $env:DOTA_LENS_DATA_DIR = $parserDataDirectory
+            $python = Get-Command python -ErrorAction SilentlyContinue
+            $env:DOTA_LENS_PYTHON = if ($python) { $python.Source } else { $null }
+            $parserLifecycle.process = Start-Process -FilePath $java `
+                -ArgumentList @('-Xmx2g', '-jar', $jar) `
+                -PassThru `
+                -WindowStyle Hidden `
+                -RedirectStandardOutput (Join-Path $parserLogs 'parser.stdout.log') `
+                -RedirectStandardError (Join-Path $parserLogs 'parser.stderr.log')
+            $parserLifecycle.owns = $true
+        } finally {
+            $env:DOTA_LENS_DATA_DIR = $previousDataDirectory
+            $env:DOTA_LENS_PYTHON = $previousPython
+        }
     }
 
     $deadline = [DateTimeOffset]::Now.AddSeconds(30)
@@ -165,8 +198,8 @@ function Ensure-ParserReady {
             $script:parserStatus = $ready
             return $ready
         }
-        if ($parserProcess -and $parserProcess.HasExited) {
-            $script:parserStartupError = "Parser exited with code $($parserProcess.ExitCode)."
+        if ($parserLifecycle.process -and $parserLifecycle.process.HasExited) {
+            $script:parserStartupError = "Parser exited with code $($parserLifecycle.process.ExitCode)."
             throw $script:parserStartupError
         }
         Start-Sleep -Milliseconds 250
@@ -223,6 +256,44 @@ function Test-ReparseChanged {
     return -not (Test-AnalysisPackage -MatchId $MatchId)
 }
 
+function Confirm-ParserIdle {
+    param(
+        [Parameter(Mandatory)][string]$JobId,
+        [Parameter(Mandatory)][int]$TimeoutSeconds
+    )
+
+    $waitSeconds = [Math]::Min(30, [Math]::Max(5, $TimeoutSeconds))
+    $deadline = [DateTimeOffset]::Now.AddSeconds($waitSeconds)
+    do {
+        try {
+            Invoke-RestMethod -Uri "$apiBase/jobs/$JobId" -TimeoutSec 5 | Out-Null
+        } catch {
+            # The status endpoint below is sufficient once no active jobs remain.
+        }
+        $status = Get-ParserStatus
+        if ($status -and $status.status -eq 'ready' -and [int]$status.active_jobs -eq 0) {
+            $script:parserStatus = $status
+            return
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTimeOffset]::Now -lt $deadline)
+
+    throw "Parser did not confirm zero active jobs after cancelling $JobId."
+}
+
+function Cancel-ReplayJob {
+    param(
+        [Parameter(Mandatory)][string]$JobId,
+        [Parameter(Mandatory)][int]$TimeoutSeconds
+    )
+
+    try {
+        Invoke-RestMethod -Method Delete -Uri "$apiBase/jobs/$JobId" -TimeoutSec 5 | Out-Null
+    } finally {
+        Confirm-ParserIdle -JobId $JobId -TimeoutSeconds $TimeoutSeconds
+    }
+}
+
 function Invoke-ReplayParse {
     param(
         [Parameter(Mandatory)][string]$MatchId,
@@ -242,16 +313,27 @@ function Invoke-ReplayParse {
         -ContentType 'application/octet-stream' `
         -Headers $headers `
         -TimeoutSec 180
-    $deadline = [DateTimeOffset]::Now.AddSeconds($TimeoutSeconds)
-    do {
-        $job = Invoke-RestMethod -Uri "$apiBase/jobs/$($job.id)" -TimeoutSec 5
-        if ($job.status -in @('completed', 'failed', 'canceled')) {
-            break
+    try {
+        $deadline = [DateTimeOffset]::Now.AddSeconds($TimeoutSeconds)
+        do {
+            $job = Invoke-RestMethod -Uri "$apiBase/jobs/$($job.id)" -TimeoutSec 5
+            if ($job.status -in @('completed', 'failed', 'canceled')) {
+                break
+            }
+            Start-Sleep -Seconds 1
+        } while ([DateTimeOffset]::Now -lt $deadline)
+        if ($job.status -ne 'completed') {
+            throw "Replay job ended as '$($job.status)': $($job.error)"
         }
-        Start-Sleep -Seconds 1
-    } while ([DateTimeOffset]::Now -lt $deadline)
-    if ($job.status -ne 'completed') {
-        throw "Replay job ended as '$($job.status)': $($job.error)"
+    } catch {
+        $parseFailure = $_
+        try {
+            Cancel-ReplayJob -JobId ([string]$job.id) -TimeoutSeconds $TimeoutSeconds
+        } catch {
+            $parserLifecycle.upload_safe = $false
+            throw "Replay parse failed and parser serial safety was not restored: $($_.Exception.Message)"
+        }
+        throw $parseFailure
     }
     $script:parserStatus = $status
 }
@@ -280,16 +362,16 @@ function ConvertTo-SafeError {
 }
 
 function Stop-OwnedParser {
-    if (-not $ownsParser -or $KeepParser) { return }
+    if (-not $parserLifecycle.owns -or $KeepParser) { return }
     try {
         Invoke-RestMethod -Method Post -Uri "$apiBase/shutdown" -TimeoutSec 5 | Out-Null
     } catch {
-        if ($parserProcess -and -not $parserProcess.HasExited) {
-            Stop-Process -Id $parserProcess.Id -Force
+        if ($parserLifecycle.process -and -not $parserLifecycle.process.HasExited) {
+            Stop-Process -Id $parserLifecycle.process.Id -Force
         }
     }
-    if ($parserProcess) {
-        $parserProcess.WaitForExit(5000) | Out-Null
+    if ($parserLifecycle.process) {
+        $parserLifecycle.process.WaitForExit(5000) | Out-Null
     }
 }
 
@@ -313,7 +395,7 @@ $positionCounts = @{}
 try {
     foreach ($match in $selectedMatches) {
         $matchId = [string]$match.match_id
-        $checkpointPath = Join-Path $checkpointDirectory "$matchId.json"
+        $checkpointPath = $null
         $result = [ordered]@{
             match_id = $matchId
             status = 'failed'
@@ -327,9 +409,9 @@ try {
         $currentParserVersion = $null
 
         try {
-            if ($matchId -notmatch '^\d+$') {
-                throw 'Manifest match_id must be numeric.'
-            }
+            $matchId = Get-CanonicalMatchId -MatchId $match.match_id
+            $result.match_id = $matchId
+            $checkpointPath = Join-Path $checkpointDirectory "$matchId.json"
             $replay = Resolve-ManifestReplayPath -ReplayPath ([string]$match.replay_path)
             $replaySha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $replay.absolute_path).Hash.ToLowerInvariant()
             $checkpoint = Read-Checkpoint -MatchId $matchId
@@ -391,7 +473,22 @@ try {
             error = $result.error
             completed_at = [DateTimeOffset]::Now.ToString('o')
         }
-        Write-AtomicJson -Path $checkpointPath -Value $checkpointValue
+        if ($checkpointPath) {
+            try {
+                if ($env:PLAYER_REPORT_REGRESSION_TEST_FAIL_CHECKPOINT_WRITE -eq $matchId) {
+                    throw 'Fixture checkpoint persistence failure.'
+                }
+                Write-AtomicJson -Path $checkpointPath -Value $checkpointValue
+            } catch {
+                $checkpointError = "Checkpoint persistence failed: $(ConvertTo-SafeError -ErrorRecord $_)"
+                $result.status = 'failed'
+                $result.error = if ($result.error) {
+                    "$($result.error); $checkpointError"
+                } else {
+                    $checkpointError
+                }
+            }
+        }
         $matchResults += [pscustomobject]$result
     }
 } finally {
