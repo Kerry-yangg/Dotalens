@@ -1175,11 +1175,161 @@ export function playerReportUpgradeState(report) {
   };
 }
 
+export function recomputePlayerReportBaseComponents(components = []) {
+  const sourceComponents = Array.isArray(components) ? components : [];
+  const round2 = (value) => Math.round((value + Number.EPSILON) * 100) / 100;
+  const round4 = (value) => Math.round((value + Number.EPSILON) * 10000) / 10000;
+  const clampScore = (value) => Math.max(0, Math.min(100, value));
+  const parsedRows = sourceComponents.map((component, index) => {
+    const source = component && typeof component === "object" && !Array.isArray(component)
+      ? component
+      : null;
+    const key = source == null ? "" : String(source.key ?? "").trim();
+    const available = source?.available === true;
+    const localWeight = finiteNumberOrNull(source?.local_weight);
+    const normalizedScore = finiteNumberOrNull(source?.normalized_score);
+    const storedEffectiveWeight = finiteNumberOrNull(source?.effective_local_weight);
+    const storedContribution = finiteNumberOrNull(source?.weighted_contribution);
+    const malformed = source == null
+      || !key
+      || typeof source.available !== "boolean"
+      || localWeight == null
+      || localWeight <= 0
+      || storedEffectiveWeight == null
+      || (available && normalizedScore == null)
+      || (available && storedContribution == null)
+      || (!available && (normalizedScore != null || storedContribution != null));
+    return {
+      index,
+      key,
+      available,
+      localWeight,
+      normalizedScore,
+      storedEffectiveWeight,
+      storedContribution,
+      malformed,
+      recomputedEffectiveWeight: malformed ? null : 0,
+      recomputedContribution: null,
+      issues: malformed ? ["base_component_malformed"] : [],
+    };
+  });
+  const keyCounts = new Map();
+  for (const row of parsedRows) {
+    if (row.key) keyCounts.set(row.key, (keyCounts.get(row.key) || 0) + 1);
+  }
+  for (const row of parsedRows) {
+    if (row.key && keyCounts.get(row.key) > 1) {
+      row.issues.push("base_component_duplicate_key");
+    }
+  }
+
+  const availableRows = parsedRows.filter((row) => row.available && !row.malformed);
+  const maximumWeight = availableRows.reduce(
+    (maximum, row) => Math.max(maximum, row.localWeight),
+    0,
+  );
+  const scaledDenominator = maximumWeight > 0
+    ? availableRows.reduce((sum, row) => sum + row.localWeight / maximumWeight, 0)
+    : 0;
+  const canRecompute = scaledDenominator > 0 && Number.isFinite(scaledDenominator);
+  let recomputedScore = null;
+  let recomputedWeightSum = 0;
+  if (canRecompute) {
+    let exactScore = 0;
+    let roundedWeightTotal = 0;
+    let roundedContributionTotal = 0;
+    for (const row of availableRows) {
+      const effectiveWeight = row.localWeight / maximumWeight * 100 / scaledDenominator;
+      const contribution = clampScore(row.normalizedScore) * effectiveWeight / 100;
+      row.recomputedEffectiveWeight = round4(effectiveWeight);
+      row.recomputedContribution = round4(contribution);
+      roundedWeightTotal += row.recomputedEffectiveWeight;
+      roundedContributionTotal += row.recomputedContribution;
+      exactScore += contribution;
+    }
+    const last = availableRows.at(-1);
+    last.recomputedEffectiveWeight = round4(
+      last.recomputedEffectiveWeight + 100 - roundedWeightTotal,
+    );
+    last.recomputedContribution = round4(
+      last.recomputedContribution + round4(exactScore) - roundedContributionTotal,
+    );
+    recomputedScore = round2(clampScore(exactScore));
+    recomputedWeightSum = availableRows.reduce(
+      (sum, row) => sum + row.recomputedEffectiveWeight,
+      0,
+    );
+  }
+
+  const storedScore = availableRows.length && availableRows.every(
+    (row) => row.storedContribution != null,
+  )
+    ? round2(availableRows.reduce((sum, row) => sum + row.storedContribution, 0))
+    : null;
+  const weightSum = availableRows.length && availableRows.every(
+    (row) => row.storedEffectiveWeight != null,
+  )
+    ? round4(availableRows.reduce((sum, row) => sum + row.storedEffectiveWeight, 0))
+    : null;
+  for (const row of parsedRows) {
+    if (!row.malformed && row.storedEffectiveWeight != null
+        && Math.abs(row.storedEffectiveWeight - row.recomputedEffectiveWeight) > 0.05) {
+      row.issues.push("base_component_weight_mismatch");
+    }
+    if (row.available && !row.malformed && row.storedContribution != null
+        && Math.abs(row.storedContribution - row.recomputedContribution) > 0.05) {
+      row.issues.push("base_component_contribution_mismatch");
+    }
+  }
+
+  const issues = [];
+  if (!Array.isArray(components) || !parsedRows.length || parsedRows.some((row) => row.malformed)) {
+    issues.push("base_component_malformed");
+  }
+  if (parsedRows.some((row) => row.issues.includes("base_component_duplicate_key"))) {
+    issues.push("base_component_duplicate_key");
+  }
+  if (parsedRows.some((row) => row.issues.includes("base_component_weight_mismatch"))) {
+    issues.push("base_component_weight_mismatch");
+  }
+  if (parsedRows.some((row) => row.issues.includes("base_component_contribution_mismatch"))) {
+    issues.push("base_component_contribution_mismatch");
+  }
+  if (canRecompute && (storedScore == null || Math.abs(storedScore - recomputedScore) > 0.05)) {
+    issues.push("base_component_score_mismatch");
+  }
+  if (canRecompute && (weightSum == null || Math.abs(weightSum - 100) > 0.01)) {
+    issues.push("base_component_weight_sum_mismatch");
+  }
+
+  return {
+    supported: true,
+    rows: parsedRows.map((row) => ({
+      key: row.key,
+      available: row.available,
+      storedEffectiveWeight: row.storedEffectiveWeight,
+      recomputedEffectiveWeight: row.recomputedEffectiveWeight,
+      storedContribution: row.storedContribution,
+      recomputedContribution: row.recomputedContribution,
+      issues: row.issues,
+      valid: row.issues.length === 0,
+    })),
+    storedScore,
+    recomputedScore,
+    weightSum,
+    recomputedWeightSum: canRecompute ? round4(recomputedWeightSum) : null,
+    issues,
+    valid: issues.length === 0,
+  };
+}
+
 export function recomputePlayerReportScoreAudit(report = {}) {
   const scoreCard = report?.score_card && typeof report.score_card === "object"
     ? report.score_card
     : report;
   const dimensions = Array.isArray(scoreCard?.dimensions) ? scoreCard.dimensions : [];
+  const atomicModel = (report?.base_component_model ?? scoreCard?.base_component_model)
+    === "player-report-base-components/1.0";
   const tolerance = Math.min(
     0.05,
     Math.max(
@@ -1240,6 +1390,10 @@ export function recomputePlayerReportScoreAudit(report = {}) {
     const components = Array.isArray(dimension?.scoring_components)
       ? dimension.scoring_components
       : [];
+    const baseComponents = Array.isArray(dimension?.base_components)
+      ? dimension.base_components
+      : [];
+    const baseComponentAudit = recomputePlayerReportBaseComponents(baseComponents);
     const componentModifier = round(components.reduce(
       (sum, component) => (
         component?.score_path === "modifier"
@@ -1252,6 +1406,17 @@ export function recomputePlayerReportScoreAudit(report = {}) {
       ? null
       : round(Math.max(0, Math.min(100, baseScore + componentModifier)));
     const issues = [];
+    if (atomicModel && !baseComponentAudit.valid) {
+      issues.push(...baseComponentAudit.issues);
+    }
+    if (atomicModel && baseComponents.some(
+      (component) => String(component?.key || "") === "existing_dimension_model",
+    )) {
+      issues.push("aggregate_component_in_current_report");
+    }
+    if (atomicModel && available && !differenceValid(baseScore, baseComponentAudit.recomputedScore)) {
+      issues.push("base_component_score_mismatch");
+    }
     if (available && !differenceValid(storedModifier, componentModifier)) {
       issues.push("dimension_modifier_mismatch");
     }
@@ -1274,8 +1439,9 @@ export function recomputePlayerReportScoreAudit(report = {}) {
       baseContribution: available ? round(baseScore * effectiveWeight / 100) : null,
       finalContribution: available ? round(recomputedFinalScore * effectiveWeight / 100) : null,
       components,
+      baseComponentAudit,
       issues,
-      valid: !available || issues.length === 0,
+      valid: issues.length === 0,
     };
   });
 
@@ -1307,6 +1473,9 @@ export function recomputePlayerReportScoreAudit(report = {}) {
   }
   if (duplicateAppliedDedupeKeys.size) issues.push("duplicate_applied_dedupe_key");
   if (invalidNonModifierApplied) issues.push("non_modifier_applied_delta");
+  if (atomicModel && rows.some((row) => row.issues.includes("aggregate_component_in_current_report"))) {
+    issues.push("aggregate_component_in_current_report");
+  }
   if (!included.length) issues.push("no_available_dimensions");
   if (rows.some((row) => !row.valid)) issues.push("dimension_recomputation_failed");
 
@@ -1315,6 +1484,7 @@ export function recomputePlayerReportScoreAudit(report = {}) {
   return {
     model: String(report?.model || scoreCard?.model || ""),
     supported,
+    atomicModel,
     tolerance,
     rows,
     storedBaseScore,

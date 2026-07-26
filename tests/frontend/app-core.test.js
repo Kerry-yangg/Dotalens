@@ -21,6 +21,7 @@ import {
   patchCoverageImpact,
   patchResolutionLabel,
   playerReportUpgradeState,
+  recomputePlayerReportBaseComponents,
   recomputePlayerReportScoreAudit,
   resolvePlayerReportReviewNavigation,
   resolveMatchListFailure,
@@ -30,6 +31,62 @@ import {
   simplifyPlayerReportText,
   upsertTaskHistory,
 } from "../../app-core.js";
+
+function atomicReportFixture() {
+  const baseComponents = [
+    {
+      key: "lane_model_score",
+      label: "对线模型结果",
+      available: true,
+      normalized_score: 80,
+      local_weight: 75,
+      effective_local_weight: 75,
+      weighted_contribution: 60,
+      confidence: 90,
+      comparison: {},
+      raw_metrics: {},
+      evidence_refs: ["laning.slot.0"],
+    },
+    {
+      key: "core_lane_opportunity_conversion",
+      label: "核心对线资源转化",
+      available: true,
+      normalized_score: 40,
+      local_weight: 25,
+      effective_local_weight: 25,
+      weighted_contribution: 10,
+      confidence: 90,
+      comparison: {},
+      raw_metrics: {},
+      evidence_refs: ["players.slot.0.lane_opportunity_summary"],
+    },
+  ];
+  const dimension = {
+    key: "lane_execution",
+    available: true,
+    weight: 100,
+    effective_weight: 100,
+    base_score: 70,
+    behavior_modifier: 0,
+    final_score: 70,
+    score: 70,
+    base_components: baseComponents,
+    scoring_components: [],
+  };
+  return {
+    model: "player-report/4.0",
+    base_component_model: "player-report-base-components/1.0",
+    root_causes: [],
+    score_card: {
+      model: "player-report/4.0",
+      base_score: 70,
+      behavior_modifier: 0,
+      final_score: 70,
+      dimensions: [dimension],
+      audit: { recomputation_tolerance: 0.05 },
+    },
+  };
+}
 
 test("match subject never falls back to the first Replay player", () => {
   const match = {
@@ -806,6 +863,110 @@ test("player report v4 score audit caps server-provided recomputation tolerance"
   assert.equal(audit.tolerance, 0.05);
   assert.equal(audit.valid, false);
   assert.equal(audit.recomputedFinalScore, 66);
+});
+
+test("recomputePlayerReportBaseComponents renormalizes available weights", () => {
+  const audit = recomputePlayerReportBaseComponents([
+    {
+      key: "relative_gpm",
+      available: true,
+      normalized_score: 80,
+      local_weight: 60,
+      effective_local_weight: 100,
+      weighted_contribution: 80,
+    },
+    {
+      key: "relative_xpm",
+      available: false,
+      normalized_score: null,
+      local_weight: 40,
+      effective_local_weight: 0,
+      weighted_contribution: null,
+      missing_reason: "counterpart_or_subject_xpm_missing",
+    },
+  ]);
+
+  assert.equal(audit.valid, true);
+  assert.equal(audit.recomputedScore, 80);
+  assert.equal(audit.rows[0].recomputedEffectiveWeight, 100);
+});
+
+test("recomputePlayerReportBaseComponents reports stable atomic component audit keys", () => {
+  const audit = recomputePlayerReportBaseComponents([
+    {
+      key: "duplicate",
+      available: true,
+      normalized_score: 80,
+      local_weight: 50,
+      effective_local_weight: 60,
+      weighted_contribution: 99,
+    },
+    {
+      key: "duplicate",
+      available: true,
+      normalized_score: "not-a-number",
+      local_weight: Number.POSITIVE_INFINITY,
+      effective_local_weight: 40,
+      weighted_contribution: 1,
+    },
+  ]);
+
+  assert.equal(audit.valid, false);
+  assert.ok(audit.issues.includes("base_component_duplicate_key"));
+  assert.ok(audit.issues.includes("base_component_malformed"));
+  assert.ok(audit.rows[0].issues.includes("base_component_weight_mismatch"));
+  assert.ok(audit.rows[0].issues.includes("base_component_contribution_mismatch"));
+});
+
+test("recomputePlayerReportBaseComponents rejects non-finite persisted atomic values", () => {
+  const audit = recomputePlayerReportBaseComponents([{
+    key: "relative_gpm",
+    available: true,
+    normalized_score: 80,
+    local_weight: 100,
+    effective_local_weight: Number.POSITIVE_INFINITY,
+    weighted_contribution: 80,
+  }]);
+
+  assert.equal(audit.valid, false);
+  assert.ok(audit.issues.includes("base_component_malformed"));
+});
+
+test("player report audit rejects tampered atomic contributions", () => {
+  const report = atomicReportFixture();
+  report.score_card.dimensions[0].base_components[0].weighted_contribution = 99;
+
+  const audit = recomputePlayerReportScoreAudit(report);
+
+  assert.equal(audit.valid, false);
+  assert.ok(audit.rows[0].issues.includes("base_component_contribution_mismatch"));
+});
+
+test("current atomic reports reject existing_dimension_model", () => {
+  const report = atomicReportFixture();
+  report.score_card.dimensions[0].base_components[0].key =
+    "existing_dimension_model";
+
+  const audit = recomputePlayerReportScoreAudit(report);
+
+  assert.ok(audit.issues.includes("aggregate_component_in_current_report"));
+});
+
+test("current atomic reports reject malformed components in unavailable dimensions", () => {
+  const report = atomicReportFixture();
+  report.score_card.dimensions.push({
+    key: "vision_team",
+    available: false,
+    effective_weight: 0,
+    base_components: [],
+    scoring_components: [],
+  });
+
+  const audit = recomputePlayerReportScoreAudit(report);
+
+  assert.equal(audit.valid, false);
+  assert.equal(audit.rows[1].valid, false);
+  assert.ok(audit.rows[1].issues.includes("base_component_malformed"));
 });
 
 test("every known hero has a bundled local portrait and a non-missing fallback", () => {
