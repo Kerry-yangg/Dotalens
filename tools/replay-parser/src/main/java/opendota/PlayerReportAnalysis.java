@@ -357,46 +357,82 @@ final class PlayerReportAnalysis {
             case 4 -> 0.14;
             default -> 0.09;
         };
-        List<Integer> combatParts = new ArrayList<>();
-        List<Integer> combatWeights = new ArrayList<>();
+        List<String> combatMissing = new ArrayList<>();
+        List<PlayerReportBaseComponents.ComponentInput> combatInputs = new ArrayList<>();
         if (teamDamage > 0) {
-            combatParts.add(shareScore(preferred(own, "hero_damage", "damage_dealt"),
-                    teamDamage, damageTarget));
-            combatWeights.add(55);
+            double ownDamage = preferred(own, "hero_damage", "damage_dealt");
+            combatInputs.add(shareComponent("team_damage_share_vs_role_target",
+                    "团队伤害占比相对位置目标", ownDamage, teamDamage, damageTarget, 55,
+                    moduleConfidence(modules, "combat", 80), "damage",
+                    List.of("players:slot:" + slot + ":hero_damage")));
+        } else {
+            combatMissing.add("team_damage_share_inputs_missing");
+            combatInputs.add(missingComponent("team_damage_share_vs_role_target",
+                    "团队伤害占比相对位置目标", 55, moduleConfidence(modules, "combat", 80),
+                    "team_damage_share_inputs_missing",
+                    List.of("players:slot:" + slot + ":hero_damage")));
         }
         if (fight.reviewableFights > 0) {
-            combatParts.add(clamp(50 + (int) Math.round(
-                    (fight.averageDamageShare - damageTarget * 100) * 1.4), 0, 100));
-            combatWeights.add(25);
-            combatParts.add(clamp(fight.averageKillConversion, 0, 100));
-            combatWeights.add(20);
+            List<String> fightRefs = combatFightRefs(slot);
+            combatInputs.add(shareComponent("fight_damage_share_vs_role_target",
+                    "战斗伤害占比相对位置目标", fight.averageDamageShare, 100,
+                    damageTarget, 25, moduleConfidence(modules, "combat", 80), "percent",
+                    fightRefs));
+            combatInputs.add(component("kill_conversion", "击杀转化", fight.averageKillConversion,
+                    20, moduleConfidence(modules, "combat", 80), fight.averageKillConversion,
+                    100, "percent", rawMetrics("average_kill_conversion",
+                            fight.averageKillConversion, "reviewable_fights", fight.reviewableFights),
+                    fightRefs));
+        } else {
+            combatMissing.add("classified_combat_contributions");
+            combatInputs.add(missingComponent("fight_damage_share_vs_role_target",
+                    "战斗伤害占比相对位置目标", 25, moduleConfidence(modules, "combat", 80),
+                    "classified_combat_contributions", combatFightRefs(slot)));
+            combatInputs.add(missingComponent("kill_conversion", "击杀转化", 20,
+                    moduleConfidence(modules, "combat", 80), "classified_combat_contributions",
+                    combatFightRefs(slot)));
         }
-        List<String> combatMissing = new ArrayList<>();
-        if (fight.reviewableFights == 0) combatMissing.add("classified_combat_contributions");
-        int combatConfidence = combatParts.isEmpty() ? 35
+        int combatConfidence = combatInputs.stream()
+                .noneMatch(PlayerReportBaseComponents.ComponentInput::available) ? 35
                 : Math.min(moduleConfidence(modules, "combat", 80),
                         fight.reviewableFights > 0 ? 72 + Math.min(18, fight.reviewableFights) : 60);
-        scores.put("combat", combatParts.isEmpty()
-                ? missing(combatConfidence, combatMissing)
-                : dimension(weightedLists(combatParts, combatWeights), combatConfidence,
-                        combatMissing.isEmpty() ? "derived" : "partial", combatMissing));
+        scores.put("combat", dimensionFromComponents(combatInputs, combatConfidence,
+                combatMissing.isEmpty() ? "derived" : "partial", combatMissing));
 
         double ownUtility = utilityValue(own);
         double utilityTarget = position >= 4 ? 0.30 : position == 3 ? 0.18 : 0.11;
         List<String> dutyMissing = new ArrayList<>();
         dutyMissing.add("hero_specific_duty_context");
-        DimensionScore duty;
+        List<PlayerReportBaseComponents.ComponentInput> dutyInputs = new ArrayList<>();
         if (fight.passedDutyFights == 0) {
-            dutyMissing.add("passed_responsibility_gate_fights");
-            duty = missing(Math.min(50, fight.averageDutyConfidence), dutyMissing);
+            dutyMissing.add("no_passed_responsibility_gate_fights");
+            dutyInputs.add(missingComponent("hard_gated_duty_average", "硬门控职责平均分", 75,
+                    Math.min(50, fight.averageDutyConfidence),
+                    "no_passed_responsibility_gate_fights", combatFightRefs(slot)));
         } else {
-            int utility = weighted(fight.averageDutyScore, 75,
-                    shareScore(ownUtility, teamUtility, utilityTarget), 25);
-            int utilityConfidence = Math.min(moduleConfidence(modules, "combat", 80),
-                    fight.averageDutyConfidence);
-            duty = dimension(utility, utilityConfidence, "gated", dutyMissing);
+            dutyInputs.add(component("hard_gated_duty_average", "硬门控职责平均分",
+                    fight.averageDutyScore, 75, fight.averageDutyConfidence,
+                    fight.averageDutyScore, 100, "score", rawMetrics("passed_duty_fights",
+                            fight.passedDutyFights, "average_duty_score", fight.averageDutyScore),
+                    combatFightRefs(slot)));
         }
-        scores.put("utility", duty);
+        if (teamUtility > 0) {
+            dutyInputs.add(shareComponent("team_utility_share_vs_role_target",
+                    "团队效用占比相对位置目标", ownUtility, teamUtility, utilityTarget, 25,
+                    moduleConfidence(modules, "combat", 80), "utility",
+                    List.of("players:slot:" + slot + ":utility")));
+        } else {
+            dutyMissing.add("team_utility_share_inputs_missing");
+            dutyInputs.add(missingComponent("team_utility_share_vs_role_target",
+                    "团队效用占比相对位置目标", 25, moduleConfidence(modules, "combat", 80),
+                    "team_utility_share_inputs_missing",
+                    List.of("players:slot:" + slot + ":utility")));
+        }
+        int dutyConfidence = fight.passedDutyFights == 0 ? Math.min(50, fight.averageDutyConfidence)
+                : Math.min(moduleConfidence(modules, "combat", 80), fight.averageDutyConfidence);
+        scores.put("utility", dimensionFromComponents(dutyInputs, dutyConfidence,
+                dutyMissing.isEmpty() ? "gated" : "partial", dutyMissing,
+                fight.passedDutyFights > 0));
 
         double ownVision = visionValue(own);
         double visionTarget = switch (position) {
@@ -408,16 +444,40 @@ final class PlayerReportAnalysis {
         };
         VisionSignals visionFacts = visionSignals(modules, slot);
         List<String> visionMissing = new ArrayList<>();
-        if (!visionFacts.modulePresent) visionMissing.add("ward_lifecycle_module");
+        List<PlayerReportBaseComponents.ComponentInput> visionInputs = new ArrayList<>();
+        if (teamVision > 0) {
+            visionInputs.add(shareComponent("team_vision_share_vs_role_target",
+                    "团队视野占比相对位置目标", ownVision, teamVision, visionTarget, 65,
+                    moduleConfidence(modules, "vision", 76), "vision_value",
+                    List.of("players:slot:" + slot + ":vision")));
+        } else {
+            visionMissing.add("team_vision_share_inputs_missing");
+            visionInputs.add(missingComponent("team_vision_share_vs_role_target",
+                    "团队视野占比相对位置目标", 65, moduleConfidence(modules, "vision", 76),
+                    "team_vision_share_inputs_missing",
+                    List.of("players:slot:" + slot + ":vision")));
+        }
+        if (!visionFacts.modulePresent) {
+            visionMissing.add("ward_lifecycle_module");
+            visionInputs.add(missingComponent("own_ward_average_score", "个人眼位平均评分",
+                    35, moduleConfidence(modules, "vision", 76), "ward_lifecycle_module",
+                    List.of("vision:wards:slot:" + slot)));
+        } else {
+            visionInputs.add(component("own_ward_average_score", "个人眼位平均评分",
+                    visionFacts.wards > 0 ? visionFacts.averageScore : 50, 35,
+                    moduleConfidence(modules, "vision", 76), visionFacts.averageScore, 100,
+                    "score", rawMetrics("wards", visionFacts.wards,
+                            "average_score", visionFacts.averageScore,
+                            "average_duration", visionFacts.averageDuration,
+                            "detections", visionFacts.detections),
+                    List.of("vision:wards:slot:" + slot)));
+        }
         if (!visionFacts.hasDetectionEvidence) visionMissing.add("enemy_detection_events");
-        int visionConfidence = !visionFacts.modulePresent || teamVision <= 0 ? 40
-                : Math.min(moduleConfidence(modules, "vision", 76), 82);
-        int vision = weighted(shareScore(ownVision, teamVision, visionTarget), 65,
-                visionFacts.wards > 0 ? clamp(visionFacts.averageScore, 0, 100) : 50, 35);
-        scores.put("vision", visionConfidence < 55
-                ? missing(visionConfidence, visionMissing)
-                : dimension(vision, visionConfidence,
-                        visionMissing.isEmpty() ? "derived" : "partial", visionMissing));
+        int visionConfidence = visionFacts.modulePresent
+                ? Math.min(moduleConfidence(modules, "vision", 76), 82)
+                : teamVision <= 0 ? 40 : Math.min(moduleConfidence(modules, "vision", 76), 68);
+        scores.put("vision", dimensionFromComponents(visionInputs, visionConfidence,
+                visionMissing.isEmpty() ? "derived" : "partial", visionMissing));
 
         int deaths = intValue(own, "deaths", 0);
         int opponentDeaths = intValue(roleOpponent, "deaths", deaths);
@@ -866,6 +926,21 @@ final class PlayerReportAnalysis {
         return PlayerReportBaseComponents.missing(key, label, weight, confidence, reason, evidenceRefs);
     }
 
+    private static PlayerReportBaseComponents.ComponentInput shareComponent(String key, String label,
+            double subjectValue, double teamTotal, double roleTargetShare, double weight,
+            int confidence, String unit, List<String> evidenceRefs) {
+        return component(key, label, shareScore(subjectValue, teamTotal, roleTargetShare), weight,
+                confidence, subjectValue, teamTotal, unit, rawMetrics(
+                        "subject_value", subjectValue,
+                        "team_total", teamTotal,
+                        "subject_share", teamTotal <= 0 ? 0 : subjectValue / teamTotal,
+                        "role_target_share", roleTargetShare), evidenceRefs);
+    }
+
+    private static List<String> combatFightRefs(int slot) {
+        return List.of("combat:fights", "combat:fights:slot:" + slot);
+    }
+
     private static JsonObject comparison(double subject, double reference, String unit) {
         JsonObject result = new JsonObject();
         result.addProperty("subject", round2(subject));
@@ -889,9 +964,15 @@ final class PlayerReportAnalysis {
     private static DimensionScore dimensionFromComponents(
             List<PlayerReportBaseComponents.ComponentInput> inputs, int confidence,
             String evidenceLevel, List<String> missing) {
+        return dimensionFromComponents(inputs, confidence, evidenceLevel, missing, true);
+    }
+
+    private static DimensionScore dimensionFromComponents(
+            List<PlayerReportBaseComponents.ComponentInput> inputs, int confidence,
+            String evidenceLevel, List<String> missing, boolean availabilityGate) {
         var calculation = PlayerReportBaseComponents.calculate(inputs);
         int normalizedConfidence = clamp(confidence, 0, 100);
-        boolean available = calculation.available() && normalizedConfidence >= 55;
+        boolean available = availabilityGate && calculation.available() && normalizedConfidence >= 55;
         return new DimensionScore(calculation.score() == null ? 50 : calculation.score(),
                 normalizedConfidence, available, available ? evidenceLevel : "partial",
                 List.copyOf(missing), calculation);

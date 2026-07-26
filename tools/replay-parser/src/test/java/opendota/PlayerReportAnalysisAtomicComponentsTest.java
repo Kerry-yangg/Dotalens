@@ -1,6 +1,7 @@
 package opendota;
 
 import static opendota.PlayerReportAtomicTestFixture.completeModulesForPosition;
+import static opendota.PlayerReportAtomicTestFixture.blockEveryFightDutyGate;
 import static opendota.PlayerReportAtomicTestFixture.player;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -100,6 +101,63 @@ class PlayerReportAnalysisAtomicComponentsTest {
                 .get("effective_local_weight").getAsDouble(), 0.01);
     }
 
+    @Test
+    void emitsCombatDutyAndVisionComponentsWithRoleTargets() {
+        JsonObject modules = completeModulesForPosition(4);
+        PlayerReportAnalysis.enrich(modules, null, 1800);
+
+        JsonObject report = report(modules, 0);
+        assertComponentKeys(report, "combat_output",
+                "team_damage_share_vs_role_target",
+                "fight_damage_share_vs_role_target",
+                "kill_conversion");
+        assertComponentKeys(report, "combat_duty",
+                "hard_gated_duty_average",
+                "team_utility_share_vs_role_target");
+        assertComponentKeys(report, "vision_team",
+                "team_vision_share_vs_role_target",
+                "own_ward_average_score");
+
+        JsonObject damage = component(dimension(report, "combat_output"),
+                "team_damage_share_vs_role_target");
+        assertEquals(55.0, damage.get("local_weight").getAsDouble(), 0.01);
+        assertEquals(0.14, damage.getAsJsonObject("raw_metrics")
+                .get("role_target_share").getAsDouble(), 0.0001);
+        assertTrue(damage.getAsJsonObject("comparison").has("subject"));
+        JsonObject fightDamage = component(dimension(report, "combat_output"),
+                "fight_damage_share_vs_role_target");
+        assertHasEvidenceRef(fightDamage, "combat:fights");
+        assertHasEvidenceRef(fightDamage, "combat:fights:slot:0");
+
+        assertEquals(25.0, fightDamage.get("local_weight").getAsDouble(), 0.01);
+        assertEquals(20.0, component(dimension(report, "combat_output"),
+                "kill_conversion").get("local_weight").getAsDouble(), 0.01);
+        assertEquals(75.0, component(dimension(report, "combat_duty"),
+                "hard_gated_duty_average").get("local_weight").getAsDouble(), 0.01);
+        assertEquals(25.0, component(dimension(report, "combat_duty"),
+                "team_utility_share_vs_role_target").get("local_weight").getAsDouble(), 0.01);
+        assertEquals(65.0, component(dimension(report, "vision_team"),
+                "team_vision_share_vs_role_target").get("local_weight").getAsDouble(), 0.01);
+        assertEquals(35.0, component(dimension(report, "vision_team"),
+                "own_ward_average_score").get("local_weight").getAsDouble(), 0.01);
+        assertDimensionRecomputes(report, "combat_output");
+        assertDimensionRecomputes(report, "combat_duty");
+        assertDimensionRecomputes(report, "vision_team");
+    }
+
+    @Test
+    void excludesCombatDutyWhenNoFightPassesResponsibilityGate() {
+        JsonObject modules = completeModulesForPosition(4);
+        blockEveryFightDutyGate(modules);
+        PlayerReportAnalysis.enrich(modules, null, 1800);
+
+        JsonObject duty = dimension(report(modules, 0), "combat_duty");
+        assertFalse(duty.get("available").getAsBoolean());
+        assertEquals("no_passed_responsibility_gate_fights",
+                component(duty, "hard_gated_duty_average")
+                        .get("missing_reason").getAsString());
+    }
+
     private static JsonObject report(JsonObject modules, int slot) {
         return PlayerReportAtomicTestFixture.player(modules, slot)
                 .getAsJsonObject("report");
@@ -136,6 +194,13 @@ class PlayerReportAnalysisAtomicComponentsTest {
             String componentKey) {
         assertThrows(AssertionError.class,
                 () -> component(dimension(report, dimensionKey), componentKey));
+    }
+
+    private static void assertHasEvidenceRef(JsonObject component, String expected) {
+        for (JsonElement element : component.getAsJsonArray("evidence_refs")) {
+            if (expected.equals(element.getAsString())) return;
+        }
+        throw new AssertionError("Missing evidence reference " + expected);
     }
 
     private static void assertDimensionRecomputes(JsonObject report,
