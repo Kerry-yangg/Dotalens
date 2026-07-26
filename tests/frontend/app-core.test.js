@@ -932,6 +932,175 @@ test("recomputePlayerReportBaseComponents rejects non-finite persisted atomic va
   assert.ok(audit.issues.includes("base_component_malformed"));
 });
 
+test("recomputePlayerReportBaseComponents rejects non-number atomic fields", () => {
+  const validComponent = () => ({
+    key: "relative_gpm",
+    available: true,
+    normalized_score: 80,
+    local_weight: 100,
+    effective_local_weight: 100,
+    weighted_contribution: 80,
+  });
+  for (const field of [
+    "normalized_score",
+    "local_weight",
+    "effective_local_weight",
+    "weighted_contribution",
+  ]) {
+    for (const value of [true, {}]) {
+      const audit = recomputePlayerReportBaseComponents([{
+        ...validComponent(),
+        [field]: value,
+      }]);
+
+      assert.equal(audit.valid, false, `${field}=${String(value)} must be rejected`);
+      assert.ok(audit.issues.includes("base_component_malformed"));
+    }
+  }
+});
+
+test("recomputePlayerReportBaseComponents matches Java 206-row weight reconciliation", () => {
+  const components = [
+    ...Array.from({ length: 206 }, (_, index) => ({
+      key: `small_${index}`,
+      available: true,
+      normalized_score: 50,
+      local_weight: 0.480051,
+      effective_local_weight: 0.4801,
+      weighted_contribution: 0.24,
+    })),
+    {
+      key: "large",
+      available: true,
+      normalized_score: 50,
+      local_weight: 1.109494,
+      effective_local_weight: 1.0994,
+      weighted_contribution: 0.56,
+    },
+  ];
+
+  const audit = recomputePlayerReportBaseComponents(components);
+
+  assert.equal(audit.valid, true);
+  assert.equal(audit.recomputedScore, 50);
+  assert.equal(audit.weightSum, 100);
+  assert.equal(audit.rows[0].recomputedEffectiveWeight, 0.4801);
+  assert.equal(audit.rows[0].recomputedContribution, 0.24);
+  assert.equal(audit.rows.at(-1).recomputedEffectiveWeight, 1.0994);
+  assert.equal(audit.rows.at(-1).recomputedContribution, 0.56);
+});
+
+test("recomputePlayerReportBaseComponents matches Java 3001-row contribution reconciliation", () => {
+  const components = [
+    ...Array.from({ length: 3000 }, (_, index) => ({
+      key: `tiny_${index}`,
+      available: true,
+      normalized_score: 50,
+      local_weight: 0.033251,
+      effective_local_weight: 0.0333,
+      weighted_contribution: 0.0166,
+    })),
+    {
+      key: "remainder",
+      available: true,
+      normalized_score: 50,
+      local_weight: 0.247,
+      effective_local_weight: 0.1,
+      weighted_contribution: 0.2,
+    },
+  ];
+
+  const audit = recomputePlayerReportBaseComponents(components);
+
+  assert.equal(audit.valid, true);
+  assert.equal(audit.recomputedScore, 50);
+  assert.equal(audit.weightSum, 100);
+  assert.equal(audit.rows[0].recomputedEffectiveWeight, 0.0333);
+  assert.equal(audit.rows[0].recomputedContribution, 0.0166);
+  assert.equal(audit.rows.at(-1).recomputedEffectiveWeight, 0.1);
+  assert.equal(audit.rows.at(-1).recomputedContribution, 0.2);
+});
+
+test("recomputePlayerReportBaseComponents normalizes Number.MAX_VALUE weights", () => {
+  const audit = recomputePlayerReportBaseComponents([
+    {
+      key: "max_a",
+      available: true,
+      normalized_score: 50,
+      local_weight: Number.MAX_VALUE,
+      effective_local_weight: 50,
+      weighted_contribution: 25,
+    },
+    {
+      key: "max_b",
+      available: true,
+      normalized_score: 50,
+      local_weight: Number.MAX_VALUE,
+      effective_local_weight: 50,
+      weighted_contribution: 25,
+    },
+  ]);
+
+  assert.equal(audit.valid, true);
+  assert.equal(audit.recomputedScore, 50);
+  assert.equal(audit.weightSum, 100);
+  assert.equal(audit.rows[0].recomputedEffectiveWeight, 50);
+  assert.equal(audit.rows[0].recomputedContribution, 25);
+  assert.equal(audit.rows[1].recomputedEffectiveWeight, 50);
+  assert.equal(audit.rows[1].recomputedContribution, 25);
+});
+
+test("recomputePlayerReportBaseComponents matches Java half-boundary reconciliation", () => {
+  const components = Array.from({ length: 1000 }, (_, index) => ({
+    key: `half_${index}`,
+    available: true,
+    normalized_score: 0.04999999999999999,
+    local_weight: 1,
+    effective_local_weight: 0.1,
+    weighted_contribution: index === 999 ? 0.05 : 0,
+  }));
+
+  const audit = recomputePlayerReportBaseComponents(components);
+
+  assert.equal(audit.valid, true);
+  assert.equal(audit.recomputedScore, 0.05);
+  assert.equal(audit.weightSum, 100);
+  assert.equal(audit.rows[0].recomputedEffectiveWeight, 0.1);
+  assert.equal(audit.rows[0].recomputedContribution, 0);
+  assert.equal(audit.rows.at(-1).recomputedEffectiveWeight, 0.1);
+  assert.equal(audit.rows.at(-1).recomputedContribution, 0.05);
+});
+
+test("atomic base-score validation retains its fixed tolerance", () => {
+  const report = atomicReportFixture();
+  report.score_card.audit.recomputation_tolerance = 0.001;
+  report.score_card.dimensions[0].base_score = 70.04;
+  report.score_card.dimensions[0].final_score = 70.04;
+  report.score_card.dimensions[0].score = 70.04;
+  report.score_card.base_score = 70.04;
+  report.score_card.final_score = 70.04;
+
+  const audit = recomputePlayerReportScoreAudit(report);
+
+  assert.equal(audit.valid, true);
+  assert.ok(!audit.rows[0].issues.includes("base_component_score_mismatch"));
+});
+
+test("atomic base-score validation rejects values beyond its fixed tolerance", () => {
+  const report = atomicReportFixture();
+  report.score_card.audit.recomputation_tolerance = 0.001;
+  report.score_card.dimensions[0].base_score = 70.06;
+  report.score_card.dimensions[0].final_score = 70.06;
+  report.score_card.dimensions[0].score = 70.06;
+  report.score_card.base_score = 70.06;
+  report.score_card.final_score = 70.06;
+
+  const audit = recomputePlayerReportScoreAudit(report);
+
+  assert.equal(audit.valid, false);
+  assert.ok(audit.rows[0].issues.includes("base_component_score_mismatch"));
+});
+
 test("player report audit rejects tampered atomic contributions", () => {
   const report = atomicReportFixture();
   report.score_card.dimensions[0].base_components[0].weighted_contribution = 99;

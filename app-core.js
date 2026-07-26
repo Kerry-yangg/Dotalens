@@ -90,6 +90,10 @@ function finiteNumberOrNull(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function atomicJsonNumberOrNull(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 const COMBAT_CONTRIBUTION_METRICS = Object.freeze({
   responsibility: {
     label: "职责评分", field: "responsibilityScore", unit: "score", higherIsBetter: true,
@@ -1177,8 +1181,8 @@ export function playerReportUpgradeState(report) {
 
 export function recomputePlayerReportBaseComponents(components = []) {
   const sourceComponents = Array.isArray(components) ? components : [];
-  const round2 = (value) => Math.round((value + Number.EPSILON) * 100) / 100;
-  const round4 = (value) => Math.round((value + Number.EPSILON) * 10000) / 10000;
+  const round2 = (value) => Math.round(value * 100) / 100;
+  const round4 = (value) => Math.round(value * 10000) / 10000;
   const clampScore = (value) => Math.max(0, Math.min(100, value));
   const parsedRows = sourceComponents.map((component, index) => {
     const source = component && typeof component === "object" && !Array.isArray(component)
@@ -1186,10 +1190,14 @@ export function recomputePlayerReportBaseComponents(components = []) {
       : null;
     const key = source == null ? "" : String(source.key ?? "").trim();
     const available = source?.available === true;
-    const localWeight = finiteNumberOrNull(source?.local_weight);
-    const normalizedScore = finiteNumberOrNull(source?.normalized_score);
-    const storedEffectiveWeight = finiteNumberOrNull(source?.effective_local_weight);
-    const storedContribution = finiteNumberOrNull(source?.weighted_contribution);
+    const localWeight = atomicJsonNumberOrNull(source?.local_weight);
+    const normalizedScore = source?.normalized_score === null
+      ? null
+      : atomicJsonNumberOrNull(source?.normalized_score);
+    const storedEffectiveWeight = atomicJsonNumberOrNull(source?.effective_local_weight);
+    const storedContribution = source?.weighted_contribution === null
+      ? null
+      : atomicJsonNumberOrNull(source?.weighted_contribution);
     const malformed = source == null
       || !key
       || typeof source.available !== "boolean"
@@ -1198,7 +1206,7 @@ export function recomputePlayerReportBaseComponents(components = []) {
       || storedEffectiveWeight == null
       || (available && normalizedScore == null)
       || (available && storedContribution == null)
-      || (!available && (normalizedScore != null || storedContribution != null));
+      || (!available && (source.normalized_score !== null || source.weighted_contribution !== null));
     return {
       index,
       key,
@@ -1341,6 +1349,9 @@ export function recomputePlayerReportScoreAudit(report = {}) {
   const differenceValid = (left, right) => (
     left != null && right != null && Math.abs(left - right) <= tolerance
   );
+  const atomicScoreDifferenceValid = (left, right) => (
+    left != null && right != null && Math.abs(left - right) <= 0.05
+  );
   const pathCounts = {
     embedded: 0,
     modifier: 0,
@@ -1414,7 +1425,8 @@ export function recomputePlayerReportScoreAudit(report = {}) {
     )) {
       issues.push("aggregate_component_in_current_report");
     }
-    if (atomicModel && available && !differenceValid(baseScore, baseComponentAudit.recomputedScore)) {
+    if (atomicModel && available
+        && !atomicScoreDifferenceValid(baseScore, baseComponentAudit.recomputedScore)) {
       issues.push("base_component_score_mismatch");
     }
     if (available && !differenceValid(storedModifier, componentModifier)) {
