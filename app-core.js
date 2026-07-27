@@ -1084,6 +1084,145 @@ export function ordinaryPlayerReportInsightEligible(insight = {}) {
   return jumpTarget.reviewable;
 }
 
+const SIMPLE_REPORT_DOMAINS = [
+  { key: "lane", label: "对线", dimensionKeys: ["lane_execution"] },
+  { key: "farm", label: "发育路线", dimensionKeys: ["farm_efficiency", "resource_decision"] },
+  { key: "tempo", label: "地图节奏", dimensionKeys: ["map_tempo"] },
+  { key: "combat", label: "战斗", dimensionKeys: ["combat_output", "combat_duty", "survival_risk"] },
+  { key: "vision", label: "目标与视野", dimensionKeys: ["objective_conversion", "vision_team"] },
+  { key: "execution", label: "操作执行", dimensionKeys: ["observable_execution"] },
+];
+
+export function normalizeReadingMode(value) {
+  return value === "professional" ? "professional" : "simple";
+}
+
+function simpleDomainStatus(score) {
+  if (score == null) return "insufficient";
+  if (score >= 68) return "good";
+  if (score < 52) return "improve";
+  return "stable";
+}
+
+function normalizeSimpleReportInsight(source = {}) {
+  const jumpTarget = normalizePlayerReportJumpTarget(
+    source.jump_target ?? source.jumpTarget,
+  );
+  const primaryOccurrence = jumpTarget.reviewable ? [{
+    id: jumpTarget.entityId,
+    fightId: jumpTarget.entityType === "fight" ? jumpTarget.entityId : "",
+    time: jumpTarget.time ?? jumpTarget.rangeStart,
+    region: jumpTarget.mapFocus.region,
+    label: String(source.title || ""),
+    arrivalDeltaSeconds: null,
+    missedFirstRotation: false,
+    joinFeasibility: "",
+    jumpTarget,
+  }] : [];
+  const occurrences = [
+    ...primaryOccurrence,
+    ...normalizePlayerReportInsightOccurrences(source.occurrences),
+  ];
+  return {
+    ...source,
+    id: String(source.id || ""),
+    kind: String(source.kind || ""),
+    rootCauseId: String(source.root_cause_id ?? source.rootCauseId ?? ""),
+    time: finiteNumberOrNull(source.time_start ?? source.time),
+    timeEnd: finiteNumberOrNull(source.time_end ?? source.timeEnd),
+    jumpTarget,
+    occurrences,
+  };
+}
+
+function simpleInsightKey(insight) {
+  if (insight.rootCauseId) return `root:${insight.rootCauseId}`;
+  if (insight.jumpTarget.entityId) {
+    return `entity:${insight.jumpTarget.entityType}:${insight.jumpTarget.entityId}`;
+  }
+  return `fact:${insight.kind}:${insight.category || ""}:${insight.title || ""}:${insight.time ?? ""}`;
+}
+
+export function buildSimplePlayerReport({
+  dimensions = [],
+  insights = [],
+  stories = [],
+  training = [],
+} = {}) {
+  const dimensionsByKey = new Map(
+    dimensions.map((dimension) => [String(dimension.key || ""), dimension]),
+  );
+  const domains = SIMPLE_REPORT_DOMAINS.map((domain) => {
+    const judgeable = domain.dimensionKeys
+      .map((key) => dimensionsByKey.get(key))
+      .filter((dimension) => dimension && dimension.available !== false)
+      .map((dimension) => ({
+        score: finiteNumberOrNull(dimension.finalScore ?? dimension.score),
+        weight: Math.max(1, finiteNumberOrNull(
+          dimension.roleWeight ?? dimension.weight,
+        ) ?? 1),
+      }))
+      .filter((dimension) => dimension.score != null);
+    const totalWeight = judgeable.reduce((sum, item) => sum + item.weight, 0);
+    const score = totalWeight
+      ? judgeable.reduce((sum, item) => sum + item.score * item.weight, 0) / totalWeight
+      : null;
+    return { key: domain.key, label: domain.label, score, status: simpleDomainStatus(score) };
+  });
+
+  const merged = new Map();
+  insights
+    .filter((insight) => ordinaryPlayerReportInsightEligible(insight))
+    .map(normalizeSimpleReportInsight)
+    .forEach((insight) => {
+      const key = simpleInsightKey(insight);
+      const existing = merged.get(key);
+      if (!existing) {
+        merged.set(key, insight);
+        return;
+      }
+      const occurrences = [...existing.occurrences, ...insight.occurrences];
+      merged.set(key, {
+        ...existing,
+        occurrences: [...new Map(occurrences.map((occurrence) => [
+          `${occurrence.jumpTarget.entityId}:${occurrence.time}`,
+          occurrence,
+        ])).values()],
+      });
+    });
+
+  const timeline = [...merged.values()].sort(
+    (left, right) => (left.time ?? Number.MAX_SAFE_INTEGER)
+      - (right.time ?? Number.MAX_SAFE_INTEGER),
+  );
+  const strengthKinds = new Set(["strength", "positive"]);
+  const improvementKinds = new Set(["improvement", "problem", "priority"]);
+  return {
+    domains,
+    strengths: timeline.filter((insight) => strengthKinds.has(insight.kind)),
+    improvements: timeline.filter((insight) => improvementKinds.has(insight.kind)),
+    timeline,
+    stories: Array.isArray(stories) ? [...stories] : [],
+    primaryTraining: Array.isArray(training) ? training[0] || null : null,
+  };
+}
+
+export function presentSimpleInsight(insight = {}) {
+  return {
+    id: String(insight.id || ""),
+    kind: String(insight.kind || ""),
+    title: String(insight.title || ""),
+    time: finiteNumberOrNull(insight.time),
+    timeEnd: finiteNumberOrNull(insight.timeEnd),
+    location: String(insight.location || ""),
+    fact: String(insight.fact || ""),
+    impact: String(insight.impact || insight.judgment || ""),
+    action: String(insight.action || ""),
+    jumpTarget: normalizePlayerReportJumpTarget(insight.jumpTarget),
+    occurrences: normalizePlayerReportInsightOccurrences(insight.occurrences),
+  };
+}
+
 export function resolvePlayerReportReviewNavigation(value = {}) {
   const target = normalizePlayerReportJumpTarget(value);
   const entityNavigation = {

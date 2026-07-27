@@ -6,6 +6,7 @@ import { HERO_META } from "../../hero-meta.js";
 import { renderPlayerScoreAtomicAudit } from "../../player-score-atomic-audit.js";
 import {
   activeTaskFromHistory,
+  buildSimplePlayerReport,
   combatVisionStatus,
   countPlayerLaneWaves,
   createMatchCache,
@@ -327,6 +328,32 @@ test("ordinary player report keeps one clear action path", () => {
   assert.equal(selected.priority.id, "issue-1");
   assert.equal(selected.training.id, "matched");
   assert.equal(brief.stories.length, 4);
+});
+
+test("simple report weights available dimensions and preserves domain thresholds", () => {
+  const report = buildSimplePlayerReport({
+    dimensions: [
+      { key: "lane_execution", finalScore: 68, roleWeight: 2 },
+      { key: "farm_efficiency", finalScore: 50, roleWeight: 1 },
+      { key: "resource_decision", finalScore: 53, roleWeight: 1 },
+      { key: "map_tempo", score: 52 },
+      { key: "combat_output", finalScore: 51 },
+      { key: "combat_duty", finalScore: 53 },
+      { key: "survival_risk", available: false, finalScore: 100 },
+    ],
+  });
+
+  assert.deepEqual(
+    report.domains.map(({ key, score, status }) => ({ key, score, status })),
+    [
+      { key: "lane", score: 68, status: "good" },
+      { key: "farm", score: 51.5, status: "improve" },
+      { key: "tempo", score: 52, status: "stable" },
+      { key: "combat", score: 52, status: "stable" },
+      { key: "vision", score: null, status: "insufficient" },
+      { key: "execution", score: null, status: "insufficient" },
+    ],
+  );
 });
 
 test("player report localization normalizes a bounded map review target", () => {
