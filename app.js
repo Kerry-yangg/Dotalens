@@ -190,6 +190,11 @@ import {
   createPreviewUpdateState,
   createUpdateViewModel,
 } from "./update-ui.js";
+import {
+  MATCH_LIMIT_STORAGE_KEY,
+  normalizeMatchLimit,
+  playerMatchesPath,
+} from "./match-list-preferences.js";
 
 const API_BASE = "http://127.0.0.1:5600/api";
 const APP_VERSION = "0.4.5";
@@ -394,6 +399,7 @@ const WARD_MAP_ZOOM_MIN = 1;
 const WARD_MAP_ZOOM_MAX = 4;
 const WARD_MAP_ZOOM_FACTOR = 1.22;
 const SAVED_SIDEBAR_STATE = window.localStorage.getItem(SIDEBAR_STATE_KEY);
+const SAVED_MATCH_LIMIT = normalizeMatchLimit(window.localStorage.getItem(MATCH_LIMIT_STORAGE_KEY));
 const DEFAULT_SIDEBAR_COLLAPSED = SAVED_SIDEBAR_STATE == null
   ? window.matchMedia("(max-width: 1279px)").matches
   : SAVED_SIDEBAR_STATE === "1";
@@ -904,6 +910,7 @@ const state = {
   playerScoreEvidenceOpen: false,
   playerReportView: "facts",
   accountId: DEFAULT_ACCOUNT_ID,
+  matchLimit: SAVED_MATCH_LIMIT,
   matches: [],
   matchesStatus: "idle",
   matchesError: "",
@@ -1842,6 +1849,21 @@ function persistCurrentMatchesCache() {
   return persistMatchPayload(state.accountId, rawMatches, state.matchesFetchedAt);
 }
 
+function syncMatchLimitControls() {
+  document.querySelectorAll("#match-limit-input, #settings-match-limit").forEach((input) => {
+    input.value = String(state.matchLimit);
+  });
+  const rangeLabel = document.querySelector("#account-match-range-label");
+  if (rangeLabel) rangeLabel.textContent = `最多 ${state.matchLimit} 场`;
+}
+
+function setMatchLimit(value, { persist = true } = {}) {
+  state.matchLimit = normalizeMatchLimit(value, state.matchLimit);
+  if (persist) window.localStorage.setItem(MATCH_LIMIT_STORAGE_KEY, String(state.matchLimit));
+  syncMatchLimitControls();
+  return state.matchLimit;
+}
+
 function updateAccountChrome() {
   const connected = state.matchesStatus === "ready";
   const accountId = state.accountId;
@@ -1920,6 +1942,7 @@ async function loadMatches(accountId = state.accountId, options = {}) {
     document.querySelector("#account-id-input").focus();
     return;
   }
+  const matchLimit = setMatchLimit(options.limit ?? state.matchLimit);
   state.accountId = normalized;
   state.matchesStatus = "loading";
   state.matchesError = "";
@@ -1932,8 +1955,10 @@ async function loadMatches(accountId = state.accountId, options = {}) {
   lookupButton.innerHTML = `<i data-lucide="loader-circle"></i><span>读取中</span>`;
   refreshIcons(lookupButton);
   try {
-    const payload = await apiFetch(`/players/${normalized}/matches`);
-    state.matches = (payload.matches || []).map(normalizeMatch);
+    const payload = await apiFetch(playerMatchesPath(normalized, matchLimit));
+    const confirmedLimit = normalizeMatchLimit(payload.requested_limit, matchLimit);
+    setMatchLimit(confirmedLimit);
+    state.matches = (payload.matches || []).slice(0, confirmedLimit).map(normalizeMatch);
     state.matchesAvailability = payload.availability || null;
     state.matchesStatus = "ready";
     state.matchesOffline = false;
@@ -1957,7 +1982,7 @@ async function loadMatches(accountId = state.accountId, options = {}) {
     const fallback = resolveMatchListFailure(cached, normalized, error.message || "OpenDota 暂时不可用");
     const parserAvailable = await checkParserStatus({ retries: 0 });
     if (fallback.offline) {
-      state.matches = fallback.matches.map(normalizeMatch);
+      state.matches = fallback.matches.slice(0, matchLimit).map(normalizeMatch);
       state.matchesStatus = fallback.status;
       state.matchesOffline = true;
       state.matchesAvailability = null;
@@ -2339,7 +2364,7 @@ function renderMatches() {
     return;
   }
   if (state.matchesStatus === "idle") {
-    list.innerHTML = `<div class="match-empty-state"><span class="empty-state-icon"><i data-lucide="user-round-search"></i></span><strong>输入 Dota 2 游戏 ID</strong><p>本地解析器会读取该账号最近 20 场比赛，并标出可自动解析的场次。</p></div>`;
+    list.innerHTML = `<div class="match-empty-state"><span class="empty-state-icon"><i data-lucide="user-round-search"></i></span><strong>输入 Dota 2 游戏 ID</strong><p>本地解析器会读取该账号最近最多 ${state.matchLimit} 场比赛，并标出可自动解析的场次。</p></div>`;
     resultCount.textContent = "等待账号";
     refreshIcons(list);
     return;
@@ -8499,7 +8524,8 @@ function bindEvents() {
   });
   document.querySelector("#account-lookup-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    loadMatches(document.querySelector("#account-id-input").value);
+    const limit = setMatchLimit(document.querySelector("#match-limit-input").value);
+    loadMatches(document.querySelector("#account-id-input").value, { limit });
   });
   document.querySelector(".primary-nav").addEventListener("click", (event) => {
     const button = event.target.closest("[data-page]");
@@ -9078,8 +9104,12 @@ function bindEvents() {
     if (value) persistDirectorySetting(input.dataset.settingsPath, value);
   }));
   document.querySelector("#settings-verify-account").addEventListener("click", () => {
+    const limit = setMatchLimit(document.querySelector("#settings-match-limit").value);
     setPage("matches");
-    loadMatches(document.querySelector("#settings-account-id").value);
+    loadMatches(document.querySelector("#settings-account-id").value, { limit });
+  });
+  document.querySelectorAll("#match-limit-input, #settings-match-limit").forEach((input) => {
+    input.addEventListener("change", () => setMatchLimit(input.value));
   });
   document.querySelector("#settings-export-diagnostics").addEventListener("click", exportDiagnostics);
   document.querySelector("#update-check").addEventListener("click", () => void runUpdateAction("check"));
@@ -9173,6 +9203,7 @@ function bindEvents() {
 
 async function init() {
   restoreDirectorySettings();
+  syncMatchLimitControls();
   applyScoreboardStressFixture();
   applySidebarLayout();
   setWardSideView(state.wardSideView);

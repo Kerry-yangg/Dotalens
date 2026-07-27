@@ -265,7 +265,7 @@ try {
     $status = Wait-ParserStatus -Online $true -TimeoutSeconds $StartupTimeoutSeconds
     $results.parser = $status
     Add-SmokeCheck 'app_process_alive' (-not $appProcess.HasExited) "pid=$($appProcess.Id)"
-    Add-SmokeCheck 'parser_api_version' ($status.version -eq '1.6.0') "version=$($status.version)"
+    Add-SmokeCheck 'parser_api_version' ($status.version -eq '1.6.1') "version=$($status.version)"
     Add-SmokeCheck 'bundled_java_runtime' ([string]$status.java_version -like '21*') "java=$($status.java_version)"
 
     $parserData = [IO.Path]::GetFullPath([string]$status.data_directory)

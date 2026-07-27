@@ -103,13 +103,14 @@
             <form id="account-lookup-form" class="account-lookup" autocomplete="off">
               <span class="account-avatar compact"><i data-lucide="user-round-search"></i></span>
               <label for="account-id-input"><small>Dota 2 游戏 ID</small><input id="account-id-input" name="account_id" inputmode="numeric" pattern="[0-9]+" placeholder="输入 Dota 2 游戏 ID" autocomplete="off" aria-label="Dota 2 游戏 ID"></label>
+              <label class="match-limit-control" for="match-limit-input"><small>读取场数</small><span><input id="match-limit-input" type="number" min="1" max="500" step="1" value="20" inputmode="numeric" aria-label="读取比赛场数"><em>场</em></span></label>
               <button id="account-lookup-button" class="command-button" type="submit"><i data-lucide="search"></i><span>读取比赛</span></button>
             </form>
 
             <div class="toolbar-divider"></div>
 
             <div class="compact-summary">
-              <span><small>近 20 场</small><strong id="account-win-summary">--</strong></span>
+              <span><small id="account-match-range-label">最多 20 场</small><strong id="account-win-summary">--</strong></span>
               <span><small>本地完整</small><strong id="account-full-summary">--</strong></span>
               <span><small>平均 KDA</small><strong id="account-kda-summary">--</strong></span>
             </div>
@@ -155,7 +156,7 @@
               <span>英雄 / 结果</span><span>K / D / A</span><span>补刀 / 反补</span><span>GPM / XPM</span><span>时长</span><span>数据状态</span><span></span>
             </div>
             <div id="matches-list" class="matches-list" role="list"></div>
-            <div class="list-footer"><span id="match-result-count">输入账号后读取比赛</span><button id="load-more" class="text-command" type="button">刷新最近比赛</button></div>
+            <div class="list-footer"><span id="match-result-count">输入账号后读取比赛</span><button id="load-more" class="text-command" type="button">按当前数量刷新</button></div>
           </div>
         </section>
 
@@ -799,6 +800,7 @@
                 <header><span class="panel-kicker">账号</span><h2>Dota 2 游戏 ID</h2></header>
                 <div class="settings-form">
                   <label><span>Dota 2 游戏 ID</span><div class="field-row"><input id="settings-account-id" inputmode="numeric" placeholder="输入 Dota 2 游戏 ID" autocomplete="off" aria-label="Dota 2 游戏 ID"><button id="settings-verify-account" class="command-button secondary" type="button">验证</button></div><small class="settings-field-help">就是 Dota 2 个人资料中显示的数字 ID，通常为 8 至 10 位数字。</small></label>
+                  <label><span>默认读取比赛数</span><input id="settings-match-limit" type="number" min="1" max="500" step="1" value="20" inputmode="numeric" aria-label="默认读取比赛数"><small class="settings-field-help">可设置 1 至 500 场，默认 20 场。数量越大，OpenDota 返回和列表渲染所需时间越长。</small></label>
                   <label><span>SteamID64</span><input id="settings-steam-id64" value="--" readonly></label>
                 </div>
               </section>

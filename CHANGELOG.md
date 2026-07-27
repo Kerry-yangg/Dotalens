@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Let users choose how many recent matches to load, from 1 to 500, with a persisted default of 20.
+
+### Changed
+
+- Forward the selected match count through Parser API `1.6.1` to OpenDota instead of fixing every request at 20 matches.
+
 ## 0.4.5 - 2026-07-25
 
 ### Added

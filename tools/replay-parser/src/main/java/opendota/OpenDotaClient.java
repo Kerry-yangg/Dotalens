@@ -19,6 +19,9 @@ import com.google.gson.JsonParser;
 final class OpenDotaClient {
     private static final String DEFAULT_API_BASE = "https://api.opendota.com/api";
     private static final String USER_AGENT = "DotaLens/0.4.1 (+local replay analysis; github.com/Kerry-yangg/Dotalens)";
+    static final int DEFAULT_MATCH_LIMIT = 20;
+    static final int MIN_MATCH_LIMIT = 1;
+    static final int MAX_MATCH_LIMIT = 500;
     private static final String[] MATCH_LIST_FIELDS = {
             "player_slot", "radiant_win", "duration", "game_mode", "lobby_type", "hero_id",
             "start_time", "version", "kills", "deaths", "assists", "skill", "leaver_status",
@@ -43,8 +46,8 @@ final class OpenDotaClient {
                 .build();
     }
 
-    JsonElement getRecentMatches(long accountId) throws IOException, InterruptedException {
-        return requestJson("GET", recentMatchesPath(accountId));
+    JsonElement getRecentMatches(long accountId, int limit) throws IOException, InterruptedException {
+        return requestJson("GET", recentMatchesPath(accountId, limit));
     }
 
     JsonObject getPlayerProfile(long accountId) throws IOException, InterruptedException {
@@ -59,10 +62,14 @@ final class OpenDotaClient {
         return "/players/" + accountId;
     }
 
-    static String recentMatchesPath(long accountId) {
+    static String recentMatchesPath(long accountId, int limit) {
+        if (limit < MIN_MATCH_LIMIT || limit > MAX_MATCH_LIMIT) {
+            throw new IllegalArgumentException("match limit must be between 1 and 500");
+        }
         StringBuilder path = new StringBuilder("/players/")
                 .append(accountId)
-                .append("/matches?limit=20");
+                .append("/matches?limit=")
+                .append(limit);
         for (String field : MATCH_LIST_FIELDS) {
             path.append("&project=").append(field);
         }

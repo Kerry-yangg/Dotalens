@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.net.URI;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -20,7 +21,7 @@ import com.sun.net.httpserver.HttpServer;
 
 final class DotaLensApi {
     private static final Gson GSON = new Gson();
-    private static final String API_VERSION = "1.6.0";
+    private static final String API_VERSION = "1.6.1";
 
     private final OpenDotaClient openDota;
     private final ReplayJobManager jobs;
@@ -129,8 +130,13 @@ final class DotaLensApi {
             sendError(exchange, 400, "invalid_account_id", "account_id must be a positive number");
             return;
         }
+        Integer matchLimit = matchListLimit(exchange.getRequestURI());
+        if (matchLimit == null) {
+            sendError(exchange, 400, "invalid_match_limit", "limit must be one integer between 1 and 500");
+            return;
+        }
         try {
-            JsonElement result = openDota.getRecentMatches(accountId);
+            JsonElement result = openDota.getRecentMatches(accountId, matchLimit);
             if (!result.isJsonArray()) {
                 throw new IOException("OpenDota recent matches response is not an array");
             }
@@ -166,6 +172,7 @@ final class DotaLensApi {
             }
             JsonObject payload = new JsonObject();
             payload.addProperty("account_id", accountId);
+            payload.addProperty("requested_limit", matchLimit);
             payload.addProperty("fetched_at", Instant.now().toString());
             payload.add("matches", matches);
             JsonObject profile = new JsonObject();
@@ -442,6 +449,36 @@ final class DotaLensApi {
 
     private static String[] pathParts(URI uri) {
         return uri.getPath().split("/");
+    }
+
+    static Integer matchListLimit(URI uri) {
+        String query = uri.getRawQuery();
+        if (query == null || query.isBlank()) {
+            return OpenDotaClient.DEFAULT_MATCH_LIMIT;
+        }
+        Integer result = null;
+        for (String pair : query.split("&")) {
+            int separator = pair.indexOf('=');
+            String rawKey = separator >= 0 ? pair.substring(0, separator) : pair;
+            String rawValue = separator >= 0 ? pair.substring(separator + 1) : "";
+            try {
+                String key = URLDecoder.decode(rawKey, StandardCharsets.UTF_8);
+                if (!key.equals("limit")) {
+                    continue;
+                }
+                if (result != null) {
+                    return null;
+                }
+                int parsed = Integer.parseInt(URLDecoder.decode(rawValue, StandardCharsets.UTF_8));
+                if (parsed < OpenDotaClient.MIN_MATCH_LIMIT || parsed > OpenDotaClient.MAX_MATCH_LIMIT) {
+                    return null;
+                }
+                result = parsed;
+            } catch (IllegalArgumentException error) {
+                return null;
+            }
+        }
+        return result == null ? OpenDotaClient.DEFAULT_MATCH_LIMIT : result;
     }
 
     private static Long positiveLong(String value) {

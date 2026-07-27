@@ -10,7 +10,7 @@ const APP_URL = `${APP_SCHEME}://app/`;
 const API_STATUS_URL = "http://127.0.0.1:5600/api/status";
 const API_SHUTDOWN_URL = "http://127.0.0.1:5600/api/shutdown";
 const API_BASE_URL = "http://127.0.0.1:5600/api";
-const PARSER_API_VERSION = "1.6.0";
+const PARSER_API_VERSION = "1.6.1";
 const userDataOverride = process.env.DOTA_LENS_USER_DATA_DIR
   ? path.resolve(process.env.DOTA_LENS_USER_DATA_DIR)
   : null;

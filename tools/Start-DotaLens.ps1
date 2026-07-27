@@ -15,7 +15,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $java = Join-Path $PSScriptRoot "runtime\jdk-21\bin\java.exe"
 $jar = Join-Path $PSScriptRoot "replay-parser\target\stats-0.1.0.jar"
 $logs = Join-Path $DataDirectory "logs"
-$expectedParserVersion = "1.6.0"
+$expectedParserVersion = "1.6.1"
 $parserProcess = $null
 $ownsParser = $false
 

@@ -28,7 +28,7 @@ test("detail header exposes a real switch-player command", () => {
   assert.match(app, /openMatchSubjectDialog/);
 });
 
-test("0.4.5 desktop and Parser 1.6.0 versions stay aligned", () => {
+test("0.4.5 desktop and Parser 1.6.1 versions stay aligned", () => {
   const packageJson = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
   const packageLock = JSON.parse(readFileSync(new URL("../../package-lock.json", import.meta.url), "utf8"));
   const app = readFileSync(new URL("../../app.js", import.meta.url), "utf8");
@@ -40,11 +40,11 @@ test("0.4.5 desktop and Parser 1.6.0 versions stay aligned", () => {
   assert.equal(packageLock.version, "0.4.5");
   assert.equal(packageLock.packages[""].version, "0.4.5");
   assert.match(app, /APP_VERSION = "0\.4\.5"/);
-  assert.match(desktop, /PARSER_API_VERSION = "1\.6\.0"/);
-  assert.match(startScript, /expectedParserVersion = "1\.6\.0"/);
+  assert.match(desktop, /PARSER_API_VERSION = "1\.6\.1"/);
+  assert.match(startScript, /expectedParserVersion = "1\.6\.1"/);
   assert.match(smoke, /Dota-Lens-Setup-0\.4\.5-x64\.exe/);
   assert.match(smoke, /version = '0\.4\.5'/);
-  assert.match(smoke, /status\.version -eq '1\.6\.0'/);
+  assert.match(smoke, /status\.version -eq '1\.6\.1'/);
 });
 
 test("development launcher can detach the long-running frontend", () => {

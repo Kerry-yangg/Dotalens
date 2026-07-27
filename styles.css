@@ -8820,8 +8820,8 @@ svg {
 
 .account-lookup {
   display: grid;
-  min-width: 390px;
-  grid-template-columns: 32px minmax(170px, 1fr) auto;
+  min-width: 460px;
+  grid-template-columns: 32px minmax(150px, 1fr) 68px auto;
   align-items: center;
   gap: 9px;
 }
@@ -8848,6 +8848,23 @@ svg {
   font-family: var(--font-numeric);
   font-size: 15px;
   font-weight: 700;
+}
+
+.account-lookup .match-limit-control span {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.account-lookup .match-limit-control input {
+  width: 45px;
+  text-align: right;
+}
+
+.account-lookup .match-limit-control em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
 }
 
 .account-lookup:focus-within .account-avatar {
@@ -11228,7 +11245,7 @@ svg {
 
 @media (max-width: 1279px) {
   .account-lookup {
-    min-width: 330px;
+    min-width: 390px;
   }
 
   .account-lookup .command-button span {
@@ -11243,7 +11260,7 @@ svg {
 
 @media (max-width: 1099px) {
   .account-lookup {
-    min-width: 270px;
+    min-width: 340px;
   }
 
   .matches-toolbar .toolbar-divider {

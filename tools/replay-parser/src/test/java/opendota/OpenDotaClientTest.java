@@ -1,6 +1,7 @@
 package opendota;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
@@ -24,13 +25,15 @@ class OpenDotaClientTest {
 
     @Test
     void requestsProjectedMatchFieldsNeededByTheList() {
-        String path = OpenDotaClient.recentMatchesPath(123456789L);
+        String path = OpenDotaClient.recentMatchesPath(123456789L, 75);
 
-        assertTrue(path.startsWith("/players/123456789/matches?limit=20"));
+        assertTrue(path.startsWith("/players/123456789/matches?limit=75"));
         assertTrue(path.contains("&project=last_hits"));
         assertTrue(path.contains("&project=denies"));
         assertTrue(path.contains("&project=gold_per_min"));
         assertTrue(path.contains("&project=xp_per_min"));
+        assertThrows(IllegalArgumentException.class, () -> OpenDotaClient.recentMatchesPath(123456789L, 0));
+        assertThrows(IllegalArgumentException.class, () -> OpenDotaClient.recentMatchesPath(123456789L, 501));
     }
 
     @Test
