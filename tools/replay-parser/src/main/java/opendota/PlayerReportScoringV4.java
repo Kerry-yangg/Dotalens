@@ -184,6 +184,9 @@ final class PlayerReportScoringV4 {
             boolean declaredAvailable = booleanValue(row, "available", row.has("score"));
             boolean sourceScoreValid = finiteNumber(row, "base_score")
                     || finiteNumber(row, "score");
+            boolean sourceUnavailableScoresValid = declaredAvailable
+                    || (missingOrExplicitNull(row, "base_score")
+                    && missingOrExplicitNull(row, "score"));
             boolean available = declaredAvailable
                     && (currentAtomicModel || sourceScoreValid);
             double base = available
@@ -191,7 +194,7 @@ final class PlayerReportScoringV4 {
                     : 0;
             double roleWeight = Math.max(0, number(row, "weight", 0));
             result.put(key, new DimensionState(row, key, available, roleWeight, base,
-                    currentAtomicModel, sourceScoreValid));
+                    currentAtomicModel, sourceScoreValid, sourceUnavailableScoresValid));
         }
         return result;
     }
@@ -259,6 +262,7 @@ final class PlayerReportScoringV4 {
 
             if (!dimension.available) {
                 dimension.baseComponentValid = unavailableComponentsValid
+                        && dimension.sourceUnavailableScoresValid
                         && !calculation.available()
                         && calculation.score() == null
                         && Math.abs(dimension.baseComponentWeightSum)
@@ -861,6 +865,10 @@ final class PlayerReportScoringV4 {
         return object != null && object.has(key) && object.get(key).isJsonNull();
     }
 
+    private static boolean missingOrExplicitNull(JsonObject object, String key) {
+        return object != null && (!object.has(key) || object.get(key).isJsonNull());
+    }
+
     private static double number(JsonElement value) {
         return number(value, 0);
     }
@@ -895,6 +903,7 @@ final class PlayerReportScoringV4 {
         private final double baseScore;
         private final boolean currentAtomicModel;
         private final boolean sourceScoreValid;
+        private final boolean sourceUnavailableScoresValid;
         private double effectiveWeight;
         private double behaviorModifier;
         private double finalScore;
@@ -910,7 +919,7 @@ final class PlayerReportScoringV4 {
 
         private DimensionState(JsonObject row, String key, boolean available,
                 double roleWeight, double baseScore, boolean currentAtomicModel,
-                boolean sourceScoreValid) {
+                boolean sourceScoreValid, boolean sourceUnavailableScoresValid) {
             this.row = row;
             this.key = key;
             this.available = available;
@@ -918,6 +927,7 @@ final class PlayerReportScoringV4 {
             this.baseScore = baseScore;
             this.currentAtomicModel = currentAtomicModel;
             this.sourceScoreValid = sourceScoreValid;
+            this.sourceUnavailableScoresValid = sourceUnavailableScoresValid;
             this.finalScore = baseScore;
         }
     }

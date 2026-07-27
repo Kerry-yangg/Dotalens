@@ -8,8 +8,10 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -37,6 +39,11 @@ const PLAYER_REPORT_RUNNER = resolve(
   PROJECT_ROOT,
   "tools",
   "Invoke-PlayerReportRegression.ps1",
+);
+const PLAYER_REPORT_STAGING_HELPER = resolve(
+  PROJECT_ROOT,
+  "tools",
+  "PlayerReportReplayStaging.ps1",
 );
 const PLAYER_REPORT_MANIFEST = resolve(
   PROJECT_ROOT,
@@ -440,11 +447,15 @@ function directorySnapshot(directory) {
 }
 
 function assertNoAtomicDirectoryResidue(directory) {
+  assert.deepEqual(atomicDirectoryResidue(directory), []);
+}
+
+function atomicDirectoryResidue(directory) {
   const prefix = `${basename(directory)}.`;
-  const residue = readdirSync(dirname(directory))
+  return readdirSync(dirname(directory))
     .filter((entry) => entry.startsWith(`${prefix}staging-`)
-      || entry.startsWith(`${prefix}backup-`));
-  assert.deepEqual(residue, []);
+      || entry.startsWith(`${prefix}backup-`))
+    .map((entry) => join(dirname(directory), entry));
 }
 
 function writeExpectedSentinels(fixture) {
@@ -487,6 +498,41 @@ function escapeAnalysisSource(fixture, matchId) {
   summary.analysis_storage.module_base = escapedDirectory;
   writeFileSync(summaryPath, JSON.stringify(summary));
   return escapedDirectory;
+}
+
+function createDirectoryLink(target, link, testContext) {
+  try {
+    symlinkSync(
+      resolve(target),
+      link,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    return true;
+  } catch (error) {
+    if (process.platform === "win32") throw error;
+    if (["EACCES", "ENOSYS", "ENOTSUP", "EPERM"].includes(error?.code)) {
+      testContext.skip(`directory links are unavailable: ${error.code}`);
+      return false;
+    }
+    throw error;
+  }
+}
+
+function moveDirectoryBehindLink(source, outsideRoot, name, testContext) {
+  const target = join(outsideRoot, name);
+  renameSync(source, target);
+  if (!createDirectoryLink(target, source, testContext)) return null;
+  return target;
+}
+
+function runGoldenCommand(fixture, command) {
+  const args = command === "approve-golden"
+    ? [TOOL, command, fixture.manifestPath, "--reviewed"]
+    : [TOOL, command, fixture.manifestPath];
+  return spawnSync(process.execPath, args, {
+    cwd: fixture.root,
+    encoding: "utf8",
+  });
 }
 
 test("candidates CLI writes and prints a deterministic ten-player table per match", () => {
@@ -821,8 +867,220 @@ test("Golden commands reject split-module source traversal at the source-loading
   }
 });
 
+test("Golden commands reject real-path source escapes before boundary writes", async (t) => {
+  const attacks = [
+    {
+      label: "Replay directory junction",
+      install(fixture, matchId, outsideRoot, testContext) {
+        const replayDirectory = join(
+          fixture.root,
+          "tools",
+          "runtime",
+          "dota-lens-data",
+          "replays",
+        );
+        const outsideSource = join(outsideRoot, "source");
+        mkdirSync(outsideSource, { recursive: true });
+        copyFileSync(
+          join(replayDirectory, `${matchId}.dem`),
+          join(outsideSource, `${matchId}.dem`),
+        );
+        writeFileSync(join(outsideSource, "sentinel.txt"), "outside unchanged");
+        if (!createDirectoryLink(
+          outsideSource,
+          join(replayDirectory, "escaped"),
+          testContext,
+        )) return null;
+        const manifest = JSON.parse(readFileSync(fixture.manifestPath, "utf8"));
+        manifest.matches[0].replay_path =
+          `tools/runtime/dota-lens-data/replays/escaped/${matchId}.dem`;
+        writeFileSync(fixture.manifestPath, JSON.stringify(manifest));
+        return outsideSource;
+      },
+    },
+    {
+      label: "split module junction",
+      install(fixture, matchId, outsideRoot, testContext) {
+        const source = join(
+          fixture.root,
+          "tools",
+          "runtime",
+          "dota-lens-data",
+          "analyses",
+          matchId,
+          "modules",
+          "fixture",
+        );
+        return moveDirectoryBehindLink(
+          source,
+          outsideRoot,
+          "source",
+          testContext,
+        );
+      },
+    },
+  ];
+
+  for (const attack of attacks) {
+    for (const command of ["candidates", "propose-golden", "approve-golden"]) {
+      await t.test(`${command} rejects ${attack.label}`, (testContext) => {
+        const matchIds = Array.from(
+          { length: 16 },
+          (_, index) => String(9900000751 + index),
+        );
+        const fixture = createRunnerFixture(matchIds);
+        const outsideRoot = mkdtempSync(join(tmpdir(), "player-report-link-outside-"));
+        writeCliMatrixManifest(fixture);
+        const expectedDirectory = writeExpectedSentinels(fixture);
+        try {
+          if (command === "approve-golden") {
+            const proposal = runRegressionCliFixture(fixture, "propose-golden");
+            assert.equal(proposal.status, 0, proposal.stderr || proposal.stdout);
+          }
+          const candidateDirectory = join(fixture.runtime, "candidate-golden");
+          const reportPath = join(fixture.runtime, "reports", "candidates.md");
+          const expectedBefore = directorySnapshot(expectedDirectory);
+          const candidateBefore = directorySnapshot(candidateDirectory);
+          const candidateExisted = existsSync(candidateDirectory);
+          const reportExisted = existsSync(reportPath);
+          const reportBefore = reportExisted ? readFileSync(reportPath) : null;
+          const outsideSource = attack.install(
+            fixture,
+            matchIds[0],
+            outsideRoot,
+            testContext,
+          );
+          if (!outsideSource) return;
+          const outsideBefore = directorySnapshot(outsideSource);
+
+          const result = runGoldenCommand(fixture, command);
+
+          assert.notEqual(result.status, 0);
+          assert.match(result.stderr, /real path|link|escapes/i);
+          assert.deepEqual(directorySnapshot(expectedDirectory), expectedBefore);
+          assert.equal(existsSync(candidateDirectory), candidateExisted);
+          assert.deepEqual(directorySnapshot(candidateDirectory), candidateBefore);
+          assert.equal(existsSync(reportPath), reportExisted);
+          if (reportBefore) assert.deepEqual(readFileSync(reportPath), reportBefore);
+          assert.deepEqual(directorySnapshot(outsideSource), outsideBefore);
+        } finally {
+          rmSync(fixture.root, { recursive: true, force: true });
+          rmSync(outsideRoot, { recursive: true, force: true });
+        }
+      });
+    }
+  }
+});
+
+test("Golden command output directories reject real-path link escapes", async (t) => {
+  const cases = [
+    {
+      command: "candidates",
+      destination(fixture) {
+        return join(fixture.runtime, "reports");
+      },
+    },
+    {
+      command: "propose-golden",
+      destination(fixture) {
+        return join(fixture.runtime, "candidate-golden");
+      },
+    },
+    {
+      command: "approve-golden",
+      destination(fixture) {
+        return join(
+          fixture.root,
+          "tests",
+          "player-report-regression",
+          "expected",
+        );
+      },
+    },
+  ];
+
+  for (const { command, destination } of cases) {
+    await t.test(command, (testContext) => {
+      const matchIds = Array.from(
+        { length: 16 },
+        (_, index) => String(9900000771 + index),
+      );
+      const fixture = createRunnerFixture(matchIds);
+      const outsideRoot = mkdtempSync(join(tmpdir(), "player-report-output-outside-"));
+      writeCliMatrixManifest(fixture);
+      const expectedDirectory = writeExpectedSentinels(fixture);
+      try {
+        if (command === "approve-golden") {
+          const proposal = runRegressionCliFixture(fixture, "propose-golden");
+          assert.equal(proposal.status, 0, proposal.stderr || proposal.stdout);
+        }
+        const expectedBefore = directorySnapshot(expectedDirectory);
+        const linkedDestination = destination(fixture);
+        mkdirSync(linkedDestination, { recursive: true });
+        writeFileSync(join(linkedDestination, "outside-sentinel.txt"), "unchanged");
+        const outsideDestination = moveDirectoryBehindLink(
+          linkedDestination,
+          outsideRoot,
+          "destination",
+          testContext,
+        );
+        if (!outsideDestination) return;
+        const outsideBefore = directorySnapshot(outsideDestination);
+
+        const result = runGoldenCommand(fixture, command);
+
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /real path|link|escapes/i);
+        assert.equal(realpathSync(linkedDestination), realpathSync(outsideDestination));
+        assert.deepEqual(directorySnapshot(outsideDestination), outsideBefore);
+        if (command !== "approve-golden") {
+          assert.deepEqual(directorySnapshot(expectedDirectory), expectedBefore);
+        }
+      } finally {
+        rmSync(fixture.root, { recursive: true, force: true });
+        rmSync(outsideRoot, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("approve-golden rejects a candidate source directory junction", (t) => {
+  const matchIds = Array.from(
+    { length: 16 },
+    (_, index) => String(9900000791 + index),
+  );
+  const fixture = createRunnerFixture(matchIds);
+  const outsideRoot = mkdtempSync(join(tmpdir(), "player-report-candidate-outside-"));
+  writeCliMatrixManifest(fixture);
+  const expectedDirectory = writeExpectedSentinels(fixture);
+  try {
+    const proposal = runRegressionCliFixture(fixture, "propose-golden");
+    assert.equal(proposal.status, 0, proposal.stderr || proposal.stdout);
+    const candidateDirectory = join(fixture.runtime, "candidate-golden");
+    const outsideCandidates = moveDirectoryBehindLink(
+      candidateDirectory,
+      outsideRoot,
+      "candidate-golden",
+      t,
+    );
+    if (!outsideCandidates) return;
+    const expectedBefore = directorySnapshot(expectedDirectory);
+    const candidatesBefore = directorySnapshot(outsideCandidates);
+
+    const approval = runGoldenCommand(fixture, "approve-golden");
+
+    assert.notEqual(approval.status, 0);
+    assert.match(approval.stderr, /candidate.*real path|link|escapes/i);
+    assert.deepEqual(directorySnapshot(expectedDirectory), expectedBefore);
+    assert.deepEqual(directorySnapshot(outsideCandidates), candidatesBefore);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+    rmSync(outsideRoot, { recursive: true, force: true });
+  }
+});
+
 test("approve-golden restores old expected bytes after staging and swap failures", async (t) => {
-  for (const operation of ["write", "copy", "rename"]) {
+  for (const operation of ["write", "rename"]) {
     await t.test(operation, () => {
       const matchIds = Array.from(
         { length: 16 },
@@ -845,15 +1103,6 @@ test("approve-golden restores old expected bytes after staging and swap failures
               throw new Error("fixture staging write failure");
             }
             return writeFileSync(path, contents);
-          };
-        } else if (operation === "copy") {
-          fileSystem.copyFileSync = (source, destination) => {
-            if (String(destination).includes(".staging-")) {
-              targetCalls += 1;
-              copyFileSync(source, destination);
-              throw new Error("fixture staging copy failure");
-            }
-            return copyFileSync(source, destination);
           };
         } else {
           fileSystem.renameSync = (source, destination) => {
@@ -878,6 +1127,120 @@ test("approve-golden restores old expected bytes after staging and swap failures
         rmSync(fixture.root, { recursive: true, force: true });
       }
     });
+  }
+});
+
+test("approve-golden stages the exact candidate bytes that were validated", () => {
+  const matchIds = Array.from(
+    { length: 16 },
+    (_, index) => String(9900000901 + index),
+  );
+  const fixture = createRunnerFixture(matchIds);
+  writeCliMatrixManifest(fixture);
+  const expectedDirectory = writeExpectedSentinels(fixture);
+  try {
+    const proposal = runRegressionCliFixture(fixture, "propose-golden");
+    assert.equal(proposal.status, 0, proposal.stderr || proposal.stdout);
+    const candidateDirectory = join(fixture.runtime, "candidate-golden");
+    const candidateName = readdirSync(candidateDirectory).sort()[0];
+    const candidatePath = join(candidateDirectory, candidateName);
+    const validatedBytes = readFileSync(candidatePath);
+    const replacementBytes = Buffer.from("{\"replacement\":true}\n");
+    let replacementCalls = 0;
+
+    const status = runRegressionCli(
+      ["approve-golden", fixture.manifestPath, "--reviewed"],
+      {
+        fileSystem: {
+          writeFileSync(path, contents) {
+            if (String(path).endsWith(".transaction")) {
+              replacementCalls += 1;
+              writeFileSync(candidatePath, replacementBytes);
+            }
+            return writeFileSync(path, contents);
+          },
+        },
+        onError() {},
+      },
+    );
+
+    assert.equal(replacementCalls, 1);
+    assert.equal(status, 0);
+    assert.deepEqual(
+      readFileSync(join(expectedDirectory, candidateName)),
+      validatedBytes,
+    );
+    assert.notDeepEqual(
+      readFileSync(join(expectedDirectory, candidateName)),
+      replacementBytes,
+    );
+    assertNoAtomicDirectoryResidue(expectedDirectory);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("approve-golden preserves and reports backup when swap and restore both fail", () => {
+  const matchIds = Array.from(
+    { length: 16 },
+    (_, index) => String(9900001001 + index),
+  );
+  const fixture = createRunnerFixture(matchIds);
+  writeCliMatrixManifest(fixture);
+  const expectedDirectory = writeExpectedSentinels(fixture);
+  try {
+    const proposal = runRegressionCliFixture(fixture, "propose-golden");
+    assert.equal(proposal.status, 0, proposal.stderr || proposal.stdout);
+    const before = directorySnapshot(expectedDirectory);
+    const errors = [];
+    let swapFailures = 0;
+    let restoreFailures = 0;
+
+    const status = runRegressionCli(
+      ["approve-golden", fixture.manifestPath, "--reviewed"],
+      {
+        fileSystem: {
+          renameSync(source, destination) {
+            if (String(source).includes(".staging-")
+                && resolve(destination) === resolve(expectedDirectory)) {
+              swapFailures += 1;
+              mkdirSync(expectedDirectory, { recursive: true });
+              writeFileSync(
+                join(expectedDirectory, "competing-target.txt"),
+                "target won the race",
+              );
+              throw new Error("fixture staging swap failure");
+            }
+            if (String(source).includes(".backup-")
+                && resolve(destination) === resolve(expectedDirectory)) {
+              restoreFailures += 1;
+            }
+            return renameSync(source, destination);
+          },
+        },
+        onError(message) {
+          errors.push(message);
+        },
+      },
+    );
+
+    assert.equal(status, 1);
+    assert.equal(swapFailures, 1);
+    assert.equal(restoreFailures, 1);
+    const residue = atomicDirectoryResidue(expectedDirectory);
+    const backups = residue.filter((path) => path.includes(".backup-"));
+    const staging = residue.filter((path) => path.includes(".staging-"));
+    assert.equal(backups.length, 1);
+    assert.deepEqual(directorySnapshot(backups[0]), before);
+    assert.deepEqual(staging, []);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0], /restore.*failed|recovery/i);
+    assert.match(errors[0], new RegExp(
+      backups[0].replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+      "i",
+    ));
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
   }
 });
 
@@ -1073,23 +1436,65 @@ test("ReparseAll stages a cached Replay so the parser can atomically replace it"
   }
 });
 
-test("cached Replay staging setup is enclosed by its cleanup try/finally", () => {
-  const source = readFileSync(PLAYER_REPORT_RUNNER, "utf8");
-  const start = source.indexOf("function Invoke-ReplayParse");
-  const end = source.indexOf("function Invoke-Task8Validation", start);
-  const body = source.slice(start, end);
-  const stagedInitialization = body.indexOf("$stagedUpload = $null");
-  const setupTry = body.indexOf("try {", stagedInitialization);
-  const createDirectory = body.indexOf("New-Item -ItemType Directory", stagedInitialization);
-  const copyReplay = body.indexOf("Copy-Item -LiteralPath", stagedInitialization);
-  const cleanupFinally = body.indexOf("finally {", copyReplay);
-  const removeReplay = body.indexOf("Remove-Item -LiteralPath $stagedUpload", cleanupFinally);
+test("cached Replay staging cleans a partial copy without calling upload", () => {
+  const root = mkdtempSync(join(tmpdir(), "player-report-staging-fixture-"));
+  const replayPath = join(root, "cached.dem");
+  const uploadDirectory = join(root, "uploads");
+  writeFileSync(replayPath, "small replay fixture");
+  const script = String.raw`
+    . $env:PLAYER_REPORT_STAGING_HELPER
+    $state = [pscustomobject]@{ upload_called = $false }
+    $stagedPath = Join-Path $env:PLAYER_REPORT_UPLOAD_DIRECTORY 'staged.dem'
+    try {
+        $parameters = @{
+            ReplayPath = $env:PLAYER_REPORT_REPLAY_PATH
+            CachedReplay = $env:PLAYER_REPORT_REPLAY_PATH
+            UploadDirectory = $env:PLAYER_REPORT_UPLOAD_DIRECTORY
+            StagedFileName = 'staged.dem'
+            CopyAction = {
+                param($Source, $Destination)
+                [IO.File]::WriteAllText($Destination, 'partial')
+                throw 'fixture copy interrupted'
+            }
+            UploadAction = {
+                param($Path)
+                $state.upload_called = $true
+            }
+        }
+        Invoke-PlayerReportStagedUpload @parameters | Out-Null
+        throw 'expected copy failure'
+    } catch {
+        [pscustomobject]@{
+            message = $_.Exception.Message
+            upload_called = $state.upload_called
+            staged_exists = Test-Path -LiteralPath $stagedPath
+            staged_file_count = @(
+                Get-ChildItem -LiteralPath $env:PLAYER_REPORT_UPLOAD_DIRECTORY -File -ErrorAction SilentlyContinue
+            ).Count
+        } | ConvertTo-Json -Compress
+    }
+  `;
 
-  assert.ok(stagedInitialization >= 0);
-  assert.ok(setupTry > stagedInitialization && setupTry < createDirectory);
-  assert.ok(createDirectory < copyReplay);
-  assert.ok(cleanupFinally > copyReplay);
-  assert.ok(removeReplay > cleanupFinally);
+  try {
+    const result = spawnSync("pwsh", ["-NoProfile", "-Command", script], {
+      cwd: PROJECT_ROOT,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PLAYER_REPORT_REPLAY_PATH: replayPath,
+        PLAYER_REPORT_STAGING_HELPER,
+        PLAYER_REPORT_UPLOAD_DIRECTORY: uploadDirectory,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const evidence = JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1));
+    assert.match(evidence.message, /copy interrupted/i);
+    assert.equal(evidence.upload_called, false);
+    assert.equal(evidence.staged_exists, false);
+    assert.equal(evidence.staged_file_count, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("timeout cancellation confirms idle before the next serial upload", () => {

@@ -22,6 +22,8 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
     throw 'This script requires PowerShell 7 or newer.'
 }
 
+. (Join-Path $PSScriptRoot 'PlayerReportReplayStaging.ps1')
+
 $projectRoot = if ([string]::IsNullOrWhiteSpace($env:PLAYER_REPORT_REGRESSION_PROJECT_ROOT)) {
     [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 } else {
@@ -308,37 +310,26 @@ function Invoke-ReplayParse {
     $cachedReplay = [IO.Path]::GetFullPath((
         Join-Path $parserDataDirectory "replays\$MatchId$extension"
     ))
-    $uploadPath = $ReplayPath
-    $stagedUpload = $null
-    try {
-        if ([IO.Path]::GetFullPath($ReplayPath).Equals(
-                $cachedReplay,
-                [StringComparison]::OrdinalIgnoreCase
-            )) {
-            $uploadDirectory = Join-Path $runtimeRoot 'uploads'
-            New-Item -ItemType Directory -Force -Path $uploadDirectory | Out-Null
-            $stagedUpload = Join-Path $uploadDirectory (
-                "$MatchId.$([guid]::NewGuid().ToString('N'))$extension"
-            )
-            Copy-Item -LiteralPath $ReplayPath -Destination $stagedUpload
-            $uploadPath = $stagedUpload
-        }
-        $headers = @{
-            'X-Dota-Lens-File-Name' = $fileName
-            'X-Dota-Lens-Account-Id' = '139766850'
-        }
-        $job = Invoke-RestMethod `
+    $headers = @{
+        'X-Dota-Lens-File-Name' = $fileName
+        'X-Dota-Lens-Account-Id' = '139766850'
+    }
+    $uploadAction = {
+        param($UploadPath)
+        Invoke-RestMethod `
             -Method Post `
             -Uri "$apiBase/replays/$MatchId/import" `
-            -InFile $uploadPath `
+            -InFile $UploadPath `
             -ContentType 'application/octet-stream' `
             -Headers $headers `
             -TimeoutSec 180
-    } finally {
-        if ($stagedUpload -and (Test-Path -LiteralPath $stagedUpload)) {
-            Remove-Item -LiteralPath $stagedUpload -Force
-        }
-    }
+    }.GetNewClosure()
+    $job = Invoke-PlayerReportStagedUpload `
+        -ReplayPath $ReplayPath `
+        -CachedReplay $cachedReplay `
+        -UploadDirectory (Join-Path $runtimeRoot 'uploads') `
+        -StagedFileName "$MatchId.$([guid]::NewGuid().ToString('N'))$extension" `
+        -UploadAction $uploadAction
     try {
         $deadline = [DateTimeOffset]::Now.AddSeconds($TimeoutSeconds)
         do {

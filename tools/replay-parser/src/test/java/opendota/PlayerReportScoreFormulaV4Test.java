@@ -330,6 +330,30 @@ class PlayerReportScoreFormulaV4Test {
     }
 
     @Test
+    void rejectsExplicitUnavailableDimensionWithNumericScore() {
+        JsonObject lane = consistentUnavailableDimension();
+        lane.addProperty("score", 70);
+        JsonObject report = report(lane);
+        report.addProperty("base_component_model", PlayerReportBaseComponents.MODEL);
+
+        PlayerReportScoringV4.apply(report);
+
+        assertUnavailableDimensionRecomputationInvalid(report);
+    }
+
+    @Test
+    void rejectsExplicitUnavailableDimensionWithNumericBaseScore() {
+        JsonObject lane = consistentUnavailableDimension();
+        lane.addProperty("base_score", 70);
+        JsonObject report = report(lane);
+        report.addProperty("base_component_model", PlayerReportBaseComponents.MODEL);
+
+        PlayerReportScoringV4.apply(report);
+
+        assertUnavailableDimensionRecomputationInvalid(report);
+    }
+
+    @Test
     void rejectsExplicitUnavailableDimensionWithAvailableComponent() {
         JsonObject lane = dimension("lane_execution", "lane", 100, 0, false);
         lane.add("base_components", components(
@@ -461,6 +485,23 @@ class PlayerReportScoreFormulaV4Test {
         row.addProperty("missing_reason", "fixture_unavailable");
         row.add("suppression_reason", com.google.gson.JsonNull.INSTANCE);
         return row;
+    }
+
+    private static JsonObject consistentUnavailableDimension() {
+        JsonObject lane = dimension("lane_execution", "lane", 100, 0, false);
+        lane.add("base_components", components(
+                unavailableComponent("lane_model_score", 75),
+                unavailableComponent("core_lane_opportunity_conversion", 25)));
+        return lane;
+    }
+
+    private static void assertUnavailableDimensionRecomputationInvalid(JsonObject report) {
+        JsonObject scored = findDimension(report, "lane_execution");
+        assertFalse(scored.get("available").getAsBoolean());
+        assertFalse(scored.getAsJsonObject("recomputation")
+                .get("base_component_valid").getAsBoolean());
+        assertFalse(report.getAsJsonObject("score_card").getAsJsonObject("audit")
+                .get("recomputation_valid").getAsBoolean());
     }
 
     private static JsonArray components(JsonObject... rows) {

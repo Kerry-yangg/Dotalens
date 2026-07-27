@@ -1,9 +1,10 @@
 import {
-  copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -37,10 +38,11 @@ const OVERALL_FORMULA =
   "sum(dimension_score * effective_weight) / sum(effective_weight)";
 const PROPOSAL_PROVENANCE_SCHEMA = "player-report-golden-proposal-provenance/1.0";
 const DEFAULT_FILE_SYSTEM = {
-  copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -2119,6 +2121,54 @@ function resolveWithin(root, path, label) {
   return target;
 }
 
+function realPathWithin(root, path, label, fileSystem = DEFAULT_FILE_SYSTEM) {
+  const target = resolveWithin(root, path, label);
+  const realRoot = fileSystem.realpathSync(resolve(root));
+  const realTarget = fileSystem.realpathSync(target);
+  const targetRelative = relative(realRoot, realTarget);
+  if (targetRelative === ".."
+      || targetRelative.startsWith(`..\\`)
+      || targetRelative.startsWith("../")
+      || isAbsolute(targetRelative)) {
+    throw new Error(
+      `${label} escapes its allowed real path boundary through a filesystem link`,
+    );
+  }
+  return target;
+}
+
+function nearestExistingPath(path, fileSystem = DEFAULT_FILE_SYSTEM) {
+  let current = resolve(path);
+  while (!pathEntryExists(current, fileSystem)) {
+    const parent = dirname(current);
+    if (parent === current) {
+      throw new Error(`No existing parent for path ${path}`);
+    }
+    current = parent;
+  }
+  return current;
+}
+
+function pathEntryExists(path, fileSystem = DEFAULT_FILE_SYSTEM) {
+  try {
+    fileSystem.lstatSync(path);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function writablePathWithin(root, path, label, fileSystem = DEFAULT_FILE_SYSTEM) {
+  const target = resolveWithin(root, path, label);
+  const existingParent = nearestExistingPath(target, fileSystem);
+  realPathWithin(root, existingParent, `${label} parent`, fileSystem);
+  if (pathEntryExists(target, fileSystem)) {
+    realPathWithin(root, target, label, fileSystem);
+  }
+  return target;
+}
+
 function sha256File(path, fileSystem = DEFAULT_FILE_SYSTEM) {
   return createHash("sha256").update(fileSystem.readFileSync(path)).digest("hex");
 }
@@ -2140,9 +2190,19 @@ export function loadPlayerReportAnalysis(matchId, projectRoot = process.cwd()) {
     normalizedMatchId,
     `Analysis ${normalizedMatchId} source path`,
   );
+  realPathWithin(
+    analysesDirectory,
+    analysisDirectory,
+    `Analysis ${normalizedMatchId} source path`,
+  );
   const summaryPath = resolveWithin(
     analysisDirectory,
     "summary.json",
+    `Analysis ${normalizedMatchId} summary path`,
+  );
+  realPathWithin(
+    analysisDirectory,
+    summaryPath,
     `Analysis ${normalizedMatchId} summary path`,
   );
   const summary = JSON.parse(readFileSync(summaryPath, "utf8"));
@@ -2155,9 +2215,19 @@ export function loadPlayerReportAnalysis(matchId, projectRoot = process.cwd()) {
     moduleBase,
     `Analysis ${normalizedMatchId} split module source path`,
   );
+  realPathWithin(
+    analysisDirectory,
+    moduleDirectory,
+    `Analysis ${normalizedMatchId} split module source path`,
+  );
   const playersPath = resolveWithin(
     moduleDirectory,
     "players.json.gz",
+    `Analysis ${normalizedMatchId} players source path`,
+  );
+  realPathWithin(
+    moduleDirectory,
+    playersPath,
     `Analysis ${normalizedMatchId} players source path`,
   );
   const players = JSON.parse(gunzipSync(readFileSync(playersPath)));
@@ -2176,6 +2246,12 @@ export function loadPlayerReportAnalysis(matchId, projectRoot = process.cwd()) {
 function manifestContext(manifestArgument) {
   const manifestPath = resolve(String(manifestArgument || ""));
   const projectRoot = resolve(dirname(manifestPath), "..", "..");
+  const runtimeBoundaryDirectory = resolve(projectRoot, "tools", "runtime");
+  const replayDirectory = resolve(
+    runtimeBoundaryDirectory,
+    "dota-lens-data",
+    "replays",
+  );
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   if (manifest?.schema !== "player-report-regression-manifest/1.0") {
     throw new Error("Unsupported player report regression manifest schema");
@@ -2198,20 +2274,32 @@ function manifestContext(manifestArgument) {
     const replayPath = String(match?.replay_path || "");
     const resolvedReplay = resolve(projectRoot, replayPath);
     const replayRelative = relative(projectRoot, resolvedReplay);
+    const replayBoundaryRelative = relative(replayDirectory, resolvedReplay);
     if (!replayPath
         || isAbsolute(replayPath)
         || replayRelative === ".."
         || replayRelative.startsWith(`..\\`)
         || replayRelative.startsWith("../")
-        || isAbsolute(replayRelative)) {
+        || isAbsolute(replayRelative)
+        || replayBoundaryRelative === ".."
+        || replayBoundaryRelative.startsWith(`..\\`)
+        || replayBoundaryRelative.startsWith("../")
+        || isAbsolute(replayBoundaryRelative)) {
       throw new Error(`Invalid replay_path for match_id=${matchId}`);
     }
+    realPathWithin(
+      replayDirectory,
+      resolvedReplay,
+      `Replay source path for match_id=${matchId}`,
+    );
   }
 
   return {
     manifest,
     manifestPath,
     projectRoot,
+    replayDirectory,
+    runtimeBoundaryDirectory,
     runtimeDirectory: resolve(
       projectRoot,
       "tools",
@@ -2362,46 +2450,100 @@ function replaceDirectoryAtomically(directory, files, options = {}) {
     ...(options.fileSystem || {}),
   };
   const parent = dirname(directory);
+  const boundaryRoot = options.boundaryRoot || parent;
   const nonce = `${process.pid}-${Date.now()}`;
   const staging = `${directory}.staging-${nonce}`;
   const backup = `${directory}.backup-${nonce}`;
   const transactionMarker = resolve(staging, ".transaction");
-  let originalMoved = false;
+  let backupPresent = false;
+  let replacementCommitted = false;
+  writablePathWithin(
+    boundaryRoot,
+    directory,
+    "Golden destination directory",
+    fileSystem,
+  );
+  writablePathWithin(
+    boundaryRoot,
+    staging,
+    "Golden staging directory",
+    fileSystem,
+  );
+  writablePathWithin(
+    boundaryRoot,
+    backup,
+    "Golden backup directory",
+    fileSystem,
+  );
   fileSystem.mkdirSync(parent, { recursive: true });
+  realPathWithin(
+    boundaryRoot,
+    parent,
+    "Golden destination parent directory",
+    fileSystem,
+  );
   fileSystem.rmSync(staging, { recursive: true, force: true });
   fileSystem.mkdirSync(staging, { recursive: true });
+  realPathWithin(
+    boundaryRoot,
+    staging,
+    "Golden staging directory",
+    fileSystem,
+  );
   try {
+    writablePathWithin(
+      boundaryRoot,
+      transactionMarker,
+      "Golden transaction marker",
+      fileSystem,
+    );
     fileSystem.writeFileSync(transactionMarker, "staging\n");
-    for (const [fileName, contents, sourcePath] of files) {
+    for (const [fileName, contents] of files) {
       const destination = resolveWithin(staging, fileName, "Golden staging path");
-      if (sourcePath) {
-        fileSystem.copyFileSync(sourcePath, destination);
-      } else {
-        fileSystem.writeFileSync(destination, contents);
-      }
+      writablePathWithin(
+        boundaryRoot,
+        destination,
+        "Golden staging path",
+        fileSystem,
+      );
+      fileSystem.writeFileSync(destination, contents);
     }
     fileSystem.rmSync(transactionMarker, { force: true });
     if (fileSystem.existsSync(directory)) {
       fileSystem.renameSync(directory, backup);
-      originalMoved = true;
+      backupPresent = true;
     }
     try {
       fileSystem.renameSync(staging, directory);
-    } catch (error) {
-      if (originalMoved && fileSystem.existsSync(backup)) {
-        fileSystem.renameSync(backup, directory);
-        originalMoved = false;
+      replacementCommitted = true;
+    } catch (swapError) {
+      if (backupPresent && fileSystem.existsSync(backup)) {
+        try {
+          fileSystem.renameSync(backup, directory);
+          backupPresent = false;
+        } catch (restoreError) {
+          const recoveryError = new Error(
+            `Golden directory swap failed and backup restore failed; `
+              + `original expected remains at ${backup}: ${restoreError.message}`,
+          );
+          recoveryError.cause = new AggregateError(
+            [swapError, restoreError],
+            "Golden directory swap and recovery both failed",
+          );
+          throw recoveryError;
+        }
       }
-      throw error;
+      throw swapError;
     }
-    if (originalMoved) {
+    if (backupPresent) {
       fileSystem.rmSync(backup, { recursive: true, force: true });
-      originalMoved = false;
+      backupPresent = false;
     }
   } finally {
     fileSystem.rmSync(staging, { recursive: true, force: true });
-    if (!originalMoved || fileSystem.existsSync(directory)) {
+    if (backupPresent && replacementCommitted) {
       fileSystem.rmSync(backup, { recursive: true, force: true });
+      backupPresent = false;
     }
   }
 }
@@ -2411,6 +2553,21 @@ function sourceProvenance(context, row, analysis) {
     context.projectRoot,
     String(row.match.replay_path),
     `Replay source path for match_id=${row.matchId}`,
+  );
+  realPathWithin(
+    context.replayDirectory,
+    replayPath,
+    `Replay source path for match_id=${row.matchId}`,
+  );
+  realPathWithin(
+    analysis.analysisDirectory,
+    analysis.summaryPath,
+    `Analysis ${row.matchId} summary path`,
+  );
+  realPathWithin(
+    analysis.analysisDirectory,
+    analysis.playersPath,
+    `Analysis ${row.matchId} players source path`,
   );
   return {
     match_id: row.matchId,
@@ -2432,6 +2589,16 @@ function writeProposalProvenance(context, sources) {
     schema: PROPOSAL_PROVENANCE_SCHEMA,
     sources,
   }, null, 2)}\n`;
+  writablePathWithin(
+    context.runtimeBoundaryDirectory,
+    destination,
+    "Golden proposal provenance destination",
+  );
+  writablePathWithin(
+    context.runtimeBoundaryDirectory,
+    temporary,
+    "Golden proposal provenance staging path",
+  );
   writeFileSync(temporary, contents);
   renameSync(temporary, destination);
 }
@@ -2441,6 +2608,11 @@ function readProposalProvenance(context) {
   if (!existsSync(path)) {
     throw new Error("Golden proposal provenance is missing");
   }
+  realPathWithin(
+    context.runtimeBoundaryDirectory,
+    path,
+    "Golden proposal provenance source path",
+  );
   const provenance = JSON.parse(readFileSync(path, "utf8"));
   if (provenance?.schema !== PROPOSAL_PROVENANCE_SCHEMA
       || !Array.isArray(provenance.sources)) {
@@ -2546,9 +2718,29 @@ function runCandidatesCommand(manifestArgument) {
   const context = manifestContext(manifestArgument);
   const markdown = candidatesMarkdown(context);
   const reportDirectory = resolve(context.runtimeDirectory, "reports");
+  writablePathWithin(
+    context.runtimeBoundaryDirectory,
+    reportDirectory,
+    "Golden candidates report directory",
+  );
   mkdirSync(reportDirectory, { recursive: true });
+  realPathWithin(
+    context.runtimeBoundaryDirectory,
+    reportDirectory,
+    "Golden candidates report directory",
+  );
   const reportPath = resolve(reportDirectory, "candidates.md");
   const temporary = `${reportPath}.${process.pid}.${Date.now()}.tmp`;
+  writablePathWithin(
+    context.runtimeBoundaryDirectory,
+    reportPath,
+    "Golden candidates report path",
+  );
+  writablePathWithin(
+    context.runtimeBoundaryDirectory,
+    temporary,
+    "Golden candidates report staging path",
+  );
   writeFileSync(temporary, markdown);
   renameSync(temporary, reportPath);
   process.stdout.write(markdown);
@@ -2567,6 +2759,7 @@ function runProposeGoldenCommand(manifestArgument) {
   replaceDirectoryAtomically(
     resolve(context.runtimeDirectory, "candidate-golden"),
     files,
+    { boundaryRoot: context.runtimeBoundaryDirectory },
   );
   writeProposalProvenance(context, sources);
   console.log(`Proposed ${files.length} Golden candidates`);
@@ -2582,6 +2775,11 @@ function runApproveGoldenCommand(manifestArgument, reviewed, fileSystem) {
   const candidateDirectory = resolve(
     context.runtimeDirectory,
     "candidate-golden",
+  );
+  realPathWithin(
+    context.runtimeBoundaryDirectory,
+    candidateDirectory,
+    "Golden candidate source directory",
   );
   const expectedNames = rows.map(goldenFileName).sort();
   const candidateNames = existsSync(candidateDirectory)
@@ -2610,6 +2808,11 @@ function runApproveGoldenCommand(manifestArgument, reviewed, fileSystem) {
       fileName,
       "Golden candidate path",
     );
+    realPathWithin(
+      candidateDirectory,
+      candidatePath,
+      "Golden candidate path",
+    );
     const candidateContents = readFileSync(candidatePath, "utf8");
     const candidate = JSON.parse(candidateContents);
     const selfComparison = compareGolden(candidate, candidate);
@@ -2627,10 +2830,13 @@ function runApproveGoldenCommand(manifestArgument, reviewed, fileSystem) {
         || JSON.stringify(candidate) !== JSON.stringify(projection)) {
       throw new Error(`Golden candidate drift detected for ${fileName}`);
     }
-    files.push([fileName, candidateContents, candidatePath]);
+    files.push([fileName, candidateContents]);
   }
 
-  replaceDirectoryAtomically(context.expectedDirectory, files, { fileSystem });
+  replaceDirectoryAtomically(context.expectedDirectory, files, {
+    boundaryRoot: context.projectRoot,
+    fileSystem,
+  });
   console.log(`Approved ${files.length} reviewed Golden files`);
   return 0;
 }
