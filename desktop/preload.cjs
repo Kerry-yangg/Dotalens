@@ -21,4 +21,20 @@ contextBridge.exposeInMainWorld("dotaLensDesktop", Object.freeze({
       accountId: typeof options.accountId === "string" ? options.accountId : "",
     });
   },
+  getUpdateState() {
+    return ipcRenderer.invoke("dota-lens:update:get-state");
+  },
+  checkForUpdates() {
+    return ipcRenderer.invoke("dota-lens:update:check");
+  },
+  downloadUpdate() {
+    return ipcRenderer.invoke("dota-lens:update:download");
+  },
+  installUpdate() {
+    return ipcRenderer.invoke("dota-lens:update:install");
+  },
+  onUpdateState(callback) {
+    if (typeof callback !== "function") return;
+    ipcRenderer.on("dota-lens:update-state", (_event, state) => callback(state));
+  },
 }));

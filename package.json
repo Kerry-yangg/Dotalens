@@ -32,6 +32,7 @@
   },
   "dependencies": {
     "echarts": "latest",
+    "electron-updater": "^6.8.9",
     "lucide": "latest"
   },
   "devDependencies": {
@@ -42,6 +43,13 @@
   "build": {
     "appId": "com.dotalens.desktop",
     "productName": "Dota Lens",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Kerry-yangg",
+        "repo": "Dotalens"
+      }
+    ],
     "electronDist": "node_modules/electron/dist",
     "asar": true,
     "compression": "normal",

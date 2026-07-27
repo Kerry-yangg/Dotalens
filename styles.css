@@ -7875,6 +7875,205 @@ svg {
   border-color: #ffd589;
 }
 
+.update-center {
+  display: grid;
+  align-content: start;
+  min-height: 0;
+  overflow: auto;
+}
+
+.update-status-band {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 13px;
+  min-height: 78px;
+  padding: 15px 18px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.update-status-band > span:last-child {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.update-status-band strong {
+  color: var(--text);
+  font-size: 15px;
+  line-height: 20px;
+}
+
+.update-status-band small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.update-state-icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  color: var(--text-soft);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+
+.update-state-icon svg {
+  width: 19px;
+  height: 19px;
+}
+
+.update-status-band.positive .update-state-icon {
+  color: var(--radiant);
+  border-color: color-mix(in srgb, var(--radiant) 45%, var(--border));
+  background: color-mix(in srgb, var(--radiant) 9%, var(--surface-2));
+}
+
+.update-status-band.attention .update-state-icon {
+  color: var(--amber);
+  border-color: color-mix(in srgb, var(--amber) 45%, var(--border));
+  background: color-mix(in srgb, var(--amber) 9%, var(--surface-2));
+}
+
+.update-status-band.negative .update-state-icon {
+  color: var(--negative);
+  border-color: color-mix(in srgb, var(--negative) 45%, var(--border));
+  background: color-mix(in srgb, var(--negative) 9%, var(--surface-2));
+}
+
+.update-status-band.working .update-state-icon {
+  color: #71b7e6;
+  border-color: #3b6680;
+  background: #17242c;
+}
+
+.update-status-band.working .update-state-icon svg {
+  animation: spin 1.5s linear infinite;
+}
+
+.update-version-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.update-version-grid > span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 14px 18px;
+  border-right: 1px solid var(--border-soft);
+}
+
+.update-version-grid > span:last-child {
+  border-right: 0;
+}
+
+.update-version-grid small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.update-version-grid strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.update-release {
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.update-release h3 {
+  margin: 2px 0 0;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.update-release p {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 20px;
+  white-space: pre-line;
+}
+
+.update-progress {
+  display: grid;
+  gap: 9px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.update-progress > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.update-progress > div strong {
+  color: #71b7e6;
+  font-size: 12px;
+}
+
+.update-progress-track {
+  display: block;
+  width: 100%;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--surface-3);
+}
+
+.update-progress-track i {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: #71b7e6;
+  transition: width 180ms ease;
+}
+
+.update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 14px 18px;
+}
+
+.update-footnote {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 0 18px 16px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 18px;
+}
+
+.update-footnote svg {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  color: var(--radiant);
+}
+
 .settings-form > label {
   display: grid;
   gap: 7px;
@@ -8418,6 +8617,18 @@ svg {
 
   .settings-layout {
     grid-template-columns: 160px minmax(0, 1fr);
+  }
+
+  .update-version-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .update-version-grid > span:nth-child(2) {
+    border-right: 0;
+  }
+
+  .update-version-grid > span:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--border-soft);
   }
 }
 

@@ -3,6 +3,7 @@ const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const { replayIdentity, scanReplayDirectory } = require("./replay-files.cjs");
+const { createUpdateController } = require("./updater.cjs");
 
 const APP_SCHEME = "dotalens";
 const APP_URL = `${APP_SCHEME}://app/`;
@@ -28,7 +29,7 @@ const qaHeight = Math.max(720, Number.parseInt(process.env.DOTA_LENS_QA_HEIGHT |
 const qaScoreboardStress = process.env.DOTA_LENS_QA_SCOREBOARD_STRESS === "1";
 const qaDirectoryPickers = process.env.DOTA_LENS_QA_DIRECTORY_PICKERS === "1";
 const qaDirectoryRoot = process.env.DOTA_LENS_QA_DIRECTORY_ROOT || "C:\\Dota Lens QA";
-const qaSettingsPanel = new Set(["account", "display", "dota", "parser", "diagnostics"]).has(process.env.DOTA_LENS_QA_SETTINGS_PANEL)
+const qaSettingsPanel = new Set(["account", "display", "dota", "parser", "updates", "diagnostics"]).has(process.env.DOTA_LENS_QA_SETTINGS_PANEL)
   ? process.env.DOTA_LENS_QA_SETTINGS_PANEL
   : "dota";
 
@@ -49,6 +50,7 @@ if (qaCapturePath) {
 let mainWindow = null;
 let parserProcess = null;
 let ownsParser = false;
+let updateController = null;
 const approvedReplayFiles = new Set();
 
 protocol.registerSchemesAsPrivileged([{
@@ -202,6 +204,34 @@ function registerIpcHandlers() {
       throw error;
     }
     return payload;
+  });
+
+  ipcMain.handle("dota-lens:update:get-state", (event) => {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
+      throw new Error("更新状态请求来自未知窗口");
+    }
+    return updateController?.getState() || null;
+  });
+
+  ipcMain.handle("dota-lens:update:check", async (event) => {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
+      throw new Error("检查更新请求来自未知窗口");
+    }
+    return updateController?.check() || { ok: false, reason: "unsupported" };
+  });
+
+  ipcMain.handle("dota-lens:update:download", async (event) => {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
+      throw new Error("下载更新请求来自未知窗口");
+    }
+    return updateController?.download() || { ok: false, reason: "unsupported" };
+  });
+
+  ipcMain.handle("dota-lens:update:install", async (event) => {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
+      throw new Error("安装更新请求来自未知窗口");
+    }
+    return updateController?.install() || { ok: false, reason: "unsupported" };
   });
 }
 
@@ -466,6 +496,8 @@ function createWindow() {
     }
     mainWindow.show();
     mainWindow.focus();
+    publishUpdateState(updateController?.getState());
+    updateController?.scheduleInitialCheck(15000);
     console.error(`[desktop] frontend loaded, visible=${mainWindow.isVisible()}`);
   });
   mainWindow.webContents.on("did-fail-load", (_event, code, description, url) => {
@@ -489,6 +521,42 @@ function stopOwnedParser() {
   ownsParser = false;
 }
 
+function desktopDistribution() {
+  if (!app.isPackaged) return "development";
+  if (process.env.PORTABLE_EXECUTABLE_FILE || process.env.PORTABLE_EXECUTABLE_DIR) return "portable";
+  return "nsis";
+}
+
+function publishUpdateState(state) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send("dota-lens:update-state", state);
+}
+
+function initializeUpdateController() {
+  const distribution = desktopDistribution();
+  let nativeUpdater = null;
+  if (app.isPackaged && distribution === "nsis") {
+    try {
+      ({ autoUpdater: nativeUpdater } = require("electron-updater"));
+      nativeUpdater.autoDownload = false;
+      nativeUpdater.autoInstallOnAppQuit = false;
+      nativeUpdater.allowPrerelease = false;
+      nativeUpdater.logger = console;
+    } catch (error) {
+      console.error("[desktop] updater unavailable", error);
+    }
+  }
+  updateController = createUpdateController({
+    updater: nativeUpdater,
+    currentVersion: app.getVersion(),
+    isPackaged: app.isPackaged,
+    distribution,
+    publishState: publishUpdateState,
+    isParserBusy: async () => Number((await parserStatus())?.active_jobs || 0) > 0,
+    stopParser: async () => stopOwnedParser(),
+  });
+}
+
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   app.quit();
@@ -501,9 +569,11 @@ if (!hasSingleInstanceLock) {
 
   app.whenReady().then(async () => {
     console.error("[desktop] Electron ready");
+    app.setAppUserModelId("com.dotalens.desktop");
     Menu.setApplicationMenu(null);
     session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
     installAppProtocol();
+    initializeUpdateController();
     registerIpcHandlers();
     try {
       if (!qaCapturePath) await ensureParser();

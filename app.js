@@ -186,6 +186,10 @@ import {
   combatScoreComponentsMarkup,
 } from "./combat-contribution-view.js";
 import { renderPlayerScoreAtomicAudit } from "./player-score-atomic-audit.js";
+import {
+  createPreviewUpdateState,
+  createUpdateViewModel,
+} from "./update-ui.js";
 
 const API_BASE = "http://127.0.0.1:5600/api";
 const APP_VERSION = "0.4.5";
@@ -378,6 +382,7 @@ const PREVIEW_DETAIL_VIEW = {
 const PREVIEW_MATCH_ID = /^\d+$/.test(APP_PARAMS.get("qaMatch") || "") ? APP_PARAMS.get("qaMatch") : null;
 const PREVIEW_SCOREBOARD_STRESS = APP_PARAMS.get("scoreboardStress") === "1";
 const PREVIEW_SETTINGS_PANEL = APP_PARAMS.get("settingsPanel") || "dota";
+const PREVIEW_UPDATE_STATE = APP_PARAMS.get("updateState");
 const DEFAULT_ACCOUNT_ID = window.localStorage.getItem("dota-lens-account-id") || "";
 const DIRECTORY_SETTINGS_KEY = "dota-lens-directory-settings-v1";
 const READING_MODE_KEY = "dota-lens-reading-mode-v1";
@@ -918,6 +923,7 @@ const state = {
   eventFilter: "all",
   segmentFilter: "all",
   settingsPanel: "account",
+  updateState: createPreviewUpdateState("development", APP_VERSION),
   selectedHeroSlot: 0,
   readingMode: "simple",
   simpleReportFilter: "all",
@@ -7428,6 +7434,166 @@ function setSettingsPanel(panelName) {
   document.querySelectorAll("[data-settings-panel]").forEach((item) => item.classList.toggle("active", item === button));
   document.querySelectorAll("[data-settings-content]").forEach((item) => item.classList.toggle("active", item === panel));
   if (panelName === "diagnostics") renderDiagnostics();
+  if (panelName === "updates") renderUpdateCenter();
+}
+
+function updateDistributionLabel(distribution) {
+  return ({
+    nsis: "Windows 安装版",
+    portable: "Windows 便携版",
+    development: "开发预览",
+  })[distribution] || "当前客户端";
+}
+
+function renderUpdateCenter() {
+  const root = document.querySelector("#settings-updates");
+  if (!root) return;
+  const viewModel = createUpdateViewModel(state.updateState);
+  const statusBand = document.querySelector("#update-status-band");
+  statusBand.className = `update-status-band ${viewModel.tone}`;
+  document.querySelector("#update-state-icon").innerHTML = `<i data-lucide="${viewModel.icon}"></i>`;
+  document.querySelector("#update-state-title").textContent = viewModel.title;
+  document.querySelector("#update-state-detail").textContent = viewModel.detail;
+  document.querySelector("#update-current-version").textContent = viewModel.currentVersion;
+  document.querySelector("#update-latest-version").textContent = viewModel.latestVersion || "--";
+  document.querySelector("#update-distribution").textContent = updateDistributionLabel(viewModel.distribution);
+
+  const release = document.querySelector("#update-release");
+  const releaseVisible = Boolean(viewModel.latestVersion)
+    && ["available", "downloading", "downloaded", "waiting_for_parser", "installing"].includes(viewModel.status);
+  release.classList.toggle("hidden", !releaseVisible);
+  document.querySelector("#update-release-name").textContent = viewModel.releaseName || `Dota Lens ${viewModel.latestVersion || ""}`;
+  document.querySelector("#update-release-notes").textContent = viewModel.releaseNotes;
+
+  const progress = document.querySelector("#update-progress");
+  progress.classList.toggle("hidden", !viewModel.progress.visible);
+  document.querySelector("#update-progress-label").textContent = `正在下载 ${viewModel.progress.value.toFixed(1)}%`;
+  document.querySelector("#update-progress-value").style.width = `${viewModel.progress.value}%`;
+  document.querySelector("#update-progress-speed").textContent = viewModel.progress.bytesPerSecond > 0
+    ? `${formatBytes(viewModel.progress.bytesPerSecond)}/s`
+    : "--";
+
+  const check = document.querySelector("#update-check");
+  const download = document.querySelector("#update-download");
+  const install = document.querySelector("#update-install");
+  check.classList.toggle("hidden", !viewModel.actions.check.visible);
+  check.disabled = viewModel.actions.check.disabled;
+  check.querySelector("span").textContent = viewModel.status === "checking" ? "正在检查" : "检查更新";
+  check.classList.toggle("is-spinning", viewModel.status === "checking");
+  download.classList.toggle("hidden", !viewModel.actions.download.visible);
+  download.disabled = viewModel.actions.download.disabled;
+  download.querySelector("span").textContent = viewModel.status === "downloading" ? "正在下载" : "下载更新";
+  install.classList.toggle("hidden", !viewModel.actions.install.visible);
+  install.disabled = viewModel.actions.install.disabled;
+  install.querySelector("span").textContent = viewModel.status === "waiting_for_parser"
+    ? "再次检查并安装"
+    : "重启并安装";
+  refreshIcons(root);
+}
+
+function applyUpdateState(nextState) {
+  if (!nextState || typeof nextState !== "object") return;
+  state.updateState = {
+    ...state.updateState,
+    ...nextState,
+    currentVersion: nextState.currentVersion || state.updateState.currentVersion || APP_VERSION,
+  };
+  renderUpdateCenter();
+}
+
+function pause(milliseconds) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+async function simulatePreviewUpdateAction(action) {
+  if (action === "check") {
+    applyUpdateState({ ...createPreviewUpdateState("checking", APP_VERSION), status: "checking" });
+    await pause(500);
+    applyUpdateState(createPreviewUpdateState("available", APP_VERSION));
+    return;
+  }
+  if (action === "download") {
+    const base = createPreviewUpdateState("available", APP_VERSION);
+    for (const value of [8, 19, 34, 52, 71, 86, 100]) {
+      applyUpdateState({
+        ...base,
+        status: "downloading",
+        progress: value,
+        bytesPerSecond: 1572864 + value * 4096,
+        transferred: Math.round(199229440 * value / 100),
+        total: 199229440,
+      });
+      await pause(110);
+    }
+    applyUpdateState({ ...base, status: "downloaded", progress: 100 });
+    showToast("更新下载完成", "现在可以重启并安装", "circle-check");
+    return;
+  }
+  if (action === "install") {
+    const latestVersion = state.updateState.latestVersion || "0.5.0";
+    applyUpdateState({ ...state.updateState, status: "installing" });
+    await pause(700);
+    applyUpdateState({
+      ...state.updateState,
+      status: "up_to_date",
+      currentVersion: latestVersion,
+      latestVersion,
+      progress: null,
+    });
+    showToast("模拟安装完成", `Dota Lens ${latestVersion} 已准备就绪`, "package-open");
+  }
+}
+
+async function runUpdateAction(action) {
+  if (PREVIEW_UPDATE_STATE) {
+    await simulatePreviewUpdateAction(action);
+    return;
+  }
+  const desktop = window.dotaLensDesktop;
+  const method = {
+    check: "checkForUpdates",
+    download: "downloadUpdate",
+    install: "installUpdate",
+  }[action];
+  if (!desktop || typeof desktop[method] !== "function") {
+    showToast("桌面更新不可用", "请在 Dota Lens 安装版中使用在线更新", "monitor-x");
+    return;
+  }
+  try {
+    const result = await desktop[method]();
+    if (result?.reason === "parser_busy") {
+      showToast("Replay 仍在解析", "解析完成或取消任务后，再点击安装", "hourglass");
+    } else if (result?.reason === "portable") {
+      showToast("便携版暂不自动安装", "请下载新版便携包后手动替换", "file-archive");
+    } else if (result?.ok === false && result.reason !== "busy") {
+      showToast("更新操作未完成", "可以稍后重新检查", "circle-alert");
+    }
+  } catch (error) {
+    showToast("更新操作失败", error?.message || "请稍后重试", "circle-alert");
+  }
+}
+
+async function setupUpdateCenter() {
+  if (PREVIEW_UPDATE_STATE) {
+    applyUpdateState(createPreviewUpdateState(PREVIEW_UPDATE_STATE, APP_VERSION));
+    return;
+  }
+  const desktop = window.dotaLensDesktop;
+  if (!desktop?.getUpdateState) {
+    applyUpdateState(createPreviewUpdateState("development", APP_VERSION));
+    return;
+  }
+  desktop.onUpdateState?.((nextState) => applyUpdateState(nextState));
+  try {
+    applyUpdateState(await desktop.getUpdateState());
+  } catch (error) {
+    applyUpdateState({
+      status: "error",
+      currentVersion: APP_VERSION,
+      distribution: "nsis",
+      errorMessage: error?.message || "无法读取更新状态。",
+    });
+  }
 }
 
 function maskDiagnosticPath(value) {
@@ -8916,6 +9082,9 @@ function bindEvents() {
     loadMatches(document.querySelector("#settings-account-id").value);
   });
   document.querySelector("#settings-export-diagnostics").addEventListener("click", exportDiagnostics);
+  document.querySelector("#update-check").addEventListener("click", () => void runUpdateAction("check"));
+  document.querySelector("#update-download").addEventListener("click", () => void runUpdateAction("download"));
+  document.querySelector("#update-install").addEventListener("click", () => void runUpdateAction("install"));
   document.querySelector("#topbar-refresh").addEventListener("click", async (event) => {
     event.currentTarget.classList.add("is-spinning");
     await checkParserStatus();
@@ -9017,6 +9186,7 @@ async function init() {
   renderReplays();
   renderTasks();
   bindEvents();
+  await setupUpdateCenter();
   setupCombatChartResizeObserver();
   setPage("help");
   updateAccountChrome();

@@ -791,6 +791,7 @@
               <button data-settings-panel="display" type="button"><i data-lucide="book-open-check"></i><span>显示与阅读</span></button>
               <button data-settings-panel="dota" type="button"><i data-lucide="gamepad-2"></i><span>Dota 与 Replay</span></button>
               <button data-settings-panel="parser" type="button"><i data-lucide="cpu"></i><span>解析器</span></button>
+              <button data-settings-panel="updates" type="button"><i data-lucide="cloud-download"></i><span>软件更新</span></button>
               <button data-settings-panel="diagnostics" type="button"><i data-lucide="stethoscope"></i><span>诊断</span></button>
             </nav>
             <div class="settings-content workspace-panel">
@@ -821,6 +822,38 @@
                   <label><span>最大内存</span><input id="settings-parser-memory" value="由运行中的 Parser 报告" readonly></label>
                   <label><span>临时目录</span><div class="field-row"><input id="settings-temp-path" data-settings-path="temp" placeholder="由桌面端自动管理" autocomplete="off" spellcheck="false"><button class="icon-button directory-picker" type="button" data-directory-picker="temp" data-directory-target="settings-temp-path" data-directory-create="true" title="选择临时目录" aria-label="选择临时目录"><i data-lucide="folder-open"></i></button></div></label>
                   <label><span>分析包格式</span><input value="gzip 分片模块（固定启用）" readonly></label>
+                </div>
+              </section>
+              <section id="settings-updates" class="settings-panel" data-settings-content="updates">
+                <header><span class="panel-kicker">稳定版通道</span><h2>软件更新</h2></header>
+                <div class="update-center">
+                  <div id="update-status-band" class="update-status-band neutral">
+                    <span id="update-state-icon" class="update-state-icon"><i data-lucide="cloud-download"></i></span>
+                    <span>
+                      <strong id="update-state-title">准备检查更新</strong>
+                      <small id="update-state-detail">Dota Lens 会在启动后自动检查稳定版更新。</small>
+                    </span>
+                  </div>
+                  <div class="update-version-grid">
+                    <span><small>当前版本</small><strong id="update-current-version">0.4.5</strong></span>
+                    <span><small>最新版本</small><strong id="update-latest-version">--</strong></span>
+                    <span><small>更新通道</small><strong>稳定版</strong></span>
+                    <span><small>安装类型</small><strong id="update-distribution">开发预览</strong></span>
+                  </div>
+                  <section id="update-release" class="update-release hidden" aria-labelledby="update-release-name">
+                    <div><span class="panel-kicker">更新内容</span><h3 id="update-release-name">Dota Lens 新版本</h3></div>
+                    <p id="update-release-notes"></p>
+                  </section>
+                  <div id="update-progress" class="update-progress hidden" aria-live="polite">
+                    <div><span id="update-progress-label">正在下载 0%</span><strong id="update-progress-speed">--</strong></div>
+                    <span class="update-progress-track"><i id="update-progress-value"></i></span>
+                  </div>
+                  <div class="update-actions">
+                    <button id="update-check" class="command-button secondary" type="button"><i data-lucide="refresh-cw"></i><span>检查更新</span></button>
+                    <button id="update-download" class="command-button hidden" type="button"><i data-lucide="download"></i><span>下载更新</span></button>
+                    <button id="update-install" class="command-button hidden" type="button"><i data-lucide="rotate-cw"></i><span>重启并安装</span></button>
+                  </div>
+                  <p class="update-footnote"><i data-lucide="shield-check"></i><span>更新检查与匿名使用统计相互独立。Replay 正在解析时，不会强制退出安装。</span></p>
                 </div>
               </section>
               <section id="settings-diagnostics" class="settings-panel" data-settings-content="diagnostics">
