@@ -23,7 +23,7 @@
       </div>
 
       <nav class="primary-nav" aria-label="主导航">
-        <button class="nav-item active" data-page="matches" type="button">
+        <button class="nav-item" data-page="matches" type="button">
           <i data-lucide="list-filter"></i><span>比赛</span>
         </button>
         <button class="nav-item" data-page="replays" type="button">
@@ -35,7 +35,7 @@
         <button class="nav-item" data-page="settings" type="button">
           <i data-lucide="settings-2"></i><span>设置</span>
         </button>
-        <button class="nav-item nav-item-help" data-page="help" type="button" title="使用说明">
+        <button class="nav-item nav-item-help active" data-page="help" type="button" title="使用说明">
           <i data-lucide="circle-help"></i><span>使用说明</span>
         </button>
       </nav>
@@ -71,8 +71,8 @@
             <i data-lucide="arrow-left"></i>
           </button>
           <div>
-            <h1 id="page-title">比赛</h1>
-            <p id="page-context">等待连接账号</p>
+            <h1 id="page-title">使用说明</h1>
+            <p id="page-context">三分钟上手 Dota Lens</p>
           </div>
         </div>
         <div id="topbar-actions" class="topbar-actions">
@@ -98,7 +98,7 @@
       </header>
 
       <div class="app-viewport">
-        <section id="page-matches" class="page active" data-page-panel="matches">
+        <section id="page-matches" class="page" data-page-panel="matches">
           <div class="page-toolbar matches-toolbar">
             <form id="account-lookup-form" class="account-lookup" autocomplete="off">
               <span class="account-avatar compact"><i data-lucide="user-round-search"></i></span>
@@ -681,7 +681,7 @@
         </section>
 
 
-        <section id="page-help" class="page" data-page-panel="help">
+        <section id="page-help" class="page active" data-page-panel="help">
           <div class="help-layout">
             <header class="help-intro">
               <div>
@@ -707,6 +707,36 @@
               </li>
             </ol>
 
+            <section class="help-guide-section help-screenshot-section" aria-labelledby="help-screenshot-title">
+              <header class="help-section-head">
+                <div><span class="panel-kicker">看图操作</span><h3 id="help-screenshot-title">从读取比赛到查看报告</h3></div>
+                <p>点击图片可以放大查看。</p>
+              </header>
+              <div class="help-screenshot-grid">
+                <figure class="help-screenshot">
+                  <button type="button" data-help-image="/assets/help/help-step-account.png" data-help-title="第 1 步 · 读取比赛" aria-label="放大查看读取比赛操作">
+                    <img src="/assets/help/help-step-account.png" alt="比赛页面中输入 Dota 2 游戏 ID 并读取比赛" loading="lazy" width="1280" height="720">
+                    <span class="help-screenshot-zoom"><i data-lucide="maximize-2"></i>放大</span>
+                  </button>
+                  <figcaption><span>01</span><div><strong>读取比赛</strong><p>输入 Dota 2 游戏 ID，读取最近比赛列表。</p></div></figcaption>
+                </figure>
+                <figure class="help-screenshot">
+                  <button type="button" data-help-image="/assets/help/help-step-parse.png" data-help-title="第 2 步 · 确认解析" aria-label="放大查看确认解析操作">
+                    <img src="/assets/help/help-step-parse.png" alt="选择比赛后确认下载并解析 Replay" loading="lazy" width="1280" height="720">
+                    <span class="help-screenshot-zoom"><i data-lucide="maximize-2"></i>放大</span>
+                  </button>
+                  <figcaption><span>02</span><div><strong>确认解析</strong><p>点击比赛，核对英雄和场次后开始本地解析。</p></div></figcaption>
+                </figure>
+                <figure class="help-screenshot">
+                  <button type="button" data-help-image="/assets/help/help-step-report.png" data-help-title="第 3 步 · 查看玩家报告" aria-label="放大查看玩家报告">
+                    <img src="/assets/help/help-step-report.png" alt="解析完成后查看玩家简报和深度分析" loading="lazy" width="1280" height="720">
+                    <span class="help-screenshot-zoom"><i data-lucide="maximize-2"></i>放大</span>
+                  </button>
+                  <figcaption><span>03</span><div><strong>查看玩家报告</strong><p>先看简明结论，再定位到具体时间、地图和事件。</p></div></figcaption>
+                </figure>
+              </div>
+            </section>
+
             <section class="help-guide-section" aria-labelledby="help-reading-title">
               <header class="help-section-head">
                 <div><span class="panel-kicker">怎么选择</span><h3 id="help-reading-title">简明模式与专业模式</h3></div>
@@ -730,8 +760,12 @@
               </header>
               <div class="help-action-list">
                 <article>
+                  <span><i data-lucide="eye"></i></span>
+                  <div><strong>比赛列表或录像状态为空</strong><p>先进入 Dota 2 设置并开启“公开比赛数据”。未公开时，OpenDota 无法读取近期比赛；开启后等待同步，再返回“比赛”页刷新。</p></div>
+                </article>
+                <article>
                   <span><i data-lucide="file-plus-2"></i></span>
-                  <div><strong>比赛找不到录像</strong><p>点击右上角“导入 Replay”，手动导入 Replay 文件（<code>.dem</code> 或 <code>.dem.bz2</code>）。高分对局也可以这样分析。</p></div>
+                  <div><strong>高分对局找不到 Replay</strong><p>公开比赛后仍找不到时，点击右上角“导入 Replay”，手动导入 Replay 文件（<code>.dem</code> 或 <code>.dem.bz2</code>）。</p></div>
                 </article>
                 <article>
                   <span><i data-lucide="mouse-pointer-click"></i></span>
@@ -823,6 +857,16 @@
       </footer>
     </main>
   </div>
+
+  <dialog id="help-image-dialog" class="help-image-dialog" aria-labelledby="help-image-dialog-title">
+    <header>
+      <div><span class="panel-kicker">操作示例</span><h2 id="help-image-dialog-title">使用说明</h2></div>
+      <button id="help-image-dialog-close" class="icon-button quiet" type="button" title="关闭大图" aria-label="关闭大图"><i data-lucide="x"></i></button>
+    </header>
+    <div class="help-image-dialog-body">
+      <img id="help-image-dialog-preview" src="/assets/help/help-step-account.png" alt="">
+    </div>
+  </dialog>
 
   <dialog id="match-open-dialog" class="match-open-dialog" aria-labelledby="match-dialog-title">
     <div class="match-dialog-header">

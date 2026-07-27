@@ -889,7 +889,7 @@ const AEGIS_STATE_NAMES = {
 };
 
 const state = {
-  page: "matches",
+  page: "help",
   sidebarCollapsed: DEFAULT_SIDEBAR_COLLAPSED,
   wardSideView: "list",
   wardTimelineCollapsed: window.localStorage.getItem(WARD_TIMELINE_STATE_KEY) === "1",
@@ -7407,6 +7407,19 @@ function setPage(page) {
   refreshIcons();
 }
 
+function openHelpImageDialog(button) {
+  const dialog = document.querySelector("#help-image-dialog");
+  const image = document.querySelector("#help-image-dialog-preview");
+  const title = document.querySelector("#help-image-dialog-title");
+  const source = button?.dataset.helpImage;
+  if (!dialog || !image || !title || !source) return;
+  const label = button.dataset.helpTitle || "操作示例";
+  image.src = source;
+  image.alt = button.querySelector("img")?.alt || label;
+  title.textContent = label;
+  if (!dialog.open) dialog.showModal();
+}
+
 function setSettingsPanel(panelName) {
   const button = document.querySelector(`[data-settings-panel="${panelName}"]`);
   const panel = document.querySelector(`[data-settings-content="${panelName}"]`);
@@ -8326,6 +8339,15 @@ function bindEvents() {
     const button = event.target.closest("[data-page]");
     if (button) setPage(button.dataset.page);
   });
+  document.querySelector("#page-help").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-help-image]");
+    if (button) openHelpImageDialog(button);
+  });
+  const helpImageDialog = document.querySelector("#help-image-dialog");
+  document.querySelector("#help-image-dialog-close").addEventListener("click", () => helpImageDialog.close());
+  helpImageDialog.addEventListener("click", (event) => {
+    if (event.target === helpImageDialog) helpImageDialog.close();
+  });
   document.querySelector("#back-to-matches").addEventListener("click", () => setPage("matches"));
   document.querySelector("#parser-status").addEventListener("click", () => setPage("tasks"));
   document.querySelector("#matches-list").addEventListener("click", (event) => {
@@ -8996,7 +9018,7 @@ async function init() {
   renderTasks();
   bindEvents();
   setupCombatChartResizeObserver();
-  setPage("matches");
+  setPage("help");
   updateAccountChrome();
   refreshIcons();
   if (PREVIEW_VIEW) {
@@ -9010,7 +9032,7 @@ async function init() {
       setPage("matches");
       return;
     }
-    if (PREVIEW_VIEW === "replays" || PREVIEW_VIEW === "tasks") {
+    if (PREVIEW_VIEW === "replays" || PREVIEW_VIEW === "tasks" || PREVIEW_VIEW === "help") {
       setPage(PREVIEW_VIEW);
       return;
     }
@@ -9063,7 +9085,7 @@ async function init() {
   }
   if (online && validAccountId(state.accountId)) {
     await loadMatches(state.accountId, { silent: true });
-  } else if (online) {
+  } else if (online && state.page === "matches") {
     document.querySelector("#account-id-input").focus();
   }
 }
