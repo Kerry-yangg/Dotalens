@@ -1474,7 +1474,8 @@ returns a ready status.
 Start a forced local-cache parse and poll the returned job:
 
 ```powershell
-$body = @{ account_id = 139766850; force = $true } | ConvertTo-Json
+$AccountId = Read-Host "输入 Replay 内目标玩家的 Dota 2 游戏 ID"
+$body = @{ account_id = [long]$AccountId; force = $true } | ConvertTo-Json
 $job = Invoke-RestMethod `
   -Method Post `
   -Uri "http://127.0.0.1:5600/api/matches/8911632470/parse" `

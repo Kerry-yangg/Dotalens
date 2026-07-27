@@ -264,15 +264,17 @@ test("task history survives JSON round trips and restores active work", () => {
 });
 
 test("offline match cache is account scoped", () => {
-  const cache = createMatchCache("139766850", [{ match_id: 8909845275 }], "2026-07-24T00:00:00Z");
-  assert.equal(normalizeMatchCache(cache, "139766850").matches.length, 1);
+  const fixtureAccountId = "123456789";
+  const cache = createMatchCache(fixtureAccountId, [{ match_id: 8909845275 }], "2026-07-24T00:00:00Z");
+  assert.equal(normalizeMatchCache(cache, fixtureAccountId).matches.length, 1);
   assert.equal(normalizeMatchCache(cache, "999"), null);
-  assert.equal(normalizeMatchCache({ ...cache, matches: [] }, "139766850"), null);
+  assert.equal(normalizeMatchCache({ ...cache, matches: [] }, fixtureAccountId), null);
 });
 
 test("OpenDota failures fall back to a valid account cache", () => {
-  const cache = createMatchCache("139766850", [{ match_id: 8909845275 }], "2026-07-24T00:00:00Z");
-  const fallback = resolveMatchListFailure(cache, "139766850", "OpenDota returned HTTP 521");
+  const fixtureAccountId = "123456789";
+  const cache = createMatchCache(fixtureAccountId, [{ match_id: 8909845275 }], "2026-07-24T00:00:00Z");
+  const fallback = resolveMatchListFailure(cache, fixtureAccountId, "OpenDota returned HTTP 521");
   const unavailable = resolveMatchListFailure(cache, "999", "OpenDota returned HTTP 521");
 
   assert.equal(fallback.status, "ready");

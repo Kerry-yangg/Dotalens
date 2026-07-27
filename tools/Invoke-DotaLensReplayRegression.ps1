@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [string]$ReplayPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'release\8894766243.dem'),
-    [long]$AccountId = 139766850,
+    [Parameter(Mandatory)]
+    [ValidateRange(1, 4294967295)]
+    [long]$AccountId,
     [int]$TimeoutSeconds = 900,
     [string]$OutputPath = '',
     [switch]$KeepParser

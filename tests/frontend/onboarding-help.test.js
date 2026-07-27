@@ -67,3 +67,8 @@ test("account input consistently uses the Dota 2 game ID name", () => {
   assert.doesNotMatch(appSource, /Steam 数字 ID|Steam ID \$\{/);
   assert.match(appSource, /请输入 1 到 10 位 Dota 2 游戏 ID/);
 });
+
+test("account guidance does not expose a concrete player ID", () => {
+  assert.match(htmlSource, /通常为 8 至 10 位数字/);
+  assert.doesNotMatch(htmlSource, /例如\s*\d{6,}/);
+});

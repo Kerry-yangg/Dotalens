@@ -10,6 +10,9 @@ param(
 
     [int]$TimeoutSeconds = 1200,
 
+    [ValidateRange(0, 4294967295)]
+    [long]$AccountId = 0,
+
     [switch]$KeepParser,
 
     [switch]$IncludeCandidates
@@ -312,7 +315,9 @@ function Invoke-ReplayParse {
     ))
     $headers = @{
         'X-Dota-Lens-File-Name' = $fileName
-        'X-Dota-Lens-Account-Id' = '139766850'
+    }
+    if ($AccountId -gt 0) {
+        $headers['X-Dota-Lens-Account-Id'] = [string]$AccountId
     }
     $uploadAction = {
         param($UploadPath)

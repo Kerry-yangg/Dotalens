@@ -444,11 +444,11 @@ Stop only an idle Parser through `/api/shutdown`, start the rebuilt JAR with `to
 
 - [x] **Step 6: Verify normal automatic selection**
 
-Force reparse fixed Replay `8909845275` with account `139766850`. Assert:
+Force reparse fixed Replay `8909845275` with a locally supplied account ID. Assert:
 
 - completed job
 - `match.subject.status=matched`
-- selected player account is `139766850`
+- selected player account matches the locally supplied account ID
 - no chooser required
 
 - [x] **Step 7: Verify manual selection**
