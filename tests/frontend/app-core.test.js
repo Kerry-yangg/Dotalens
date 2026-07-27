@@ -1511,7 +1511,7 @@ test("settings markup contains only implemented controls", () => {
   const app = readFileSync(new URL("../../app.js", import.meta.url), "utf8");
 
   assert.doesNotMatch(html, /data-settings-content="data"/);
-  assert.doesNotMatch(html, /data-settings-content="display"/);
+  assert.match(html, /data-settings-content="display"/);
   assert.doesNotMatch(html, /默认分析英雄/);
   assert.doesNotMatch(html, /自动扫描 Replay/);
   assert.doesNotMatch(app, /设置已保存/);

@@ -154,6 +154,7 @@ import {
   formatCountdownSeconds,
   matchHistoryGuidance,
   normalizeMatchCache,
+  normalizeReadingMode,
   normalizeMatchSubject,
   normalizePlayerReportInsightOccurrences,
   normalizePlayerReportJumpTarget,
@@ -378,7 +379,7 @@ const PREVIEW_SCOREBOARD_STRESS = APP_PARAMS.get("scoreboardStress") === "1";
 const PREVIEW_SETTINGS_PANEL = APP_PARAMS.get("settingsPanel") || "dota";
 const DEFAULT_ACCOUNT_ID = window.localStorage.getItem("dota-lens-account-id") || "";
 const DIRECTORY_SETTINGS_KEY = "dota-lens-directory-settings-v1";
-const PLAYER_SCORE_MODE_KEY = "dota-lens-player-score-mode-v3";
+const READING_MODE_KEY = "dota-lens-reading-mode-v1";
 const SIDEBAR_STATE_KEY = "dota-lens-sidebar-collapsed-v1";
 const WARD_TIMELINE_STATE_KEY = "dota-lens-ward-timeline-collapsed-v1";
 const TASK_HISTORY_KEY = "dota-lens-task-history-v1";
@@ -386,7 +387,9 @@ const MATCH_CACHE_KEY_PREFIX = "dota-lens-match-cache-v1";
 const WARD_MAP_ZOOM_MIN = 1;
 const WARD_MAP_ZOOM_MAX = 4;
 const WARD_MAP_ZOOM_FACTOR = 1.22;
-const DEFAULT_PLAYER_SCORE_MODE = window.localStorage.getItem(PLAYER_SCORE_MODE_KEY) === "deep" ? "deep" : "brief";
+const DEFAULT_READING_MODE = normalizeReadingMode(
+  window.localStorage.getItem(READING_MODE_KEY),
+);
 const SAVED_SIDEBAR_STATE = window.localStorage.getItem(SIDEBAR_STATE_KEY);
 const DEFAULT_SIDEBAR_COLLAPSED = SAVED_SIDEBAR_STATE == null
   ? window.matchMedia("(max-width: 1279px)").matches
@@ -918,7 +921,7 @@ const state = {
   segmentFilter: "all",
   settingsPanel: "account",
   selectedHeroSlot: 0,
-  playerScoreMode: DEFAULT_PLAYER_SCORE_MODE,
+  readingMode: DEFAULT_READING_MODE,
   playerScoreSection: "overview",
   playerScoreRosterFilter: "all",
   selectedPlayerScoreEvidence: null,
@@ -971,6 +974,18 @@ const state = {
   pendingSubjectSlot: null,
   pendingSubjectRequired: false,
 };
+
+function setReadingMode(mode, { persist = true, render = true } = {}) {
+  state.readingMode = normalizeReadingMode(mode);
+  document.body.dataset.readingMode = state.readingMode;
+  document.querySelectorAll("[data-reading-mode]").forEach((button) => {
+    const active = button.dataset.readingMode === state.readingMode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  if (persist) window.localStorage.setItem(READING_MODE_KEY, state.readingMode);
+  if (render && state.page === "detail") renderDetailView(state.detailView);
+}
 
 const wardMapDrag = {
   active: false,
@@ -5740,7 +5755,7 @@ function renderPlayerScoreHeader(model) {
   const hero = model.hero;
   const opponent = safeHero(model.counterpartSlot);
   const match = state.currentAnalysis?.match || {};
-  const briefMode = state.playerScoreMode !== "deep";
+  const briefMode = state.readingMode !== "professional";
   const briefPriority = model.brief.priorities[0] || null;
   const evidence = playerScoreEvidenceLevel(model.evidenceLevel);
   const confidence = model.confidence == null ? "--" : `${Math.round(model.confidence)}%`;
@@ -6458,10 +6473,10 @@ function playerScoreSelectedEvidence(model) {
     const item = playerScoreEventsForHero(model.hero).find((event) => String(event.scoreId) === String(selected.id));
     if (item) return { type: "timeline", item };
   }
-  const fallback = state.playerScoreMode === "brief"
+  const fallback = state.readingMode === "simple"
     ? model.brief.priorities[0] || model.brief.stories[0] || model.brief.strengths[0]
     : model.advice[0] || [...model.dimensions].filter((dimension) => dimension.score != null).sort((left, right) => left.score - right.score)[0] || model.dimensions[0];
-  const type = state.playerScoreMode === "brief"
+  const type = state.readingMode === "simple"
     ? model.brief.priorities.includes(fallback) || model.brief.strengths.includes(fallback) ? "brief-insight" : "brief-story"
     : fallback?.id && model.advice.includes(fallback) ? "advice" : "dimension";
   state.selectedPlayerScoreEvidence = fallback ? { type, id: fallback.id || fallback.key } : null;
@@ -6665,7 +6680,7 @@ function renderPlayerScoreEvidence(model) {
 function renderPlayerScoreContent(model) {
   const root = document.querySelector("#player-score-content");
   const section = state.playerScoreSection;
-  const mode = state.playerScoreMode === "deep" ? "deep" : "brief";
+  const mode = state.readingMode === "professional" ? "deep" : "brief";
   const panel = document.querySelector(".player-score-main-panel");
   const workspace = document.querySelector(".player-score-workspace");
   const tabs = document.querySelector("#player-score-sections");
@@ -6673,13 +6688,6 @@ function renderPlayerScoreContent(model) {
   panel?.classList.toggle("deep-mode", mode === "deep");
   workspace?.classList.toggle("brief-reading", mode === "brief");
   tabs?.classList.toggle("hidden", mode !== "deep");
-  document.querySelectorAll("#player-score-modes [data-player-score-mode]").forEach((button) => {
-    button.classList.toggle("active", button.dataset.playerScoreMode === mode);
-  });
-  const modeMeta = document.querySelector("#player-score-mode-meta span");
-  if (modeMeta) modeMeta.textContent = mode === "brief"
-    ? "一句话结论 · 三个关键时刻 · 一个训练目标"
-    : `${model.dimensions.filter((dimension) => dimension.score != null).length}/10 个维度可评分 · 缺失指标不按 0 分`;
   document.querySelectorAll("#player-score-sections [data-player-score-section]").forEach((button) => {
     button.classList.toggle("active", button.dataset.playerScoreSection === section);
   });
@@ -6739,8 +6747,6 @@ function renderPlayerScoreLoading() {
   stateTag.className = "evidence-tag aggregate";
   document.querySelector("#player-score-evidence-body").innerHTML = `<div class="player-score-data-gap compact"><span>玩家报告加载完成后可查看事实、判断与建议的对应关系。</span></div>`;
   document.querySelector("#player-score-timeline").innerHTML = "";
-  const modeMeta = document.querySelector("#player-score-mode-meta span");
-  if (modeMeta) modeMeta.textContent = "正在读取玩家报告";
   refreshIcons(document.querySelector("#detail-player-score"));
 }
 
@@ -6889,7 +6895,7 @@ function reviewPlayerScoreInsight(insightId, occurrenceIndex = null) {
     returnContext: {
       ...navigation.returnContext,
       view: "player-score",
-      playerScoreMode: state.playerScoreMode,
+      readingMode: state.readingMode,
       playerScoreSection: state.playerScoreSection,
       playerSlot: state.selectedHeroSlot,
       selectedEvidence: { type: "brief-insight", id: insight.id },
@@ -6943,13 +6949,12 @@ function returnToPlayerScoreReport() {
       && Number(context.playerSlot) !== Number(state.selectedHeroSlot)) {
     selectHero(Number(context.playerSlot));
   }
-  state.playerScoreMode = context.playerScoreMode === "deep" ? "deep" : "brief";
+  setReadingMode(context.readingMode, { render: false });
   state.playerScoreSection = context.playerScoreSection || "overview";
   state.selectedPlayerScoreEvidence = context.selectedEvidence || {
     type: "brief-insight",
     id: review.insightId,
   };
-  window.localStorage.setItem(PLAYER_SCORE_MODE_KEY, state.playerScoreMode);
   state.playerReportReviewWindow = null;
   setDetailView("player-score");
   renderPlayerReportReviewBar();
@@ -8592,22 +8597,11 @@ function bindEvents() {
       renderPlayerScoreRoster();
       return;
     }
-    const mode = event.target.closest("[data-player-score-mode]");
-    if (mode) {
-      state.playerScoreMode = mode.dataset.playerScoreMode === "deep" ? "deep" : "brief";
-      window.localStorage.setItem(PLAYER_SCORE_MODE_KEY, state.playerScoreMode);
-      const model = playerScoreModel();
-      renderPlayerScoreHeader(model);
-      renderPlayerScoreContent(model);
-      renderPlayerScoreEvidence(model);
-      return;
-    }
     const openDimension = event.target.closest("[data-player-score-open-dimension]");
     if (openDimension) {
-      state.playerScoreMode = "deep";
+      setReadingMode("professional", { render: false });
       state.playerScoreSection = "overview";
       state.selectedPlayerScoreEvidence = { type: "dimension", id: openDimension.dataset.playerScoreOpenDimension };
-      window.localStorage.setItem(PLAYER_SCORE_MODE_KEY, state.playerScoreMode);
       const model = playerScoreModel();
       renderPlayerScoreHeader(model);
       renderPlayerScoreContent(model);
@@ -8685,7 +8679,7 @@ function bindEvents() {
       if (state.playerScoreSection === "vision" && state.selectedPlayerScoreEvidence.type === "ward") renderPlayerScoreContent(model);
       else document.querySelectorAll("#player-score-content [data-player-score-evidence-type]").forEach((item) => item.classList.toggle("active", item === evidence));
       renderPlayerScoreEvidence(model);
-      if (state.playerScoreMode === "brief" || window.innerWidth < 1180) setPlayerScoreEvidenceOpen(true);
+      if (state.readingMode === "simple" || window.innerWidth < 1180) setPlayerScoreEvidenceOpen(true);
       return;
     }
     const timeline = event.target.closest("[data-player-score-time]");
@@ -8767,6 +8761,9 @@ function bindEvents() {
     if (!button) return;
     setSettingsPanel(button.dataset.settingsPanel);
   });
+  document.querySelectorAll("[data-reading-mode]").forEach((button) => button.addEventListener("click", () => {
+    setReadingMode(button.dataset.readingMode);
+  }));
   document.querySelector(".settings-content").addEventListener("click", (event) => {
     const picker = event.target.closest("[data-directory-picker]");
     if (picker) chooseSettingsDirectory(picker);
@@ -8876,6 +8873,7 @@ async function init() {
   setFarmCompactView(state.farmCompactView);
   setBuildCompactView(state.buildCompactView);
   setCombatCompactView(state.combatCompactView);
+  setReadingMode(state.readingMode, { persist: false, render: false });
   setPlayerScoreEvidenceOpen(false);
   renderMatches();
   renderReplays();

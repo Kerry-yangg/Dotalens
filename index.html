@@ -73,6 +73,10 @@
           </div>
         </div>
         <div id="topbar-actions" class="topbar-actions">
+          <div id="reading-mode-switch" class="segmented-control reading-mode-switch" aria-label="阅读模式">
+            <button class="active" data-reading-mode="simple" type="button" aria-pressed="true">简明</button>
+            <button data-reading-mode="professional" type="button" aria-pressed="false">专业</button>
+          </div>
           <button id="global-search-toggle" class="icon-button" type="button" title="搜索">
             <i data-lucide="search"></i>
           </button>
@@ -595,11 +599,7 @@
 
                 <section class="workspace-panel player-score-main-panel">
                   <div id="player-score-modebar" class="player-score-modebar">
-                    <div id="player-score-modes" class="segmented-control player-score-mode-switch" aria-label="玩家报告阅读模式">
-                      <button class="active" data-player-score-mode="brief" type="button"><i data-lucide="newspaper"></i><span>比赛简报</span></button>
-                      <button data-player-score-mode="deep" type="button"><i data-lucide="chart-no-axes-combined"></i><span>深度分析</span></button>
-                    </div>
-                    <span id="player-score-mode-meta" class="player-score-mode-meta"><i data-lucide="shield-check"></i><span>结论与证据来自同一份 Replay</span></span>
+                    <span class="player-score-mode-meta"><i data-lucide="shield-check"></i><span>结论与证据来自同一份 Replay</span></span>
                     <button id="player-score-evidence-toggle" class="command-button secondary player-score-evidence-toggle" type="button" title="打开评分证据" aria-label="打开评分证据" aria-expanded="false"><i data-lucide="file-search-2"></i><span>证据</span></button>
                   </div>
                   <nav id="player-score-sections" class="player-score-section-tabs" aria-label="玩家报告模块">
@@ -677,6 +677,7 @@
           <div class="settings-layout">
             <nav id="settings-nav" class="settings-nav" aria-label="设置分类">
               <button class="active" data-settings-panel="account" type="button"><i data-lucide="user-round"></i><span>账号</span></button>
+              <button data-settings-panel="display" type="button"><i data-lucide="book-open-check"></i><span>显示与阅读</span></button>
               <button data-settings-panel="dota" type="button"><i data-lucide="gamepad-2"></i><span>Dota 与 Replay</span></button>
               <button data-settings-panel="parser" type="button"><i data-lucide="cpu"></i><span>解析器</span></button>
               <button data-settings-panel="diagnostics" type="button"><i data-lucide="stethoscope"></i><span>诊断</span></button>
@@ -687,6 +688,13 @@
                 <div class="settings-form">
                   <label><span>account_id</span><div class="field-row"><input id="settings-account-id" inputmode="numeric" placeholder="Steam 32 位数字 ID" autocomplete="off"><button id="settings-verify-account" class="command-button secondary" type="button">验证</button></div></label>
                   <label><span>SteamID64</span><input id="settings-steam-id64" value="--" readonly></label>
+                </div>
+              </section>
+              <section id="settings-display" class="settings-panel" data-settings-content="display">
+                <header><span class="panel-kicker">阅读偏好</span><h2>显示与阅读</h2></header>
+                <div class="settings-form settings-reading-form">
+                  <div class="settings-reading-option"><div><strong>简明</strong><small>优先显示结论、关键时刻和下一步行动。</small></div><button class="command-button secondary" data-reading-mode="simple" type="button" aria-pressed="true">简明</button></div>
+                  <div class="settings-reading-option"><div><strong>专业</strong><small>显示完整维度、评分依据和可定位的复盘细节。</small></div><button class="command-button secondary" data-reading-mode="professional" type="button" aria-pressed="false">专业</button></div>
                 </div>
               </section>
               <section id="settings-dota" class="settings-panel" data-settings-content="dota">

@@ -394,6 +394,21 @@ svg {
   gap: 7px;
 }
 
+.reading-mode-switch {
+  display: grid;
+  width: 132px;
+  height: 30px;
+  grid-template-columns: repeat(2, 1fr);
+  flex: 0 0 132px;
+}
+
+.reading-mode-switch button {
+  min-width: 0;
+  padding: 0 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .icon-button,
 .command-button,
 .speed-button,
@@ -6879,6 +6894,31 @@ svg {
   gap: 18px;
   overflow: auto;
 }
+
+.settings-reading-form {
+  align-content: start;
+  gap: 10px;
+}
+
+.settings-reading-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 72px;
+  padding: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  gap: 14px;
+}
+
+.settings-reading-option > div {
+  display: grid;
+  gap: 4px;
+}
+
+.settings-reading-option strong { color: var(--text); font-size: 13px; }
+.settings-reading-option small { color: var(--muted); font-size: 12px; }
 
 .settings-form > label {
   display: grid;

@@ -72,6 +72,16 @@ test("reading mode defaults to simple and preserves only professional", () => {
   assert.equal(normalizeReadingMode("professional"), "professional");
 });
 
+test("global reading mode controls replace the player report local preference", () => {
+  assert.match(htmlSource, /id="reading-mode-switch"/);
+  assert.match(htmlSource, /data-reading-mode="simple"[\s\S]*>简明</);
+  assert.match(htmlSource, /data-reading-mode="professional"[\s\S]*>专业</);
+  assert.match(htmlSource, /data-settings-panel="display"/);
+  assert.match(appSource, /const READING_MODE_KEY = "dota-lens-reading-mode-v1"/);
+  assert.match(appSource, /function setReadingMode\(/);
+  assert.doesNotMatch(appSource, /PLAYER_SCORE_MODE_KEY/);
+});
+
 test("simple report always returns all six responsibility domains", () => {
   const report = buildSimplePlayerReport({ dimensions: [], insights: [] });
   assert.deepEqual(

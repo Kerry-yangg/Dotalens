@@ -28,7 +28,7 @@ const qaHeight = Math.max(720, Number.parseInt(process.env.DOTA_LENS_QA_HEIGHT |
 const qaScoreboardStress = process.env.DOTA_LENS_QA_SCOREBOARD_STRESS === "1";
 const qaDirectoryPickers = process.env.DOTA_LENS_QA_DIRECTORY_PICKERS === "1";
 const qaDirectoryRoot = process.env.DOTA_LENS_QA_DIRECTORY_ROOT || "C:\\Dota Lens QA";
-const qaSettingsPanel = new Set(["account", "dota", "parser", "diagnostics"]).has(process.env.DOTA_LENS_QA_SETTINGS_PANEL)
+const qaSettingsPanel = new Set(["account", "display", "dota", "parser", "diagnostics"]).has(process.env.DOTA_LENS_QA_SETTINGS_PANEL)
   ? process.env.DOTA_LENS_QA_SETTINGS_PANEL
   : "dota";
 
