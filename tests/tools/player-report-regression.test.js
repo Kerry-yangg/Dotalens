@@ -2,16 +2,18 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { gunzipSync, gzipSync } from "node:zlib";
@@ -20,6 +22,7 @@ import {
   compareGolden,
   PLAYER_REPORT_ROLE_WEIGHTS,
   projectGoldenReport,
+  runRegressionCli,
   validatePlayerReportBundle,
 } from "../../tools/player-report-regression.mjs";
 import {
@@ -426,6 +429,66 @@ function runRegressionCliFixture(fixture, ...args) {
   );
 }
 
+function directorySnapshot(directory) {
+  if (!existsSync(directory)) return {};
+  return Object.fromEntries(
+    readdirSync(directory).sort().map((fileName) => [
+      fileName,
+      readFileSync(join(directory, fileName)).toString("base64"),
+    ]),
+  );
+}
+
+function assertNoAtomicDirectoryResidue(directory) {
+  const prefix = `${basename(directory)}.`;
+  const residue = readdirSync(dirname(directory))
+    .filter((entry) => entry.startsWith(`${prefix}staging-`)
+      || entry.startsWith(`${prefix}backup-`));
+  assert.deepEqual(residue, []);
+}
+
+function writeExpectedSentinels(fixture) {
+  const directory = join(
+    fixture.root,
+    "tests",
+    "player-report-regression",
+    "expected",
+  );
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, "old-a.json"), Buffer.from([0, 1, 2, 3, 255]));
+  writeFileSync(join(directory, "old-b.json"), "{\"approved\":\"before\"}\n");
+  return directory;
+}
+
+function analysisSummaryPath(fixture, matchId) {
+  return join(
+    fixture.root,
+    "tools",
+    "runtime",
+    "dota-lens-data",
+    "analyses",
+    matchId,
+    "summary.json",
+  );
+}
+
+function escapeAnalysisSource(fixture, matchId) {
+  const summaryPath = analysisSummaryPath(fixture, matchId);
+  const summary = JSON.parse(readFileSync(summaryPath, "utf8"));
+  const source = join(
+    dirname(summaryPath),
+    summary.analysis_storage.module_base,
+    "players.json.gz",
+  );
+  const escapedDirectory = join(fixture.root, "escaped-analysis-source");
+  mkdirSync(escapedDirectory, { recursive: true });
+  copyFileSync(source, join(escapedDirectory, "players.json.gz"));
+  writeFileSync(join(escapedDirectory, "sentinel.txt"), "outside unchanged");
+  summary.analysis_storage.module_base = escapedDirectory;
+  writeFileSync(summaryPath, JSON.stringify(summary));
+  return escapedDirectory;
+}
+
 test("candidates CLI writes and prints a deterministic ten-player table per match", () => {
   const fixture = createRunnerFixture(["9900000101", "9900000102"]);
   writeCliMatrixManifest(fixture, { count: 1 });
@@ -626,6 +689,198 @@ test("approve-golden atomically replaces expected with exactly fifteen reviewed 
   }
 });
 
+test("approve-golden rejects source-package hash drift after proposal byte-for-byte", () => {
+  const matchIds = Array.from(
+    { length: 16 },
+    (_, index) => String(9900000501 + index),
+  );
+  const fixture = createRunnerFixture(matchIds);
+  writeCliMatrixManifest(fixture);
+  const expectedDirectory = writeExpectedSentinels(fixture);
+
+  try {
+    const proposal = runRegressionCliFixture(fixture, "propose-golden");
+    assert.equal(proposal.status, 0, proposal.stderr || proposal.stdout);
+    const before = directorySnapshot(expectedDirectory);
+
+    const summary = JSON.parse(readFileSync(
+      analysisSummaryPath(fixture, matchIds[0]),
+      "utf8",
+    ));
+    const playersPath = join(
+      dirname(analysisSummaryPath(fixture, matchIds[0])),
+      summary.analysis_storage.module_base,
+      "players.json.gz",
+    );
+    const players = JSON.parse(gunzipSync(readFileSync(playersPath)));
+    writeFileSync(playersPath, gzipSync(`${JSON.stringify(players)}\n`));
+
+    const approval = spawnSync(
+      process.execPath,
+      [TOOL, "approve-golden", fixture.manifestPath, "--reviewed"],
+      { cwd: fixture.root, encoding: "utf8" },
+    );
+    assert.notEqual(approval.status, 0);
+    assert.match(approval.stderr, /source.*(hash|drift)|provenance/i);
+    assert.deepEqual(directorySnapshot(expectedDirectory), before);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("Golden commands reject malicious IDs and replay paths before boundary writes", async (t) => {
+  const attacks = [
+    {
+      label: "match id",
+      expected: /invalid match_id/i,
+      mutate(manifest) {
+        manifest.matches[0].match_id = "../escaped";
+      },
+    },
+    {
+      label: "replay path",
+      expected: /invalid replay_path/i,
+      mutate(manifest) {
+        manifest.matches[0].replay_path = "../../outside.dem";
+      },
+    },
+  ];
+  for (const command of ["candidates", "propose-golden", "approve-golden"]) {
+    for (const attack of attacks) {
+      await t.test(`${command} rejects ${attack.label}`, () => {
+        const matchIds = Array.from(
+          { length: 16 },
+          (_, index) => String(9900000601 + index),
+        );
+        const fixture = createRunnerFixture(matchIds);
+        writeCliMatrixManifest(fixture);
+        const expectedDirectory = writeExpectedSentinels(fixture);
+        try {
+          if (command === "approve-golden") {
+            const proposal = runRegressionCliFixture(fixture, "propose-golden");
+            assert.equal(proposal.status, 0, proposal.stderr || proposal.stdout);
+          }
+          const manifest = JSON.parse(readFileSync(fixture.manifestPath, "utf8"));
+          attack.mutate(manifest);
+          writeFileSync(fixture.manifestPath, JSON.stringify(manifest));
+          const before = directorySnapshot(expectedDirectory);
+          const args = command === "approve-golden"
+            ? [TOOL, command, fixture.manifestPath, "--reviewed"]
+            : [TOOL, command, fixture.manifestPath];
+          const result = spawnSync(process.execPath, args, {
+            cwd: fixture.root,
+            encoding: "utf8",
+          });
+          assert.notEqual(result.status, 0);
+          assert.match(result.stderr, attack.expected);
+          assert.deepEqual(directorySnapshot(expectedDirectory), before);
+          assert.equal(existsSync(join(fixture.root, "escaped")), false);
+        } finally {
+          rmSync(fixture.root, { recursive: true, force: true });
+        }
+      });
+    }
+  }
+});
+
+test("Golden commands reject split-module source traversal at the source-loading stage", async (t) => {
+  for (const command of ["candidates", "propose-golden", "approve-golden"]) {
+    await t.test(command, () => {
+      const matchIds = Array.from(
+        { length: 16 },
+        (_, index) => String(9900000701 + index),
+      );
+      const fixture = createRunnerFixture(matchIds);
+      writeCliMatrixManifest(fixture);
+      const expectedDirectory = writeExpectedSentinels(fixture);
+      try {
+        if (command === "approve-golden") {
+          const proposal = runRegressionCliFixture(fixture, "propose-golden");
+          assert.equal(proposal.status, 0, proposal.stderr || proposal.stdout);
+        }
+        const escapedDirectory = escapeAnalysisSource(fixture, matchIds[0]);
+        const before = directorySnapshot(expectedDirectory);
+        const args = command === "approve-golden"
+          ? [TOOL, command, fixture.manifestPath, "--reviewed"]
+          : [TOOL, command, fixture.manifestPath];
+        const result = spawnSync(process.execPath, args, {
+          cwd: fixture.root,
+          encoding: "utf8",
+        });
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /analysis.*(source|module).*path|escapes/i);
+        assert.deepEqual(directorySnapshot(expectedDirectory), before);
+        assert.equal(
+          readFileSync(join(escapedDirectory, "sentinel.txt"), "utf8"),
+          "outside unchanged",
+        );
+      } finally {
+        rmSync(fixture.root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("approve-golden restores old expected bytes after staging and swap failures", async (t) => {
+  for (const operation of ["write", "copy", "rename"]) {
+    await t.test(operation, () => {
+      const matchIds = Array.from(
+        { length: 16 },
+        (_, index) => String(9900000801 + index),
+      );
+      const fixture = createRunnerFixture(matchIds);
+      writeCliMatrixManifest(fixture);
+      const expectedDirectory = writeExpectedSentinels(fixture);
+      try {
+        const proposal = runRegressionCliFixture(fixture, "propose-golden");
+        assert.equal(proposal.status, 0, proposal.stderr || proposal.stdout);
+        const before = directorySnapshot(expectedDirectory);
+        let targetCalls = 0;
+        const fileSystem = {};
+        if (operation === "write") {
+          fileSystem.writeFileSync = (path, contents) => {
+            if (String(path).includes(".staging-")) {
+              targetCalls += 1;
+              writeFileSync(path, Buffer.from(contents).subarray(0, 3));
+              throw new Error("fixture staging write failure");
+            }
+            return writeFileSync(path, contents);
+          };
+        } else if (operation === "copy") {
+          fileSystem.copyFileSync = (source, destination) => {
+            if (String(destination).includes(".staging-")) {
+              targetCalls += 1;
+              copyFileSync(source, destination);
+              throw new Error("fixture staging copy failure");
+            }
+            return copyFileSync(source, destination);
+          };
+        } else {
+          fileSystem.renameSync = (source, destination) => {
+            if (String(source).includes(".staging-")
+                && resolve(destination) === resolve(expectedDirectory)) {
+              targetCalls += 1;
+              throw new Error("fixture staging swap failure");
+            }
+            return renameSync(source, destination);
+          };
+        }
+
+        const status = runRegressionCli(
+          ["approve-golden", fixture.manifestPath, "--reviewed"],
+          { fileSystem, onError() {} },
+        );
+        assert.equal(targetCalls, 1, `${operation} target was not reached`);
+        assert.equal(status, 1);
+        assert.deepEqual(directorySnapshot(expectedDirectory), before);
+        assertNoAtomicDirectoryResidue(expectedDirectory);
+      } finally {
+        rmSync(fixture.root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
 test("ValidateExisting validates a fixture analysis without parser calls and replaces its checkpoint", () => {
   const fixture = createRunnerFixture(["9900000001"]);
   const parser = startMockParser(fixture);
@@ -816,6 +1071,25 @@ test("ReparseAll stages a cached Replay so the parser can atomically replace it"
     parser.stop();
     rmSync(fixture.root, { recursive: true, force: true });
   }
+});
+
+test("cached Replay staging setup is enclosed by its cleanup try/finally", () => {
+  const source = readFileSync(PLAYER_REPORT_RUNNER, "utf8");
+  const start = source.indexOf("function Invoke-ReplayParse");
+  const end = source.indexOf("function Invoke-Task8Validation", start);
+  const body = source.slice(start, end);
+  const stagedInitialization = body.indexOf("$stagedUpload = $null");
+  const setupTry = body.indexOf("try {", stagedInitialization);
+  const createDirectory = body.indexOf("New-Item -ItemType Directory", stagedInitialization);
+  const copyReplay = body.indexOf("Copy-Item -LiteralPath", stagedInitialization);
+  const cleanupFinally = body.indexOf("finally {", copyReplay);
+  const removeReplay = body.indexOf("Remove-Item -LiteralPath $stagedUpload", cleanupFinally);
+
+  assert.ok(stagedInitialization >= 0);
+  assert.ok(setupTry > stagedInitialization && setupTry < createDirectory);
+  assert.ok(createDirectory < copyReplay);
+  assert.ok(cleanupFinally > copyReplay);
+  assert.ok(removeReplay > cleanupFinally);
 });
 
 test("timeout cancellation confirms idle before the next serial upload", () => {

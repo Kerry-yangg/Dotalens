@@ -1124,6 +1124,18 @@ final class PlayerReportAnalysis {
         var calculation = PlayerReportBaseComponents.calculate(inputs);
         int normalizedConfidence = clamp(confidence, 0, 100);
         boolean available = calculation.available() && normalizedConfidence >= 55;
+        if (!available && calculation.available()) {
+            calculation = PlayerReportBaseComponents.calculate(calculation.components().stream()
+                    .map(PlayerReportBaseComponents.ComponentResult::input)
+                    .map(input -> input.available()
+                            ? new PlayerReportBaseComponents.ComponentInput(
+                                    input.key(), input.label(), false, null,
+                                    input.localWeight(), input.confidence(),
+                                    input.comparison(), input.rawMetrics(),
+                                    input.evidenceRefs(), null, "dimension_unavailable")
+                            : input)
+                    .toList());
+        }
         return new DimensionScore(available ? calculation.score() : null,
                 normalizedConfidence, available, available ? evidenceLevel : "partial",
                 List.copyOf(missing), calculation);

@@ -244,28 +244,38 @@ class PlayerReportScoreFormulaV4Test {
     }
 
     @Test
-    void acceptsAtomicComponentsWhenDimensionIsUnavailableByGate() {
-        JsonObject lane = dimension("lane_execution", "lane", 100, 0, false);
+    void explicitAvailableDimensionMissingScoresRemainsAvailableAndInvalid() {
+        JsonObject lane = dimension("lane_execution", "lane", 60, 70, true);
+        lane.remove("score");
         lane.add("base_components", components(
                 component("lane_model_score", 80, 75),
                 component("core_lane_opportunity_conversion", 40, 25)));
-        JsonObject report = report(lane);
+        JsonObject report = report(
+                lane,
+                dimension("combat_duty", "utility", 40, 80, true));
         report.addProperty("base_component_model", PlayerReportBaseComponents.MODEL);
 
         PlayerReportScoringV4.apply(report);
 
-        assertTrue(report.getAsJsonObject("score_card").getAsJsonObject("audit")
+        JsonObject scored = findDimension(report, "lane_execution");
+        assertTrue(scored.get("available").getAsBoolean());
+        assertEquals(60.0, scored.get("effective_weight").getAsDouble(), EPSILON);
+        assertEquals(40.0, findDimension(report, "combat_duty")
+                .get("effective_weight").getAsDouble(), EPSILON);
+        assertEquals(2, report.getAsJsonObject("score_card")
+                .get("dimension_coverage").getAsInt());
+        assertFalse(report.getAsJsonObject("score_card").getAsJsonObject("audit")
                 .get("recomputation_valid").getAsBoolean());
-        assertTrue(findDimension(report, "lane_execution").getAsJsonObject("recomputation")
+        assertFalse(scored.getAsJsonObject("recomputation")
                 .get("base_component_valid").getAsBoolean());
     }
 
     @Test
-    void canonicalizesUnavailableAtomicRowsForStrictProtocol() {
+    void acceptsConsistentExplicitUnavailableAtomicRows() {
         JsonObject lane = dimension("lane_execution", "lane", 100, 0, false);
         lane.add("base_components", components(
-                component("lane_model_score", 80, 75),
-                component("core_lane_opportunity_conversion", 40, 25)));
+                unavailableComponent("lane_model_score", 75),
+                unavailableComponent("core_lane_opportunity_conversion", 25)));
         JsonObject report = report(lane);
         report.addProperty("base_component_model", PlayerReportBaseComponents.MODEL);
 
@@ -289,6 +299,80 @@ class PlayerReportScoreFormulaV4Test {
         assertFalse(calculation.available());
         assertTrue(report.getAsJsonObject("score_card").getAsJsonObject("audit")
                 .get("recomputation_valid").getAsBoolean());
+    }
+
+    @Test
+    void preservesExplicitNullScoresForUnavailableAtomicDimension() {
+        JsonObject lane = dimension("lane_execution", "lane", 100, 0, false);
+        for (String key : new String[] {
+                "base_score", "behavior_modifier", "final_score", "score" }) {
+            lane.add(key, com.google.gson.JsonNull.INSTANCE);
+        }
+        lane.add("base_components", components(
+                unavailableComponent("lane_model_score", 75),
+                unavailableComponent("core_lane_opportunity_conversion", 25)));
+        JsonObject report = report(lane);
+        report.addProperty("base_component_model", PlayerReportBaseComponents.MODEL);
+
+        PlayerReportScoringV4.apply(report);
+
+        JsonObject scored = findDimension(report, "lane_execution");
+        assertFalse(scored.get("available").getAsBoolean());
+        for (String key : new String[] {
+                "base_score", "behavior_modifier", "final_score", "score" }) {
+            assertTrue(scored.has(key), key);
+            assertTrue(scored.get(key).isJsonNull(), key);
+        }
+        assertTrue(scored.getAsJsonObject("recomputation")
+                .get("base_component_valid").getAsBoolean());
+        assertTrue(report.getAsJsonObject("score_card").getAsJsonObject("audit")
+                .get("recomputation_valid").getAsBoolean());
+    }
+
+    @Test
+    void rejectsExplicitUnavailableDimensionWithAvailableComponent() {
+        JsonObject lane = dimension("lane_execution", "lane", 100, 0, false);
+        lane.add("base_components", components(
+                component("lane_model_score", 80, 75),
+                unavailableComponent("core_lane_opportunity_conversion", 25)));
+        JsonObject report = report(lane);
+        report.addProperty("base_component_model", PlayerReportBaseComponents.MODEL);
+
+        PlayerReportScoringV4.apply(report);
+
+        JsonObject scored = findDimension(report, "lane_execution");
+        assertFalse(scored.get("available").getAsBoolean());
+        assertFalse(scored.getAsJsonObject("recomputation")
+                .get("base_component_valid").getAsBoolean());
+        assertFalse(report.getAsJsonObject("score_card").getAsJsonObject("audit")
+                .get("recomputation_valid").getAsBoolean());
+        assertTrue(scored.getAsJsonArray("base_components").get(0)
+                .getAsJsonObject().get("available").getAsBoolean());
+    }
+
+    @Test
+    void rejectsExplicitUnavailableDimensionWithScoredUnavailableComponent() {
+        JsonObject lane = dimension("lane_execution", "lane", 100, 0, false);
+        JsonObject staleUnavailable = unavailableComponent(
+                "core_lane_opportunity_conversion", 25);
+        staleUnavailable.addProperty("normalized_score", 40);
+        staleUnavailable.addProperty("weighted_contribution", 10);
+        lane.add("base_components", components(
+                unavailableComponent("lane_model_score", 75),
+                staleUnavailable));
+        JsonObject report = report(lane);
+        report.addProperty("base_component_model", PlayerReportBaseComponents.MODEL);
+
+        PlayerReportScoringV4.apply(report);
+
+        JsonObject scored = findDimension(report, "lane_execution");
+        assertFalse(scored.get("available").getAsBoolean());
+        assertFalse(scored.getAsJsonObject("recomputation")
+                .get("base_component_valid").getAsBoolean());
+        assertFalse(report.getAsJsonObject("score_card").getAsJsonObject("audit")
+                .get("recomputation_valid").getAsBoolean());
+        assertEquals(40.0, scored.getAsJsonArray("base_components").get(1)
+                .getAsJsonObject().get("normalized_score").getAsDouble(), EPSILON);
     }
 
     @Test
@@ -358,6 +442,24 @@ class PlayerReportScoreFormulaV4Test {
         row.add("comparison", new JsonObject());
         row.add("raw_metrics", new JsonObject());
         row.add("evidence_refs", new JsonArray());
+        return row;
+    }
+
+    private static JsonObject unavailableComponent(String key, double weight) {
+        JsonObject row = new JsonObject();
+        row.addProperty("key", key);
+        row.addProperty("label", key);
+        row.addProperty("available", false);
+        row.add("normalized_score", com.google.gson.JsonNull.INSTANCE);
+        row.addProperty("local_weight", weight);
+        row.addProperty("effective_local_weight", 0);
+        row.add("weighted_contribution", com.google.gson.JsonNull.INSTANCE);
+        row.addProperty("confidence", 0);
+        row.add("comparison", new JsonObject());
+        row.add("raw_metrics", new JsonObject());
+        row.add("evidence_refs", new JsonArray());
+        row.addProperty("missing_reason", "fixture_unavailable");
+        row.add("suppression_reason", com.google.gson.JsonNull.INSTANCE);
         return row;
     }
 

@@ -1,4 +1,5 @@
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -7,6 +8,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import {
   dirname,
   isAbsolute,
@@ -33,6 +35,16 @@ const AUDIT_MODEL = "player-report-score-audit/1.0";
 const DIMENSION_FORMULA = "clamp(base_score + sum(applied_delta), 0, 100)";
 const OVERALL_FORMULA =
   "sum(dimension_score * effective_weight) / sum(effective_weight)";
+const PROPOSAL_PROVENANCE_SCHEMA = "player-report-golden-proposal-provenance/1.0";
+const DEFAULT_FILE_SYSTEM = {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+};
 
 export const PLAYER_REPORT_DIMENSIONS = Object.freeze([
   "lane_execution",
@@ -2094,32 +2106,69 @@ export function compareGolden(expected, actual, policy = {}) {
   };
 }
 
+function resolveWithin(root, path, label) {
+  const normalizedRoot = resolve(root);
+  const target = resolve(normalizedRoot, path);
+  const targetRelative = relative(normalizedRoot, target);
+  if (targetRelative === ".."
+      || targetRelative.startsWith(`..\\`)
+      || targetRelative.startsWith("../")
+      || isAbsolute(targetRelative)) {
+    throw new Error(`${label} escapes its allowed directory`);
+  }
+  return target;
+}
+
+function sha256File(path, fileSystem = DEFAULT_FILE_SYSTEM) {
+  return createHash("sha256").update(fileSystem.readFileSync(path)).digest("hex");
+}
+
 export function loadPlayerReportAnalysis(matchId, projectRoot = process.cwd()) {
   const normalizedMatchId = String(matchId || "8894766243");
-  const analysisDirectory = resolve(
+  if (!/^\d+$/.test(normalizedMatchId)) {
+    throw new Error("Invalid match_id for analysis source");
+  }
+  const analysesDirectory = resolve(
     projectRoot,
     "tools",
     "runtime",
     "dota-lens-data",
     "analyses",
+  );
+  const analysisDirectory = resolveWithin(
+    analysesDirectory,
     normalizedMatchId,
+    `Analysis ${normalizedMatchId} source path`,
   );
-  const summary = JSON.parse(
-    readFileSync(resolve(analysisDirectory, "summary.json"), "utf8"),
+  const summaryPath = resolveWithin(
+    analysisDirectory,
+    "summary.json",
+    `Analysis ${normalizedMatchId} summary path`,
   );
+  const summary = JSON.parse(readFileSync(summaryPath, "utf8"));
   const moduleBase = String(summary?.analysis_storage?.module_base || "");
   if (!moduleBase) {
     throw new Error(`Analysis ${normalizedMatchId} has no split module base`);
   }
-  const players = JSON.parse(gunzipSync(readFileSync(
-    resolve(analysisDirectory, moduleBase, "players.json.gz"),
-  )));
+  const moduleDirectory = resolveWithin(
+    analysisDirectory,
+    moduleBase,
+    `Analysis ${normalizedMatchId} split module source path`,
+  );
+  const playersPath = resolveWithin(
+    moduleDirectory,
+    "players.json.gz",
+    `Analysis ${normalizedMatchId} players source path`,
+  );
+  const players = JSON.parse(gunzipSync(readFileSync(playersPath)));
   return {
     matchId: normalizedMatchId,
     projectRoot: resolve(projectRoot),
     analysisDirectory,
     moduleBase,
+    playersPath,
     summary,
+    summaryPath,
     players,
   };
 }
@@ -2307,29 +2356,97 @@ function goldenFileName(row) {
   return `${row.matchId}-slot-${row.subject.player_slot}.json`;
 }
 
-function replaceDirectoryAtomically(directory, files) {
+function replaceDirectoryAtomically(directory, files, options = {}) {
+  const fileSystem = {
+    ...DEFAULT_FILE_SYSTEM,
+    ...(options.fileSystem || {}),
+  };
   const parent = dirname(directory);
   const nonce = `${process.pid}-${Date.now()}`;
   const staging = `${directory}.staging-${nonce}`;
   const backup = `${directory}.backup-${nonce}`;
-  mkdirSync(parent, { recursive: true });
-  rmSync(staging, { recursive: true, force: true });
-  mkdirSync(staging, { recursive: true });
+  const transactionMarker = resolve(staging, ".transaction");
+  let originalMoved = false;
+  fileSystem.mkdirSync(parent, { recursive: true });
+  fileSystem.rmSync(staging, { recursive: true, force: true });
+  fileSystem.mkdirSync(staging, { recursive: true });
   try {
-    for (const [fileName, contents] of files) {
-      writeFileSync(resolve(staging, fileName), contents);
+    fileSystem.writeFileSync(transactionMarker, "staging\n");
+    for (const [fileName, contents, sourcePath] of files) {
+      const destination = resolveWithin(staging, fileName, "Golden staging path");
+      if (sourcePath) {
+        fileSystem.copyFileSync(sourcePath, destination);
+      } else {
+        fileSystem.writeFileSync(destination, contents);
+      }
     }
-    if (existsSync(directory)) renameSync(directory, backup);
+    fileSystem.rmSync(transactionMarker, { force: true });
+    if (fileSystem.existsSync(directory)) {
+      fileSystem.renameSync(directory, backup);
+      originalMoved = true;
+    }
     try {
-      renameSync(staging, directory);
+      fileSystem.renameSync(staging, directory);
     } catch (error) {
-      if (existsSync(backup)) renameSync(backup, directory);
+      if (originalMoved && fileSystem.existsSync(backup)) {
+        fileSystem.renameSync(backup, directory);
+        originalMoved = false;
+      }
       throw error;
     }
-    rmSync(backup, { recursive: true, force: true });
+    if (originalMoved) {
+      fileSystem.rmSync(backup, { recursive: true, force: true });
+      originalMoved = false;
+    }
   } finally {
-    rmSync(staging, { recursive: true, force: true });
+    fileSystem.rmSync(staging, { recursive: true, force: true });
+    if (!originalMoved || fileSystem.existsSync(directory)) {
+      fileSystem.rmSync(backup, { recursive: true, force: true });
+    }
   }
+}
+
+function sourceProvenance(context, row, analysis) {
+  const replayPath = resolveWithin(
+    context.projectRoot,
+    String(row.match.replay_path),
+    `Replay source path for match_id=${row.matchId}`,
+  );
+  return {
+    match_id: row.matchId,
+    replay_sha256: sha256File(replayPath),
+    summary_sha256: sha256File(analysis.summaryPath),
+    players_sha256: sha256File(analysis.playersPath),
+    module_base: analysis.moduleBase,
+  };
+}
+
+function proposalProvenancePath(context) {
+  return resolve(context.runtimeDirectory, "candidate-golden.provenance.json");
+}
+
+function writeProposalProvenance(context, sources) {
+  const destination = proposalProvenancePath(context);
+  const temporary = `${destination}.${process.pid}.${Date.now()}.tmp`;
+  const contents = `${JSON.stringify({
+    schema: PROPOSAL_PROVENANCE_SCHEMA,
+    sources,
+  }, null, 2)}\n`;
+  writeFileSync(temporary, contents);
+  renameSync(temporary, destination);
+}
+
+function readProposalProvenance(context) {
+  const path = proposalProvenancePath(context);
+  if (!existsSync(path)) {
+    throw new Error("Golden proposal provenance is missing");
+  }
+  const provenance = JSON.parse(readFileSync(path, "utf8"));
+  if (provenance?.schema !== PROPOSAL_PROVENANCE_SCHEMA
+      || !Array.isArray(provenance.sources)) {
+    throw new Error("Golden proposal provenance is invalid");
+  }
+  return provenance.sources;
 }
 
 function jsonProjection(projection) {
@@ -2441,19 +2558,22 @@ function runCandidatesCommand(manifestArgument) {
 function runProposeGoldenCommand(manifestArgument) {
   const context = manifestContext(manifestArgument);
   const rows = goldenSubjectRows(context);
+  const sources = [];
   const files = rows.map((row) => {
-    const { projection } = reportForSubject(context, row);
+    const { analysis, projection } = reportForSubject(context, row);
+    sources.push(sourceProvenance(context, row, analysis));
     return [goldenFileName(row), jsonProjection(projection)];
   });
   replaceDirectoryAtomically(
     resolve(context.runtimeDirectory, "candidate-golden"),
     files,
   );
+  writeProposalProvenance(context, sources);
   console.log(`Proposed ${files.length} Golden candidates`);
   return 0;
 }
 
-function runApproveGoldenCommand(manifestArgument, reviewed) {
+function runApproveGoldenCommand(manifestArgument, reviewed, fileSystem) {
   if (!reviewed) {
     throw new Error("approve-golden requires explicit --reviewed");
   }
@@ -2477,33 +2597,45 @@ function runApproveGoldenCommand(manifestArgument, reviewed) {
     );
   }
 
+  const proposedSources = readProposalProvenance(context);
+  if (proposedSources.length !== rows.length) {
+    throw new Error("Golden proposal provenance cardinality mismatch");
+  }
+
   const files = [];
-  for (const row of rows) {
+  for (const [index, row] of rows.entries()) {
     const fileName = goldenFileName(row);
-    const candidate = JSON.parse(readFileSync(
-      resolve(candidateDirectory, fileName),
-      "utf8",
-    ));
+    const candidatePath = resolveWithin(
+      candidateDirectory,
+      fileName,
+      "Golden candidate path",
+    );
+    const candidateContents = readFileSync(candidatePath, "utf8");
+    const candidate = JSON.parse(candidateContents);
     const selfComparison = compareGolden(candidate, candidate);
     if (!selfComparison.valid || selfComparison.changes.length > 0) {
       throw new Error(`Golden candidate integrity failed for ${fileName}`);
     }
-    const { projection } = reportForSubject(context, row);
+    const { analysis, projection } = reportForSubject(context, row);
+    const currentSource = sourceProvenance(context, row, analysis);
+    if (JSON.stringify(proposedSources[index]) !== JSON.stringify(currentSource)) {
+      throw new Error(`Golden proposal source hash drift detected for ${fileName}`);
+    }
     const sourceComparison = compareGolden(candidate, projection);
     if (!sourceComparison.valid
         || sourceComparison.changes.length > 0
         || JSON.stringify(candidate) !== JSON.stringify(projection)) {
       throw new Error(`Golden candidate drift detected for ${fileName}`);
     }
-    files.push([fileName, jsonProjection(candidate)]);
+    files.push([fileName, candidateContents, candidatePath]);
   }
 
-  replaceDirectoryAtomically(context.expectedDirectory, files);
+  replaceDirectoryAtomically(context.expectedDirectory, files, { fileSystem });
   console.log(`Approved ${files.length} reviewed Golden files`);
   return 0;
 }
 
-export function runRegressionCli(argv = process.argv.slice(2)) {
+export function runRegressionCli(argv = process.argv.slice(2), options = {}) {
   const [subcommand, firstArgument, secondArgument] = argv;
   try {
     if (subcommand === "validate-analysis") {
@@ -2525,10 +2657,12 @@ export function runRegressionCli(argv = process.argv.slice(2)) {
     }
     if (subcommand === "approve-golden") {
       const reviewed = argv.slice(2).includes("--reviewed");
-      return runApproveGoldenCommand(firstArgument, reviewed);
+      return runApproveGoldenCommand(firstArgument, reviewed, options.fileSystem);
     }
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
+    const message = error instanceof Error ? error.message : String(error);
+    if (typeof options.onError === "function") options.onError(message);
+    else console.error(message);
     return 1;
   }
   console.error(

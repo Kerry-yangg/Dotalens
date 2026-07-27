@@ -310,23 +310,23 @@ function Invoke-ReplayParse {
     ))
     $uploadPath = $ReplayPath
     $stagedUpload = $null
-    if ([IO.Path]::GetFullPath($ReplayPath).Equals(
-            $cachedReplay,
-            [StringComparison]::OrdinalIgnoreCase
-        )) {
-        $uploadDirectory = Join-Path $runtimeRoot 'uploads'
-        New-Item -ItemType Directory -Force -Path $uploadDirectory | Out-Null
-        $stagedUpload = Join-Path $uploadDirectory (
-            "$MatchId.$([guid]::NewGuid().ToString('N'))$extension"
-        )
-        Copy-Item -LiteralPath $ReplayPath -Destination $stagedUpload
-        $uploadPath = $stagedUpload
-    }
-    $headers = @{
-        'X-Dota-Lens-File-Name' = $fileName
-        'X-Dota-Lens-Account-Id' = '139766850'
-    }
     try {
+        if ([IO.Path]::GetFullPath($ReplayPath).Equals(
+                $cachedReplay,
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+            $uploadDirectory = Join-Path $runtimeRoot 'uploads'
+            New-Item -ItemType Directory -Force -Path $uploadDirectory | Out-Null
+            $stagedUpload = Join-Path $uploadDirectory (
+                "$MatchId.$([guid]::NewGuid().ToString('N'))$extension"
+            )
+            Copy-Item -LiteralPath $ReplayPath -Destination $stagedUpload
+            $uploadPath = $stagedUpload
+        }
+        $headers = @{
+            'X-Dota-Lens-File-Name' = $fileName
+            'X-Dota-Lens-Account-Id' = '139766850'
+        }
         $job = Invoke-RestMethod `
             -Method Post `
             -Uri "$apiBase/replays/$MatchId/import" `

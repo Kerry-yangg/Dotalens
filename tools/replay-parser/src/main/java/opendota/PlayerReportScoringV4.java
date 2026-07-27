@@ -181,14 +181,17 @@ final class PlayerReportScoringV4 {
             JsonObject row = element.getAsJsonObject();
             String key = stringValue(row, "key", "");
             if (key.isBlank() || result.containsKey(key)) continue;
-            boolean available = booleanValue(row, "available", row.has("score"))
-                    && (row.has("base_score") || row.has("score"));
+            boolean declaredAvailable = booleanValue(row, "available", row.has("score"));
+            boolean sourceScoreValid = finiteNumber(row, "base_score")
+                    || finiteNumber(row, "score");
+            boolean available = declaredAvailable
+                    && (currentAtomicModel || sourceScoreValid);
             double base = available
                     ? clamp(number(row, "base_score", number(row, "score", 0)), 0, 100)
                     : 0;
             double roleWeight = Math.max(0, number(row, "weight", 0));
             result.put(key, new DimensionState(row, key, available, roleWeight, base,
-                    currentAtomicModel));
+                    currentAtomicModel, sourceScoreValid));
         }
         return result;
     }
@@ -200,9 +203,6 @@ final class PlayerReportScoringV4 {
         row.add("scoring_components", new JsonArray());
         JsonArray baseComponents = array(row, "base_components");
         if (dimension.currentAtomicModel) {
-            if (!dimension.available) {
-                canonicalizeUnavailableAtomicComponents(baseComponents);
-            }
             prepareAtomicBaseComponents(dimension, baseComponents);
         } else if (baseComponents == null || baseComponents.isEmpty()) {
             baseComponents = new JsonArray();
@@ -238,28 +238,14 @@ final class PlayerReportScoringV4 {
         dimension.aggregateFallback = true;
     }
 
-    private static void canonicalizeUnavailableAtomicComponents(JsonArray components) {
-        if (components == null) return;
-        for (JsonElement element : components) {
-            if (!element.isJsonObject()) continue;
-            JsonObject component = element.getAsJsonObject();
-            component.addProperty("available", false);
-            component.add("normalized_score", JsonNull.INSTANCE);
-            component.addProperty("effective_local_weight", 0);
-            component.add("weighted_contribution", JsonNull.INSTANCE);
-            if (!component.has("missing_reason")
-                    && !component.has("suppression_reason")) {
-                component.addProperty("suppression_reason", "dimension_unavailable");
-            }
-        }
-    }
-
     private static void prepareAtomicBaseComponents(DimensionState dimension,
             JsonArray baseComponents) {
         if (baseComponents == null || baseComponents.isEmpty()) {
             dimension.baseComponentValid = false;
             return;
         }
+        boolean unavailableComponentsValid = dimension.available
+                || unavailableAtomicComponentsValid(baseComponents);
         try {
             PlayerReportBaseComponents.Calculation calculation =
                     PlayerReportBaseComponents.fromJson(baseComponents);
@@ -272,12 +258,17 @@ final class PlayerReportScoringV4 {
             dimension.row.add("base_components", PlayerReportBaseComponents.toJson(calculation));
 
             if (!dimension.available) {
-                dimension.baseComponentValid = true;
+                dimension.baseComponentValid = unavailableComponentsValid
+                        && !calculation.available()
+                        && calculation.score() == null
+                        && Math.abs(dimension.baseComponentWeightSum)
+                                <= PlayerReportBaseComponents.WEIGHT_TOLERANCE;
                 return;
             }
             double storedBaseScore = number(dimension.row, "base_score",
                     number(dimension.row, "score", 0));
-            dimension.baseComponentValid = calculation.available()
+            dimension.baseComponentValid = dimension.sourceScoreValid
+                    && calculation.available()
                     && calculation.score() != null
                     && Math.abs(calculation.score() - storedBaseScore)
                             <= PlayerReportBaseComponents.SCORE_TOLERANCE
@@ -286,6 +277,26 @@ final class PlayerReportScoringV4 {
         } catch (RuntimeException ignored) {
             dimension.baseComponentValid = false;
         }
+    }
+
+    private static boolean unavailableAtomicComponentsValid(JsonArray components) {
+        for (JsonElement element : components) {
+            if (!element.isJsonObject()) return false;
+            JsonObject component = element.getAsJsonObject();
+            JsonElement available = component.get("available");
+            if (available == null || available.isJsonNull()
+                    || !available.isJsonPrimitive()
+                    || !available.getAsJsonPrimitive().isBoolean()
+                    || available.getAsBoolean()
+                    || !explicitNull(component, "normalized_score")
+                    || !finiteNumber(component, "effective_local_weight")
+                    || Math.abs(component.get("effective_local_weight").getAsDouble())
+                            > PlayerReportBaseComponents.WEIGHT_TOLERANCE
+                    || !explicitNull(component, "weighted_contribution")) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static void addBaseComponentRecomputation(JsonObject recomputation,
@@ -835,6 +846,21 @@ final class PlayerReportScoringV4 {
         return number(object.get(key), fallback);
     }
 
+    private static boolean finiteNumber(JsonObject object, String key) {
+        if (object == null) return false;
+        JsonElement value = object.get(key);
+        if (value == null || value.isJsonNull()) return false;
+        try {
+            return Double.isFinite(value.getAsDouble());
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    private static boolean explicitNull(JsonObject object, String key) {
+        return object != null && object.has(key) && object.get(key).isJsonNull();
+    }
+
     private static double number(JsonElement value) {
         return number(value, 0);
     }
@@ -868,6 +894,7 @@ final class PlayerReportScoringV4 {
         private final double roleWeight;
         private final double baseScore;
         private final boolean currentAtomicModel;
+        private final boolean sourceScoreValid;
         private double effectiveWeight;
         private double behaviorModifier;
         private double finalScore;
@@ -882,13 +909,15 @@ final class PlayerReportScoringV4 {
         private double positiveDimensionFactor = 1;
 
         private DimensionState(JsonObject row, String key, boolean available,
-                double roleWeight, double baseScore, boolean currentAtomicModel) {
+                double roleWeight, double baseScore, boolean currentAtomicModel,
+                boolean sourceScoreValid) {
             this.row = row;
             this.key = key;
             this.available = available;
             this.roleWeight = roleWeight;
             this.baseScore = baseScore;
             this.currentAtomicModel = currentAtomicModel;
+            this.sourceScoreValid = sourceScoreValid;
             this.finalScore = baseScore;
         }
     }
