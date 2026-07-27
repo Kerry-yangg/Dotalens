@@ -1227,13 +1227,15 @@ export function resolvePlayerReportReviewNavigation(value = {}) {
   const target = normalizePlayerReportJumpTarget(value);
   const entityNavigation = {
     fight: ["combat", "selectedCombatId"],
-    farm_diagnostic: ["farm", "selectedFarmDiagnosticId"],
+    death: ["combat", null],
+    buyback: ["combat", null],
     ward: ["vision", "selectedWardId"],
     lane_checkpoint: ["development", null],
+    route_window: ["farm", "selectedFarmDiagnosticId"],
     purchase: ["build", null],
-    death: ["timeline", null],
-    objective: ["timeline", null],
-    teleport: ["timeline", null],
+    ability: ["build", null],
+    objective: ["map", null],
+    teleport: ["map", null],
   };
   const mapped = entityNavigation[target.entityType];
   const validViews = new Set([
@@ -1243,13 +1245,12 @@ export function resolvePlayerReportReviewNavigation(value = {}) {
     "vision",
     "build",
     "combat",
-    "timeline",
     "player-score",
     "players",
-    "coverage",
   ]);
+  const hasMapFocus = Boolean(target.mapFocus?.coordinateValid || target.mapFocus?.region);
   const view = mapped?.[0]
-    || (validViews.has(target.module) ? target.module : "timeline");
+    || (target.time != null || hasMapFocus ? "map" : validViews.has(target.module) ? target.module : "map");
   const seekTime = target.rangeValid && target.rangeStart != null
     ? target.rangeStart
     : target.time ?? 0;

@@ -124,3 +124,15 @@ test("simple presentation exposes only plain-language review fields", () => {
   ]);
   assert.doesNotMatch(JSON.stringify(presentation), /player-report|gateStatus|scoreImpact/);
 });
+
+test("standalone timeline and coverage views are absent", () => {
+  assert.doesNotMatch(htmlSource, /data-detail-view="(?:timeline|coverage)"/);
+  assert.doesNotMatch(htmlSource, /data-detail-panel="(?:timeline|coverage)"/);
+  assert.doesNotMatch(htmlSource, />完整时间轴</);
+  assert.doesNotMatch(htmlSource, />数据覆盖</);
+});
+
+test("removed views are not valid analysis destinations", () => {
+  assert.doesNotMatch(appSource, /REAL_ANALYSIS_VIEWS[^;]+["']timeline["']/s);
+  assert.doesNotMatch(appSource, /REAL_ANALYSIS_VIEWS[^;]+["']coverage["']/s);
+});

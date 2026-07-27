@@ -183,10 +183,8 @@
             <button data-detail-view="vision" type="button" title="视野分析"><i data-lucide="eye"></i><span>视野分析</span></button>
             <button data-detail-view="build" type="button" title="出装技能"><i data-lucide="swords"></i><span>出装技能</span></button>
             <button data-detail-view="combat" type="button" title="战斗团战"><i data-lucide="crosshair"></i><span>战斗团战</span></button>
-            <button data-detail-view="timeline" type="button" title="完整时间轴"><i data-lucide="list-tree"></i><span>完整时间轴</span></button>
             <button data-detail-view="player-score" type="button" title="玩家评分"><i data-lucide="badge-check"></i><span>玩家评分</span></button>
             <button data-detail-view="players" type="button" title="玩家对比"><i data-lucide="users"></i><span>玩家对比</span></button>
-            <button data-detail-view="coverage" type="button" title="数据覆盖"><i data-lucide="database-zap"></i><span>数据覆盖</span></button>
           </nav>
 
           <div id="player-report-review-bar" class="player-report-review-bar" hidden>
@@ -580,25 +578,6 @@
               </div>
             </section>
 
-            <section id="detail-timeline" class="detail-view" data-detail-panel="timeline">
-              <div class="timeline-layout workspace-panel">
-                <header class="timeline-toolbar">
-                  <label class="search-field"><i data-lucide="search"></i><input id="event-search" type="search" placeholder="搜索英雄、单位、装备或事件"></label>
-                  <div id="event-filter" class="segmented-control">
-                    <button class="active" data-event-filter="all" type="button">全部</button>
-                    <button data-event-filter="farm" type="button">发育</button>
-                    <button data-event-filter="combat" type="button">战斗</button>
-                    <button data-event-filter="item" type="button">装备</button>
-                    <button data-event-filter="vision" type="button">视野</button>
-                  </div>
-                  <button class="icon-button" type="button" title="导出"><i data-lucide="download"></i></button>
-                </header>
-                <div class="event-table-head"><span>时间</span><span>类型</span><span>发起者</span><span>事件</span><span>数值</span><span>位置</span><span>证据</span></div>
-                <div id="event-table" class="event-table"></div>
-                <footer class="table-status"><span id="event-count">0 条事件</span><span>Replay 原始事件时间精度 ±1 秒</span></footer>
-              </div>
-            </section>
-
             <section id="detail-player-score" class="detail-view" data-detail-panel="player-score">
               <div class="player-score-workspace">
                 <header id="player-score-header" class="workspace-panel player-score-header" aria-label="玩家评分摘要"></header>
@@ -664,23 +643,6 @@
               </div>
             </section>
 
-            <section id="detail-coverage" class="detail-view" data-detail-panel="coverage">
-              <div class="coverage-layout">
-                <section class="workspace-panel coverage-summary-panel">
-                  <div class="coverage-score"><span class="status-led available"></span><strong id="coverage-complete-label">完整 Replay</strong><small id="coverage-object-count">等待解析摘要</small></div>
-                  <div class="coverage-meta"><span><small>Parser</small><strong>odota/parser a03b9e5</strong></span><span><small>Replay Patch</small><strong id="coverage-patch">--</strong></span><span><small>Schema</small><strong id="coverage-schema">dota-lens/0.6</strong></span><span><small>生成时间</small><strong id="coverage-generated-at">--</strong></span></div>
-                  <div class="coverage-impact-section">
-                    <header><span class="panel-kicker">结论影响</span><strong id="coverage-impact-summary">等待模块证据</strong></header>
-                    <div id="coverage-impact-list" class="coverage-impact-list"></div>
-                  </div>
-                </section>
-                <section class="workspace-panel coverage-table-panel">
-                  <header class="panel-header"><div><span class="panel-kicker">数据层级</span><h2>覆盖与精度</h2></div><button class="command-button secondary" type="button"><i data-lucide="rotate-cw"></i><span>重新验证</span></button></header>
-                  <div class="coverage-table-head"><span>维度</span><span>记录数</span><span>时间范围</span><span>精度</span><span>来源</span><span>状态</span></div>
-                  <div id="coverage-table" class="coverage-table"></div>
-                </section>
-              </div>
-            </section>
           </div>
         </section>
 

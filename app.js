@@ -369,6 +369,10 @@ function setupCombatChartResizeObserver() {
 }
 const APP_PARAMS = new URLSearchParams(window.location.search);
 const PREVIEW_VIEW = APP_PARAMS.get("preview");
+const PREVIEW_DETAIL_VIEW = {
+  timeline: "map",
+  coverage: "player-score",
+}[PREVIEW_VIEW] || PREVIEW_VIEW;
 const PREVIEW_MATCH_ID = /^\d+$/.test(APP_PARAMS.get("qaMatch") || "") ? APP_PARAMS.get("qaMatch") : null;
 const PREVIEW_SCOREBOARD_STRESS = APP_PARAMS.get("scoreboardStress") === "1";
 const PREVIEW_SETTINGS_PANEL = APP_PARAMS.get("settingsPanel") || "dota";
@@ -407,7 +411,7 @@ function writeStoredJson(key, value) {
 }
 
 const SAVED_TASK_HISTORY = normalizeTaskHistory(readStoredJson(TASK_HISTORY_KEY, []));
-const REAL_ANALYSIS_VIEWS = new Set(["development", "farm", "map", "vision", "build", "combat", "timeline", "player-score", "players", "coverage"]);
+const REAL_ANALYSIS_VIEWS = new Set(["development", "farm", "map", "vision", "build", "combat", "player-score", "players"]);
 const ANALYSIS_MODULES_BY_VIEW = {
   development: ["snapshots"],
   farm: ["farm", "vision"],
@@ -415,10 +419,8 @@ const ANALYSIS_MODULES_BY_VIEW = {
   vision: ["vision"],
   build: ["build"],
   combat: ["combat", "vision"],
-  timeline: ["timeline"],
   "player-score": ["players", "laning", "farm", "combat", "vision", "build", "timeline", "map"],
   players: ["players"],
-  coverage: [],
 };
 let MATCH_DURATION = 2280;
 let MATCH_START_MS = 0;
@@ -4634,34 +4636,6 @@ function renderSelectedCombat() {
   refreshIcons(document.querySelector("#detail-combat"));
 }
 
-function eventRowHtml(event, top) {
-  return `<button class="event-row" type="button" data-event-time-ms="${event.timeMs ?? event.time * 1000}" style="top:${top}px"><time>${formatPreciseTimeMs(event.timeMs ?? event.time * 1000)}</time><span class="event-type-icon"><i data-lucide="${event.icon}"></i>${event.type}</span><span>${event.actor}</span><span>${event.text}</span><span class="event-value">${event.value}</span><span>${event.location}</span><span class="evidence-tag ${event.evidence === "事实" ? "fact" : "derived"}">${event.evidence}</span></button>`;
-}
-
-function filterTimelineEvents() {
-  const search = document.querySelector("#event-search").value.trim().toLowerCase();
-  state.filteredEvents = TIMELINE_EVENTS.filter((event) => {
-    const categoryMatches = state.eventFilter === "all" || event.category === state.eventFilter;
-    const haystack = `${event.actor} ${event.type} ${event.text} ${event.location}`.toLowerCase();
-    return categoryMatches && (!search || haystack.includes(search));
-  });
-  const table = document.querySelector("#event-table");
-  table.scrollTop = 0;
-  renderVirtualEvents();
-  document.querySelector("#event-count").textContent = `${state.filteredEvents.length.toLocaleString("zh-CN")} 条事件`;
-}
-
-function renderVirtualEvents() {
-  const table = document.querySelector("#event-table");
-  const rowHeight = 36;
-  const start = Math.max(0, Math.floor(table.scrollTop / rowHeight) - 5);
-  const visibleCount = Math.ceil((table.clientHeight || 420) / rowHeight) + 10;
-  const end = Math.min(state.filteredEvents.length, start + visibleCount);
-  const rows = state.filteredEvents.slice(start, end).map((event, index) => eventRowHtml(event, (start + index) * rowHeight)).join("");
-  table.innerHTML = `<div class="event-virtual-space" style="height:${state.filteredEvents.length * rowHeight}px">${rows}</div>`;
-  refreshIcons(table);
-}
-
 function renderScoreboard() {
   const body = document.querySelector("#scoreboard-body");
   const value = (number) => number == null || !Number.isFinite(Number(number)) ? "--" : Number(number).toLocaleString("zh-CN");
@@ -7210,10 +7184,8 @@ function renderDetailView(view) {
     }
     renderCombat();
   });
-  if (view === "timeline") window.requestAnimationFrame(filterTimelineEvents);
   if (view === "player-score") window.requestAnimationFrame(renderPlayerScore);
   if (view === "players") window.requestAnimationFrame(renderScoreboard);
-  if (view === "coverage") window.requestAnimationFrame(renderCoverage);
 }
 
 async function ensureAnalysisModulesForView(view) {
@@ -7265,9 +7237,11 @@ async function ensureAnalysisModulesForView(view) {
 }
 
 function setDetailView(view) {
-  if (state.currentAnalysis && !REAL_ANALYSIS_VIEWS.has(view)) {
-    showToast("该模块尚未接入真实标准化数据", "当前已开放玩家对比和数据覆盖，原始 JSONL 已保存在本地", "construction");
-    view = "coverage";
+  if (!REAL_ANALYSIS_VIEWS.has(view)) {
+    if (state.currentAnalysis) {
+      showToast("该模块尚未接入真实标准化数据", "当前已开放玩家对比，原始 JSONL 已保存在本地", "construction");
+    }
+    view = "player-score";
   }
   state.detailView = view;
   document.querySelectorAll("[data-detail-view]").forEach((button) => button.classList.toggle("active", button.dataset.detailView === view));
@@ -7438,7 +7412,7 @@ function syncTopbarActions() {
   searchButton.classList.remove("hidden");
   if (state.page === "detail") {
     importButton.innerHTML = `<i data-lucide="rotate-cw"></i><span>重新解析</span>`;
-    searchButton.classList.toggle("hidden", !["timeline"].includes(state.detailView));
+    searchButton.classList.add("hidden");
   } else {
     importButton.innerHTML = `<i data-lucide="file-plus-2"></i><span>导入 Replay</span>`;
   }
@@ -8310,7 +8284,6 @@ function bindEvents() {
       syncTopbarActions();
     }
   });
-  document.querySelector("#coverage-shortcut").addEventListener("click", () => setDetailView("coverage"));
   document.querySelector("#hero-strip").addEventListener("click", (event) => {
     const button = event.target.closest("[data-hero-slot]");
     if (button) selectHero(button.dataset.heroSlot);
@@ -8581,19 +8554,6 @@ function bindEvents() {
     const row = event.target.closest("[data-combat-context-time-ms]");
     if (row) updatePlayheadMs(row.dataset.combatContextTimeMs);
   });
-  document.querySelector("#event-filter").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-event-filter]");
-    if (!button) return;
-    state.eventFilter = button.dataset.eventFilter;
-    document.querySelectorAll("#event-filter button").forEach((item) => item.classList.toggle("active", item === button));
-    filterTimelineEvents();
-  });
-  document.querySelector("#event-search").addEventListener("input", filterTimelineEvents);
-  document.querySelector("#event-table").addEventListener("scroll", renderVirtualEvents, { passive: true });
-  document.querySelector("#event-table").addEventListener("click", (event) => {
-    const row = event.target.closest("[data-event-time-ms]");
-    if (row) updatePlayheadMs(row.dataset.eventTimeMs);
-  });
   document.querySelector("#scoreboard-body").addEventListener("click", (event) => {
     const row = event.target.closest("[data-player-slot]");
     if (row) selectHero(row.dataset.playerSlot);
@@ -8828,8 +8788,7 @@ function bindEvents() {
     event.currentTarget.classList.remove("is-spinning");
   });
   document.querySelector("#global-search-toggle").addEventListener("click", () => {
-    const input = state.page === "detail" && state.detailView === "timeline" ? document.querySelector("#event-search") : document.querySelector("#match-search");
-    input?.focus();
+    document.querySelector("#match-search")?.focus();
   });
   document.querySelector("#account-menu").addEventListener("click", () => {
     setPage("matches");
@@ -8966,7 +8925,7 @@ async function init() {
         return;
       }
       applyAnalysisToProduct(analysis, match);
-      setDetailView(["development", "farm", "vision", "combat", "player-score", "players"].includes(PREVIEW_VIEW) ? PREVIEW_VIEW : "farm");
+      setDetailView(["development", "farm", "map", "vision", "combat", "player-score", "players"].includes(PREVIEW_DETAIL_VIEW) ? PREVIEW_DETAIL_VIEW : "farm");
       return;
     }
     state.currentMatch = { ...DEMO_MATCHES[0], id: "preview" };
@@ -8978,7 +8937,7 @@ async function init() {
     renderMapMarkers();
     renderWardFilterOptions();
     setPage("detail");
-    setDetailView(["development", "farm", "vision", "combat", "player-score", "players"].includes(PREVIEW_VIEW) ? PREVIEW_VIEW : "farm");
+    setDetailView(["development", "farm", "map", "vision", "combat", "player-score", "players"].includes(PREVIEW_DETAIL_VIEW) ? PREVIEW_DETAIL_VIEW : "farm");
     updateCurrentTime(state.currentTime, { syncSegment: false });
     return;
   }

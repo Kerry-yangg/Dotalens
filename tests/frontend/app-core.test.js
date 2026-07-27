@@ -647,7 +647,7 @@ test("player report review navigation selects the target entity and preroll", ()
 
   const farm = resolvePlayerReportReviewNavigation({
     module: "farm",
-    entity_type: "farm_diagnostic",
+    entity_type: "route_window",
     entity_id: "farm-9",
     time: 1200,
     range_start: 1190,
@@ -686,9 +686,15 @@ test("player report review navigation selects the target entity and preroll", ()
   assert.equal(lane.developmentSideView, "lane");
   assert.equal(lane.selectedStateKey, null);
 
-  const legacy = resolvePlayerReportReviewNavigation({ module: "timeline", time: 300 });
-  assert.equal(legacy.view, "timeline");
-  assert.equal(legacy.seekTime, 300);
+  assert.equal(resolvePlayerReportReviewNavigation({
+    entityType: "death",
+    time: 820,
+  }).view, "combat");
+
+  assert.equal(resolvePlayerReportReviewNavigation({
+    entityType: "teleport",
+    time: 600,
+  }).view, "map");
 });
 
 test("player report Replay review bar owns a bounded playback window", () => {
