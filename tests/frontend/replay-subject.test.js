@@ -47,6 +47,20 @@ test("0.4.5 desktop and Parser 1.6.0 versions stay aligned", () => {
   assert.match(smoke, /status\.version -eq '1\.6\.0'/);
 });
 
+test("development launcher can detach the long-running frontend", () => {
+  const startScript = readFileSync(new URL("../../tools/Start-DotaLens.ps1", import.meta.url), "utf8");
+  const backgroundLauncher = readFileSync(new URL("../../tools/Start-DotaLensBackground.cjs", import.meta.url), "utf8");
+
+  assert.match(startScript, /\[switch\]\$Background/);
+  assert.match(startScript, /if \(\$Background\)/);
+  assert.match(startScript, /Start-DotaLensBackground\.cjs/);
+  assert.match(startScript, /launcher\.stdout\.log/);
+  assert.match(startScript, /Background launcher PID:/);
+  assert.match(backgroundLauncher, /detached:\s*true/);
+  assert.match(backgroundLauncher, /stdio:\s*\["ignore",\s*stdout,\s*stderr\]/);
+  assert.match(backgroundLauncher, /child\.unref\(\)/);
+});
+
 test("0.4.5 EXE smoke verifies subject identity and persisted manual selection", () => {
   const smoke = readFileSync(new URL("../../tools/Invoke-DotaLensExeSmoke.ps1", import.meta.url), "utf8");
 

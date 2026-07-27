@@ -5,7 +5,9 @@ param(
 
     [string]$DataDirectory = (Join-Path $PSScriptRoot "runtime\dota-lens-data"),
 
-    [switch]$BuildParser
+    [switch]$BuildParser,
+
+    [switch]$Background
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,6 +18,40 @@ $logs = Join-Path $DataDirectory "logs"
 $expectedParserVersion = "1.6.0"
 $parserProcess = $null
 $ownsParser = $false
+
+if ($Background) {
+    $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
+    $pwshCommand = Get-Command pwsh.exe -ErrorAction SilentlyContinue
+    if (-not $nodeCommand) {
+        throw "node.exe was not found on PATH"
+    }
+    if (-not $pwshCommand) {
+        throw "pwsh.exe was not found on PATH"
+    }
+
+    New-Item -ItemType Directory -Force -Path $DataDirectory, $logs | Out-Null
+    $backgroundLauncher = Join-Path $PSScriptRoot "Start-DotaLensBackground.cjs"
+    $launcherStdout = Join-Path $logs "launcher.stdout.log"
+    $launcherStderr = Join-Path $logs "launcher.stderr.log"
+    $buildParserValue = if ($BuildParser) { "true" } else { "false" }
+    $launcherPid = & $nodeCommand.Source `
+        $backgroundLauncher `
+        $pwshCommand.Source `
+        $PSCommandPath `
+        $FrontendPort `
+        $DataDirectory `
+        $launcherStdout `
+        $launcherStderr `
+        $buildParserValue
+    if ($LASTEXITCODE -ne 0 -or -not $launcherPid) {
+        throw "Dota Lens background launcher failed. Check $launcherStderr"
+    }
+
+    Write-Host "Background launcher PID: $launcherPid"
+    Write-Host "Dota Lens parser: http://127.0.0.1:5600/api/status"
+    Write-Host "Dota Lens app:    http://127.0.0.1:$FrontendPort/"
+    return
+}
 
 function Get-LocalParserStatus {
     try {
