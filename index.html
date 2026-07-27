@@ -35,6 +35,9 @@
         <button class="nav-item" data-page="settings" type="button">
           <i data-lucide="settings-2"></i><span>设置</span>
         </button>
+        <button class="nav-item nav-item-help" data-page="help" type="button" title="使用说明">
+          <i data-lucide="circle-help"></i><span>使用说明</span>
+        </button>
       </nav>
 
       <div class="sidebar-spacer"></div>
@@ -52,7 +55,7 @@
         <span id="sidebar-account-avatar" class="account-avatar">--</span>
         <span>
           <strong id="sidebar-account-id">未连接账号</strong>
-          <small id="sidebar-account-detail">输入 Steam 数字 ID</small>
+          <small id="sidebar-account-detail">输入 Dota 2 游戏 ID</small>
         </span>
         <button id="account-menu" class="icon-button quiet" type="button" title="账号菜单">
           <i data-lucide="ellipsis"></i>
@@ -73,9 +76,14 @@
           </div>
         </div>
         <div id="topbar-actions" class="topbar-actions">
-          <div id="reading-mode-switch" class="segmented-control reading-mode-switch" aria-label="阅读模式">
-            <button class="active" data-reading-mode="simple" type="button" aria-pressed="true">简明</button>
-            <button data-reading-mode="professional" type="button" aria-pressed="false">专业</button>
+          <div class="reading-mode-control">
+            <span id="reading-mode-label" class="reading-mode-label">
+              <i data-lucide="book-open-check"></i><span>阅读模式</span>
+            </span>
+            <div id="reading-mode-switch" class="reading-mode-switch" role="group" aria-labelledby="reading-mode-label">
+              <button class="active" data-reading-mode="simple" type="button" aria-pressed="true" title="切换为简明模式">简明</button>
+              <button data-reading-mode="professional" type="button" aria-pressed="false" title="切换为专业模式">专业</button>
+            </div>
           </div>
           <button id="global-search-toggle" class="icon-button" type="button" title="搜索">
             <i data-lucide="search"></i>
@@ -94,7 +102,7 @@
           <div class="page-toolbar matches-toolbar">
             <form id="account-lookup-form" class="account-lookup" autocomplete="off">
               <span class="account-avatar compact"><i data-lucide="user-round-search"></i></span>
-              <label for="account-id-input"><small>Steam 数字 ID</small><input id="account-id-input" name="account_id" inputmode="numeric" pattern="[0-9]+" placeholder="Steam 32 位数字 ID" autocomplete="off" aria-label="Steam 数字 ID"></label>
+              <label for="account-id-input"><small>Dota 2 游戏 ID</small><input id="account-id-input" name="account_id" inputmode="numeric" pattern="[0-9]+" placeholder="输入 Dota 2 游戏 ID" autocomplete="off" aria-label="Dota 2 游戏 ID"></label>
               <button id="account-lookup-button" class="command-button" type="submit"><i data-lucide="search"></i><span>读取比赛</span></button>
             </form>
 
@@ -673,6 +681,75 @@
         </section>
 
 
+        <section id="page-help" class="page" data-page-panel="help">
+          <div class="help-layout">
+            <header class="help-intro">
+              <div>
+                <span class="panel-kicker">快速开始</span>
+                <h2>第一次使用，按这三步</h2>
+                <p>查询比赛、解析 Replay，再从关键时刻进入具体复盘。</p>
+              </div>
+              <span class="help-intro-badge"><i data-lucide="book-open-check"></i>默认使用简明模式</span>
+            </header>
+
+            <ol class="help-steps">
+              <li>
+                <span class="help-step-number">1</span>
+                <div><strong>输入 Dota 2 游戏 ID</strong><p>在“比赛”页输入个人资料里的数字 ID，点击“读取比赛”。</p></div>
+              </li>
+              <li>
+                <span class="help-step-number">2</span>
+                <div><strong>选择比赛并确认解析</strong><p>点击一场比赛；需要完整数据时，确认下载并交给本地解析器处理。</p></div>
+              </li>
+              <li>
+                <span class="help-step-number">3</span>
+                <div><strong>打开复盘</strong><p>解析完成后查看对线、发育、战斗、视野和玩家报告。</p></div>
+              </li>
+            </ol>
+
+            <section class="help-guide-section" aria-labelledby="help-reading-title">
+              <header class="help-section-head">
+                <div><span class="panel-kicker">怎么选择</span><h3 id="help-reading-title">简明模式与专业模式</h3></div>
+                <p>顶栏可随时切换，应用会记住你的选择。</p>
+              </header>
+              <div class="help-mode-grid">
+                <article class="help-mode-item simple">
+                  <span class="help-mode-icon"><i data-lucide="book-open-check"></i></span>
+                  <div><strong>简明模式</strong><p>用大白话完整说明本局做得好的地方、主要问题、关键事实和下一步建议；复杂表格默认收起。</p></div>
+                </article>
+                <article class="help-mode-item professional">
+                  <span class="help-mode-icon"><i data-lucide="braces"></i></span>
+                  <div><strong>专业模式</strong><p>展开完整指标、评分依据、事件明细和技术审计，适合继续核对数据的玩家。</p></div>
+                </article>
+              </div>
+            </section>
+
+            <section class="help-guide-section" aria-labelledby="help-use-title">
+              <header class="help-section-head">
+                <div><span class="panel-kicker">常用操作</span><h3 id="help-use-title">遇到这些情况怎么做</h3></div>
+              </header>
+              <div class="help-action-list">
+                <article>
+                  <span><i data-lucide="file-plus-2"></i></span>
+                  <div><strong>比赛找不到录像</strong><p>点击右上角“导入 Replay”，手动导入 Replay 文件（<code>.dem</code> 或 <code>.dem.bz2</code>）。高分对局也可以这样分析。</p></div>
+                </article>
+                <article>
+                  <span><i data-lucide="mouse-pointer-click"></i></span>
+                  <div><strong>想知道具体哪一波有问题</strong><p>在玩家报告中点击“查看这一波”，会跳到对应时间、地图、团战或发育窗口。</p></div>
+                </article>
+                <article>
+                  <span><i data-lucide="activity"></i></span>
+                  <div><strong>解析没有开始</strong><p>先看左下角“本地解析器”：绿色表示已就绪；未连接时进入“任务”页查看原因。</p></div>
+                </article>
+                <article>
+                  <span><i data-lucide="rotate-cw"></i></span>
+                  <div><strong>旧报告缺少新数据</strong><p>打开该场比赛后点击“重新解析”，完成后会生成当前版本支持的报告。</p></div>
+                </article>
+              </div>
+            </section>
+          </div>
+        </section>
+
         <section id="page-settings" class="page" data-page-panel="settings">
           <div class="settings-layout">
             <nav id="settings-nav" class="settings-nav" aria-label="设置分类">
@@ -684,9 +761,9 @@
             </nav>
             <div class="settings-content workspace-panel">
               <section id="settings-account" class="settings-panel active" data-settings-content="account">
-                <header><span class="panel-kicker">账号</span><h2>Steam 数字 ID</h2></header>
+                <header><span class="panel-kicker">账号</span><h2>Dota 2 游戏 ID</h2></header>
                 <div class="settings-form">
-                  <label><span>account_id</span><div class="field-row"><input id="settings-account-id" inputmode="numeric" placeholder="Steam 32 位数字 ID" autocomplete="off"><button id="settings-verify-account" class="command-button secondary" type="button">验证</button></div></label>
+                  <label><span>Dota 2 游戏 ID</span><div class="field-row"><input id="settings-account-id" inputmode="numeric" placeholder="输入 Dota 2 游戏 ID" autocomplete="off" aria-label="Dota 2 游戏 ID"><button id="settings-verify-account" class="command-button secondary" type="button">验证</button></div><small class="settings-field-help">就是 Dota 2 个人资料中显示的数字 ID，例如 139766850。</small></label>
                   <label><span>SteamID64</span><input id="settings-steam-id64" value="--" readonly></label>
                 </div>
               </section>

@@ -163,6 +163,23 @@ test("global reading mode controls replace the player report local preference", 
   assert.doesNotMatch(appSource, /PLAYER_SCORE_MODE_KEY/);
 });
 
+test("topbar reading mode is a prominent labeled control with distinct active colors", () => {
+  assert.match(htmlSource, /class="reading-mode-control"/);
+  assert.match(htmlSource, /class="reading-mode-label"[\s\S]*阅读模式/);
+  assert.match(
+    stylesSource,
+    /\.reading-mode-control\s*\{[^}]*min-height:\s*38px[^}]*border:\s*1px solid var\(--border-strong\)/s,
+  );
+  assert.match(
+    stylesSource,
+    /\.reading-mode-switch button\[data-reading-mode="simple"\]\[aria-pressed="true"\]\s*\{[^}]*background:\s*var\(--radiant\)/s,
+  );
+  assert.match(
+    stylesSource,
+    /\.reading-mode-switch button\[data-reading-mode="professional"\]\[aria-pressed="true"\]\s*\{[^}]*background:\s*var\(--amber\)/s,
+  );
+});
+
 test("reading mode controller synchronizes top and settings controls", () => {
   const harness = readingModeHarness();
 

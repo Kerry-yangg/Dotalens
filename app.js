@@ -1848,7 +1848,7 @@ function updateAccountChrome() {
   document.querySelector("#sidebar-account-avatar").textContent = connected ? accountId.slice(-2) : "--";
   document.querySelector("#sidebar-account-detail").textContent = connected
     ? state.matchesOffline ? "正在使用本地比赛缓存" : "最近比赛已同步"
-    : "输入 Steam 数字 ID";
+    : "输入 Dota 2 游戏 ID";
   if (state.page === "matches") {
     document.querySelector("#page-context").textContent = connected
       ? `账号 ${accountId} · ${state.matchesOffline ? "离线缓存" : "OpenDota 最近比赛"}`
@@ -1910,7 +1910,7 @@ async function checkParserStatus({ retries = 1 } = {}) {
 async function loadMatches(accountId = state.accountId, options = {}) {
   const normalized = String(accountId).trim();
   if (!validAccountId(normalized)) {
-    showToast("账号格式不正确", "请输入 1 到 10 位 Steam 数字 ID", "circle-alert");
+    showToast("账号格式不正确", "请输入 1 到 10 位 Dota 2 游戏 ID", "circle-alert");
     document.querySelector("#account-id-input").focus();
     return;
   }
@@ -2333,7 +2333,7 @@ function renderMatches() {
     return;
   }
   if (state.matchesStatus === "idle") {
-    list.innerHTML = `<div class="match-empty-state"><span class="empty-state-icon"><i data-lucide="user-round-search"></i></span><strong>输入 Steam 数字 ID</strong><p>本地解析器会读取该账号最近 20 场比赛，并标出可自动解析的场次。</p></div>`;
+    list.innerHTML = `<div class="match-empty-state"><span class="empty-state-icon"><i data-lucide="user-round-search"></i></span><strong>输入 Dota 2 游戏 ID</strong><p>本地解析器会读取该账号最近 20 场比赛，并标出可自动解析的场次。</p></div>`;
     resultCount.textContent = "等待账号";
     refreshIcons(list);
     return;
@@ -7390,6 +7390,7 @@ function setPage(page) {
     replays: ["Replay 库", "本地回放与分析包"],
     tasks: ["解析任务", "单任务队列"],
     settings: ["设置", "本地应用配置"],
+    help: ["使用说明", "三分钟上手 Dota Lens"],
   };
   if (detailMode) {
     const hero = HEROES[state.selectedHeroSlot];
@@ -7600,8 +7601,8 @@ function openMatchSubjectDialog(analysis, match, { required = false } = {}) {
     ? subject.status === "invalidated"
       ? "录像阵容与上次选择不一致，请重新确认本场使用的英雄。"
       : subject.reason === "account_id_not_provided"
-        ? "本次 Replay 未绑定 Steam 数字 ID，请确认本场使用的英雄。"
-        : `Steam ID ${state.accountId || "--"} 未出现在录像阵容中，请确认本场使用的英雄。`
+        ? "本次 Replay 未绑定 Dota 2 游戏 ID，请确认本场使用的英雄。"
+        : `Dota 2 游戏 ID ${state.accountId || "--"} 未出现在录像阵容中，请确认本场使用的英雄。`
     : "选择后会更新这场比赛的“本人”归属和默认分析玩家，不会重新解析 Replay。";
   renderMatchSubjectDialog();
   const dialog = document.querySelector("#match-subject-dialog");
