@@ -11,6 +11,7 @@ const {
 
 const htmlSource = readFileSync(new URL("../../index.html", import.meta.url), "utf8");
 const appSource = readFileSync(new URL("../../app.js", import.meta.url), "utf8");
+const stylesSource = readFileSync(new URL("../../styles.css", import.meta.url), "utf8");
 
 function memoryStorage(initial = {}) {
   const values = new Map(Object.entries(initial));
@@ -271,6 +272,83 @@ test("simple presentation exposes only plain-language review fields", () => {
     "occurrences", "time", "timeEnd", "title",
   ]);
   assert.doesNotMatch(JSON.stringify(presentation), /player-report|gateStatus|scoreImpact/);
+});
+
+test("player score model connects the complete simple report boundary", () => {
+  assert.match(
+    appSource,
+    /buildSimplePlayerReport,\s*[\s\S]*presentSimpleInsight,\s*[\s\S]*from "\.\/app-core\.js"/,
+  );
+  assert.match(
+    appSource,
+    /model\.simpleReport\s*=\s*buildSimplePlayerReport\(\{[\s\S]*dimensions:\s*model\.dimensions[\s\S]*insights:[\s\S]*stories:\s*model\.storyNodes[\s\S]*training:\s*model\.trainingPlan/,
+  );
+});
+
+test("simple player report renders complete plain-language match coverage", () => {
+  const start = appSource.indexOf("function renderSimplePlayerReport(model)");
+  const end = appSource.indexOf("function renderPlayerScoreLane", start);
+
+  assert.notEqual(start, -1, "simple report needs its own complete renderer");
+  assert.ok(end > start, "simple report renderer must end before the lane detail renderer");
+
+  const renderer = appSource.slice(start, end);
+  assert.match(renderer, /simpleReport\.domains\.map/);
+  assert.match(renderer, /simpleReport\.strengths\.map/);
+  assert.match(renderer, /simpleReport\.improvements\.map/);
+  assert.match(renderer, /simpleReport\.timeline/);
+  assert.match(renderer, /presentSimpleInsight/);
+  assert.match(renderer, /全场做得好/);
+  assert.match(renderer, /全场需要改进/);
+  assert.match(renderer, /按时间查看全部结论/);
+  assert.match(renderer, /查看这一波/);
+  assert.match(renderer, /data-player-score-review=/);
+  assert.match(renderer, /data-player-score-review-occurrence=/);
+  assert.doesNotMatch(renderer, /selectOrdinaryPlayerReportContent/);
+  assert.doesNotMatch(renderer, /三个关键时刻|本场优先改一件|主要问题/);
+  assert.doesNotMatch(
+    renderer,
+    /confidence|gateStatus|rootCauseId|scoreImpact|protocol|player-report\//,
+  );
+});
+
+test("simple player report keeps all conclusions and offers semantic timeline filters", () => {
+  const start = appSource.indexOf("function renderSimplePlayerReport(model)");
+  const end = appSource.indexOf("function renderPlayerScoreLane", start);
+  const renderer = appSource.slice(start, end);
+  const reviewStart = appSource.indexOf("function reviewPlayerScoreInsight(");
+  const reviewEnd = appSource.indexOf("function returnToPlayerScoreReport", reviewStart);
+  const reviewHandler = appSource.slice(reviewStart, reviewEnd);
+
+  assert.doesNotMatch(renderer, /\.slice\(\s*0\s*,/);
+  assert.match(renderer, /data-simple-report-filter="all"/);
+  assert.match(renderer, /data-simple-report-filter="strength"/);
+  assert.match(renderer, /data-simple-report-filter="improvement"/);
+  assert.match(appSource, /state\.simpleReportFilter\s*=/);
+  assert.match(reviewHandler, /model\.simpleReport\?\.timeline/);
+});
+
+test("simple report layout supports full coverage at desktop and compact widths", () => {
+  assert.match(
+    stylesSource,
+    /\.player-score-simple-report\s*\{[^}]*display:\s*grid[^}]*overflow:\s*visible/s,
+  );
+  assert.match(
+    stylesSource,
+    /\.simple-report-domains\s*\{[^}]*grid-template-columns:\s*repeat\(6,\s*minmax\(0,\s*1fr\)\)/s,
+  );
+  assert.match(
+    stylesSource,
+    /@media\s*\(min-width:\s*1360px\)[\s\S]*\.simple-report-conclusion-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/,
+  );
+  assert.match(
+    stylesSource,
+    /@media\s*\(max-width:\s*1099px\)[\s\S]*\.simple-report-domains\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/,
+  );
+  assert.match(
+    stylesSource,
+    /\.simple-report-insight-line\s+em\s*\{[^}]*white-space:\s*normal[^}]*overflow-wrap:\s*anywhere/s,
+  );
 });
 
 test("standalone timeline and coverage views are absent", () => {

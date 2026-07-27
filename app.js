@@ -144,6 +144,7 @@ import {
   activeTaskFromHistory,
   aggregateCombatContributions,
   buildCombatContributionRoster,
+  buildSimplePlayerReport,
   combatContributionChartModel,
   combatContributionDrilldown,
   combatVisionStatus,
@@ -163,11 +164,11 @@ import {
   patchCoverageImpact,
   patchResolutionLabel,
   playerReportUpgradeState,
+  presentSimpleInsight,
   recomputePlayerReportScoreAudit,
   resolveMatchListFailure,
   resolvePlayerReportReviewNavigation,
   resourceClockPatchLabel,
-  selectOrdinaryPlayerReportContent,
   selectedPlayerIndex,
   simplifyPlayerReportText,
   upsertTaskHistory,
@@ -919,6 +920,7 @@ const state = {
   settingsPanel: "account",
   selectedHeroSlot: 0,
   readingMode: "simple",
+  simpleReportFilter: "all",
   playerScoreSection: "overview",
   playerScoreRosterFilter: "all",
   selectedPlayerScoreEvidence: null,
@@ -5067,6 +5069,16 @@ function playerScoreModel(hero = safeHero(state.selectedHeroSlot), { buildBrief 
   };
   if (buildBrief) {
     model.brief = playerScoreBriefModel(model);
+    const simpleInsights = [
+      ...playerScoreBriefV3Insights(model, "strength", { limit: null }),
+      ...playerScoreBriefV3Insights(model, "improvement", { limit: null }),
+    ];
+    model.simpleReport = buildSimplePlayerReport({
+      dimensions: model.dimensions,
+      insights: simpleInsights,
+      stories: model.storyNodes,
+      training: model.trainingPlan,
+    });
     if (!model.summary.nextMatchFocus) model.summary.nextMatchFocus = model.brief.focus;
     if (!report?.brief?.verdict && model.brief.verdict) model.summary.headline = model.brief.verdict;
   }
@@ -5291,18 +5303,30 @@ function playerScoreBriefLegacyStories(model) {
   ];
 }
 
-function playerScoreBriefV3Insights(model, kind) {
+function playerScoreBriefV3Insights(model, kind, {
+  limit = kind === "strength" ? 2 : 3,
+} = {}) {
   const briefRefs = kind === "strength"
     ? model.report?.brief?.strengths || []
     : model.report?.brief?.priorities || [];
   const allowedKinds = kind === "strength" ? new Set(["strength", "positive"]) : new Set(["improvement", "problem", "priority"]);
-  const sources = briefRefs.length
-    ? briefRefs.map((ref) => model.rawInsights.find((insight) => String(insight.id) === String(ref))).filter(Boolean)
-    : model.rawInsights.filter((insight) => allowedKinds.has(String(insight.kind || "")));
-  return sources.filter((insight) => kind === "strength"
+  const referenced = briefRefs
+    .map((ref) => model.rawInsights.find((insight) => String(insight.id) === String(ref)))
+    .filter(Boolean);
+  const matching = model.rawInsights.filter((insight) => allowedKinds.has(String(insight.kind || "")));
+  const seen = new Set();
+  const sources = [...referenced, ...matching].filter((insight) => {
+    const identity = insight.id ? `id:${insight.id}` : insight;
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    return true;
+  });
+  const eligible = sources.filter((insight) => kind === "strength"
     ? Number(insight.confidence || 0) >= 70
     : Number(insight.confidence || 0) >= 55 && (insight.evidence_refs || []).length && insight.time_start != null
-  ).slice(0, kind === "strength" ? 2 : 3).map((insight, index) => {
+  );
+  const selected = limit == null ? eligible : eligible.slice(0, Math.max(0, Number(limit) || 0));
+  return selected.map((insight, index) => {
     const jumpTarget = normalizePlayerReportJumpTarget(insight.jump_target);
     return {
       id: insight.id || `${kind}-v3-${index}`,
@@ -5758,13 +5782,20 @@ function renderPlayerScoreHeader(model) {
   const opponent = safeHero(model.counterpartSlot);
   const match = state.currentAnalysis?.match || {};
   const briefMode = state.readingMode !== "professional";
-  const briefPriority = model.brief.priorities[0] || null;
+  const briefPriority = model.simpleReport?.improvements?.[0] || model.brief.priorities[0] || null;
   const evidence = playerScoreEvidenceLevel(model.evidenceLevel);
   const confidence = model.confidence == null ? "--" : `${Math.round(model.confidence)}%`;
   const score = model.canShowOverall ? Math.round(model.overallScore) : "--";
   const grade = model.grade || (model.hasReport ? "证据不足" : "待生成");
   const resultKnown = typeof match.radiant_win === "boolean";
   const won = resultKnown ? (hero.team === "radiant") === match.radiant_win : null;
+  const scoreSummary = briefMode
+    ? `<span class="player-score-overall static"><small>综合表现</small><strong>${score}</strong><b>${escapeHtml(grade)}</b></span>
+      <span><small>明确优点</small><strong class="fact">${model.simpleReport?.strengths?.length || 0} 项</strong></span>
+      <span><small>需要改进</small><strong class="${model.simpleReport?.improvements?.length ? "aggregate" : "fact"}">${model.simpleReport?.improvements?.length || 0} 项</strong></span>`
+    : `<button class="player-score-overall" type="button" data-player-score-evidence-type="score-audit" data-player-score-evidence-id="overall" title="查看综合分可重算审计"><small>综合分</small><strong>${score}</strong><b>${escapeHtml(grade)}</b><i data-lucide="chevron-right"></i></button>
+      <span><small>置信度</small><strong>${confidence}</strong></span>
+      <span><small>证据</small><strong class="${evidence.className}">${evidence.label}</strong></span>`;
   root.innerHTML = `
     <div class="player-score-identity">
       <img src="${heroImage(hero.token)}" alt="${escapeHtml(hero.name)}">
@@ -5774,11 +5805,7 @@ function renderPlayerScoreHeader(model) {
       <span><small>主要对位</small><strong>${escapeHtml(opponent.name)}</strong><em>${positionLabel(opponent.position)}</em></span><img src="${heroImage(opponent.token)}" alt="${escapeHtml(opponent.name)}"><i data-lucide="arrow-left-right"></i>
     </button>
     <div class="player-score-headline"><small>${briefMode ? "本场一句话" : model.legacy ? "兼容旧报告 · 只输出有证据的行为结论" : "player-report/4.0 · 本场结论"}</small><strong>${escapeHtml(briefMode ? simplifyPlayerReportText(model.brief.verdict) : model.brief.verdict)}</strong><em>${briefMode ? briefPriority ? "优先改进" : "下局重点" : "下一局"}：${escapeHtml(briefMode ? simplifyPlayerReportText(briefPriority?.title || model.brief.focus) : model.brief.focus)}</em></div>
-    <div class="player-score-summary">
-      <button class="player-score-overall" type="button" data-player-score-evidence-type="score-audit" data-player-score-evidence-id="overall" title="查看综合分可重算审计"><small>综合分</small><strong>${score}</strong><b>${escapeHtml(grade)}</b><i data-lucide="chevron-right"></i></button>
-      <span><small>${briefMode ? "报告可信度" : "置信度"}</small><strong>${confidence}</strong></span>
-      <span><small>${briefMode ? "数据基础" : "证据"}</small><strong class="${evidence.className}">${evidence.label}</strong></span>
-    </div>`;
+    <div class="player-score-summary">${scoreSummary}</div>`;
   installImageFallback(root, heroImage("unknown"));
   refreshIcons(root);
 }
@@ -5841,88 +5868,164 @@ function renderPlayerScoreOverview(model) {
   </div>`;
 }
 
-function renderPlayerScoreBrief(model) {
-  const brief = model.brief;
-  const ordinary = selectOrdinaryPlayerReportContent(brief);
-  const training = ordinary.training || playerScoreRoleTraining(model.position);
-  const domainHtml = brief.domains.map((domain) => {
-    const score = domain.score == null ? "--" : Math.round(domain.score);
-    const tone = domain.score == null ? "missing" : domain.score >= 68 ? "positive" : domain.score < 52 ? "negative" : "stable";
-    const summary = domain.score == null ? "暂无结论" : domain.score >= 68 ? "本场强项" : domain.score < 52 ? "需要关注" : "基本稳定";
-    return `<button class="player-score-brief-domain ${tone}" type="button" data-player-score-open-dimension="${escapeHtml(domain.keys[0])}" title="在深度分析中查看${escapeHtml(domain.label)}"><span><i data-lucide="${domain.icon}"></i>${escapeHtml(domain.label)}</span><strong>${score}</strong><small>${summary}</small></button>`;
-  }).join("");
-  const storyHtml = ordinary.stories.map((story, index) => {
-    const meta = PLAYER_SCORE_BRIEF_VERDICT_META[story.verdict] || PLAYER_SCORE_BRIEF_VERDICT_META.missing;
-    const metrics = (story.metrics || []).slice(0, 2).map((metric) => `<span><small>${escapeHtml(simplifyPlayerReportText(metric.label || "关键指标"))}</small><strong>${escapeHtml(metric.value ?? "--")}</strong></span>`).join("");
-    return `<article class="player-score-story-row ${meta.className}">
-      <button class="player-score-story-main" type="button" data-player-score-evidence-type="brief-story" data-player-score-evidence-id="${escapeHtml(story.id)}" data-player-score-time="${Number(story.time || 0)}">
-        <span class="player-score-story-index">${String(index + 1).padStart(2, "0")}</span>
-        <span class="player-score-story-copy">
-          <small>${escapeHtml(story.range)} · <b>${meta.label}</b></small>
-          <strong>${escapeHtml(story.title)}</strong>
-          <em title="${escapeHtml(story.summary)}"><b>发生了什么</b>${escapeHtml(story.summary)}</em>
-          <span class="player-score-story-takeaways">
-            <span class="player-score-story-takeaway"><b>影响</b><span title="${escapeHtml(story.impact)}">${escapeHtml(story.impact)}</span></span>
-            <span class="player-score-story-takeaway action"><b>下次关注</b><span title="${escapeHtml(story.nextAction)}">${escapeHtml(story.nextAction)}</span></span>
-          </span>
-        </span>
-        <span class="player-score-story-metrics">${metrics}</span>
-      </button>
-      <button class="icon-button quiet player-score-story-jump" type="button" data-player-score-jump="${escapeHtml(story.module)}" data-player-score-time="${Number(story.time || 0)}" title="查看对应片段"><i data-lucide="arrow-up-right"></i></button>
-    </article>`;
-  }).join("");
-  const reviewMeta = (insight) => {
-    const target = insight.jumpTarget || normalizePlayerReportJumpTarget({});
-    const range = target.rangeStart == null
-      ? insight.time == null ? "时间待补" : formatTime(insight.time)
-      : target.rangeEnd != null && target.rangeEnd !== target.rangeStart
-        ? `${formatTime(target.rangeStart)}-${formatTime(target.rangeEnd)}`
-        : formatTime(target.rangeStart);
+function renderSimplePlayerReport(model) {
+  const simpleReport = model.simpleReport || buildSimplePlayerReport({
+    dimensions: model.dimensions,
+    insights: [],
+  });
+  const training = simpleReport.primaryTraining
+    || model.brief?.training?.[0]
+    || playerScoreRoleTraining(model.position);
+  const plainText = (value, fallback = "") => simplifyPlayerReportText(
+    String(value || fallback),
+  );
+  const domainMeta = {
+    lane: { icon: "git-compare-arrows", dimension: "lane_execution" },
+    farm: { icon: "wheat", dimension: "farm_efficiency" },
+    tempo: { icon: "navigation", dimension: "map_tempo" },
+    combat: { icon: "swords", dimension: "combat_output" },
+    vision: { icon: "eye", dimension: "vision_team" },
+    execution: { icon: "mouse-pointer-click", dimension: "observable_execution" },
+  };
+  const statusMeta = {
+    good: { label: "做得好", tone: "positive", icon: "circle-check" },
+    stable: { label: "基本正常", tone: "stable", icon: "circle-dot" },
+    improve: { label: "需要改进", tone: "negative", icon: "circle-alert" },
+    insufficient: { label: "证据不足", tone: "missing", icon: "circle-dashed" },
+  };
+  const insightMeta = (insight) => {
+    const target = insight.jumpTarget;
+    const start = target.rangeStart ?? insight.time;
+    const end = target.rangeEnd ?? insight.timeEnd;
+    const range = start == null
+      ? "时间待补"
+      : end != null && end !== start
+        ? `${formatTime(start)}-${formatTime(end)}`
+        : formatTime(start);
     const location = insight.location
       || (target.mapFocus?.region ? regionName(target.mapFocus.region) : "");
-    return location ? `${range} · ${location}` : range;
+    return { range, location };
   };
   const occurrenceHtml = (insight) => {
-    const occurrences = (insight.occurrences || []).slice(0, 3);
-    if (!occurrences.length) return "";
-    const buttons = occurrences.map((occurrence, index) => {
+    if (!insight.occurrences.length) return "";
+    const buttons = insight.occurrences.map((occurrence, index) => {
       const delta = occurrence.arrivalDeltaSeconds == null
         ? ""
-        : `${occurrence.arrivalDeltaSeconds >= 0 ? "+" : ""}${occurrence.arrivalDeltaSeconds}秒`;
+        : `${occurrence.arrivalDeltaSeconds >= 0 ? "+" : ""}${occurrence.arrivalDeltaSeconds}秒到场`;
       const label = occurrence.label || [
         occurrence.time == null ? "" : formatTime(occurrence.time),
         occurrence.region ? regionName(occurrence.region) : "",
         delta,
-      ].filter(Boolean).join(" ");
-      return `<button type="button" data-player-score-review-occurrence="${escapeHtml(insight.id)}" data-player-score-occurrence-index="${index}" title="复盘 ${escapeHtml(label)}"><i data-lucide="map-pin"></i><span>${escapeHtml(label || `发生点 ${index + 1}`)}</span></button>`;
+      ].filter(Boolean).join(" · ");
+      return `<button type="button" data-player-score-review-occurrence="${escapeHtml(insight.id)}" data-player-score-occurrence-index="${index}" title="复盘 ${escapeHtml(label)}"><i data-lucide="map-pin"></i><span>${escapeHtml(label || `发生点 ${index + 1}`)}</span><i data-lucide="arrow-up-right"></i></button>`;
     }).join("");
-    return `<div class="player-score-insight-occurrences"><small>具体发生点</small><div>${buttons}</div></div>`;
+    return `<details class="simple-report-occurrences"><summary>查看具体发生点（${insight.occurrences.length}）</summary><div>${buttons}</div></details>`;
   };
-  const strengthHtml = ordinary.strength ? `<article class="player-score-brief-insight strength">
-    <button class="player-score-insight-review" type="button" data-player-score-review="${escapeHtml(ordinary.strength.id)}"><i data-lucide="circle-check"></i><span><small>${escapeHtml(reviewMeta(ordinary.strength))}</small><strong>${escapeHtml(simplifyPlayerReportText(ordinary.strength.title))}</strong><em>${escapeHtml(simplifyPlayerReportText(ordinary.strength.fact))}</em><b>带来的结果：${escapeHtml(simplifyPlayerReportText(ordinary.strength.impact || ordinary.strength.judgment))}</b></span><span class="player-score-review-command">查看这一波<i data-lucide="arrow-up-right"></i></span></button>
-    <button class="text-command" type="button" data-player-score-evidence-type="brief-insight" data-player-score-evidence-id="${escapeHtml(ordinary.strength.id)}" data-player-score-time="${Number(ordinary.strength.time || 0)}">查看评分依据</button>
-    ${occurrenceHtml(ordinary.strength)}
-  </article>` : `<div class="player-score-brief-empty"><i data-lucide="circle-dashed"></i><span><strong>这场还没有足够明确的个人优点</strong><small>不会只按比赛胜负或最高分自动补写优点。</small></span></div>`;
-  const priorityHtml = ordinary.priority ? `<article class="player-score-brief-insight priority">
-    <button class="player-score-insight-review" type="button" data-player-score-review="${escapeHtml(ordinary.priority.id)}"><span class="player-score-priority-number">1</span><span><small>${escapeHtml(reviewMeta(ordinary.priority))}</small><strong>${escapeHtml(simplifyPlayerReportText(ordinary.priority.title))}</strong><em>${escapeHtml(simplifyPlayerReportText(ordinary.priority.fact))}</em><b>造成的影响：${escapeHtml(simplifyPlayerReportText(ordinary.priority.impact || ordinary.priority.judgment))}</b><b>怎么改：${escapeHtml(simplifyPlayerReportText(ordinary.priority.action))}</b></span><span class="player-score-review-command">查看这一波<i data-lucide="arrow-up-right"></i></span></button>
-    <button class="text-command" type="button" data-player-score-evidence-type="brief-insight" data-player-score-evidence-id="${escapeHtml(ordinary.priority.id)}" data-player-score-time="${Number(ordinary.priority.time || 0)}">查看评分依据</button>
-    ${occurrenceHtml(ordinary.priority)}
-  </article>` : `<div class="player-score-brief-empty"><i data-lucide="shield-check"></i><span><strong>没有可以确定归责的主要问题</strong><small>分数较低不等于出现了明确失误。</small></span></div>`;
-  return `<div class="player-score-brief">
-    <header class="player-score-brief-lead">
-      <div class="player-score-brief-verdict"><span><i data-lucide="target"></i>下一局只练一件事</span><h2>${escapeHtml(simplifyPlayerReportText(training.action || brief.focus))}</h2><p><b>完成标准</b>${escapeHtml(simplifyPlayerReportText(training.successCheck || "下一局可以在相同场景中复核"))}</p></div>
-      <div class="player-score-brief-domains">${domainHtml}</div>
-    </header>
-    <div class="player-score-brief-columns">
-      <section class="player-score-story-board">
-        <header><span><small>按时间看清关键变化</small><strong>三个关键时刻</strong></span><em>${ordinary.stories.length} 个阶段</em></header>
-        <div>${storyHtml}</div>
-      </section>
-      <div class="player-score-brief-review">
-        <section class="player-score-brief-section strengths"><header><span><small>本场最值得保留</small><strong>做得好</strong></span></header><div>${strengthHtml}</div></section>
-        <section class="player-score-brief-section priorities"><header><span><small>本场优先改一件</small><strong>主要问题</strong></span></header><div>${priorityHtml}</div></section>
+  const insightCard = (source, tone) => {
+    const insight = presentSimpleInsight(source);
+    const meta = insightMeta(insight);
+    const strength = tone === "strength";
+    const fact = plainText(insight.fact, "这条结论已经定位到具体片段，事实说明仍需补充。");
+    const impact = plainText(
+      insight.impact,
+      strength ? "这次处理为队伍保留了正向收益。" : "目前只能确认问题发生，直接后果还需结合片段复核。",
+    );
+    const action = plainText(
+      insight.action,
+      strength ? "在相同场景继续保持这套处理。" : "遇到相同局面时，先停一下并重新确认队友、敌人和目标位置。",
+    );
+    return `<article class="simple-report-insight-card ${tone}">
+      <button class="simple-report-insight-main" type="button" data-player-score-review="${escapeHtml(insight.id)}">
+        <span class="simple-report-insight-icon"><i data-lucide="${strength ? "circle-check" : "circle-alert"}"></i></span>
+        <span class="simple-report-insight-copy">
+          <small><time>${escapeHtml(meta.range)}</time>${meta.location ? `<span>${escapeHtml(meta.location)}</span>` : ""}</small>
+          <strong>${escapeHtml(plainText(insight.title, strength ? "值得保持的处理" : "需要复核的处理"))}</strong>
+          <span class="simple-report-insight-line"><b>发生了什么</b><em>${escapeHtml(fact)}</em></span>
+          <span class="simple-report-insight-line impact"><b>${strength ? "带来的好处" : "造成的影响"}</b><em>${escapeHtml(impact)}</em></span>
+          <span class="simple-report-insight-line action"><b>${strength ? "怎么保持" : "下次怎么做"}</b><em>${escapeHtml(action)}</em></span>
+        </span>
+        <span class="player-score-review-command">查看这一波<i data-lucide="arrow-up-right"></i></span>
+      </button>
+      ${occurrenceHtml(insight)}
+    </article>`;
+  };
+  const domainHtml = simpleReport.domains.map((domain) => {
+    const meta = domainMeta[domain.key] || domainMeta.execution;
+    const status = statusMeta[domain.status] || statusMeta.insufficient;
+    return `<button class="simple-report-domain ${status.tone}" type="button" data-player-score-open-dimension="${meta.dimension}" title="在专业分析中查看${escapeHtml(domain.label)}明细">
+      <i data-lucide="${meta.icon}"></i>
+      <span><strong>${escapeHtml(domain.label)}</strong><small>${status.label}</small></span>
+      <i class="simple-report-domain-status" data-lucide="${status.icon}"></i>
+    </button>`;
+  }).join("");
+  const strengthHtml = simpleReport.strengths.map(
+    (insight) => insightCard(insight, "strength"),
+  ).join("") || `<div class="simple-report-empty"><i data-lucide="circle-dashed"></i><span><strong>暂时没有足够明确的个人优点</strong><small>不会根据胜负或总分强行补写优点。</small></span></div>`;
+  const improvementHtml = simpleReport.improvements.map(
+    (insight) => insightCard(insight, "improvement"),
+  ).join("") || `<div class="simple-report-empty"><i data-lucide="shield-check"></i><span><strong>没有能够明确归到你身上的问题</strong><small>分数偏低不等于一定做错；证据不够时不会硬批评。</small></span></div>`;
+  const activeFilter = ["strength", "improvement"].includes(state.simpleReportFilter)
+    ? state.simpleReportFilter
+    : "all";
+  const filteredTimeline = simpleReport.timeline.filter((insight) => (
+    activeFilter === "all"
+    || activeFilter === "strength" && ["strength", "positive"].includes(insight.kind)
+    || activeFilter === "improvement" && ["improvement", "problem", "priority"].includes(insight.kind)
+  ));
+  const timelineHtml = filteredTimeline.map((source) => {
+    const insight = presentSimpleInsight(source);
+    const meta = insightMeta(insight);
+    const strength = ["strength", "positive"].includes(insight.kind);
+    return `<button class="simple-report-timeline-row ${strength ? "strength" : "improvement"}" type="button" data-player-score-review="${escapeHtml(insight.id)}">
+      <time>${escapeHtml(meta.range)}</time>
+      <i data-lucide="${strength ? "circle-check" : "circle-alert"}"></i>
+      <span><strong>${escapeHtml(plainText(insight.title))}</strong><small>${escapeHtml([meta.location, plainText(insight.fact)].filter(Boolean).join(" · "))}</small></span>
+      <i data-lucide="arrow-up-right"></i>
+    </button>`;
+  }).join("") || `<div class="simple-report-empty compact"><i data-lucide="list-x"></i><span><strong>当前筛选没有结论</strong><small>切换“全部”可查看整场已确认内容。</small></span></div>`;
+  const trainingAction = plainText(training.action || model.brief?.focus, "下一局先确认职责，再决定当前这一分钟最重要的事。");
+  const trainingTrigger = plainText(training.trigger, "遇到相同局面时");
+  const trainingCheck = plainText(training.successCheck, "下一局能在对应时间点重新检查结果");
+
+  return `<div class="player-score-simple-report">
+    <header class="simple-report-lead">
+      <div class="simple-report-verdict">
+        <span><i data-lucide="scroll"></i>整场复盘 · ${escapeHtml(model.role.label)}</span>
+        <h2>${escapeHtml(plainText(model.brief?.verdict, "这场的明确结论仍在生成中。"))}</h2>
+        <p>已确认 <b>${simpleReport.strengths.length}</b> 个做得好的地方、<b>${simpleReport.improvements.length}</b> 个需要改进的地方，全部可以回到对应片段。</p>
       </div>
+      <div class="simple-report-training">
+        <span><i data-lucide="target"></i>下一局训练目标</span>
+        <strong>${escapeHtml(trainingAction)}</strong>
+        <small><b>什么时候做</b>${escapeHtml(trainingTrigger)}</small>
+        <small><b>怎样算完成</b>${escapeHtml(trainingCheck)}</small>
+      </div>
+    </header>
+    <section class="simple-report-domain-section" aria-label="六项比赛表现">
+      <header><span><small>先看哪里好、哪里要改</small><strong>六项比赛表现</strong></span><em>点击任一项可看专业拆解</em></header>
+      <div class="simple-report-domains">${domainHtml}</div>
+    </section>
+    <div class="simple-report-conclusion-grid">
+      <section class="simple-report-conclusion-section strengths">
+        <header><span><small>这场值得继续保持</small><strong>全场做得好</strong></span><em>${simpleReport.strengths.length} 条</em></header>
+        <div>${strengthHtml}</div>
+      </section>
+      <section class="simple-report-conclusion-section improvements">
+        <header><span><small>按发生顺序逐条复核</small><strong>全场需要改进</strong></span><em>${simpleReport.improvements.length} 条</em></header>
+        <div>${improvementHtml}</div>
+      </section>
     </div>
+    <section class="simple-report-timeline-section">
+      <header>
+        <span><small>从开局到结束，不只挑三条</small><strong>按时间查看全部结论</strong></span>
+        <div class="simple-report-filters" role="group" aria-label="结论筛选">
+          <button type="button" class="${activeFilter === "all" ? "active" : ""}" data-simple-report-filter="all">全部 ${simpleReport.timeline.length}</button>
+          <button type="button" class="${activeFilter === "strength" ? "active" : ""}" data-simple-report-filter="strength">做得好 ${simpleReport.strengths.length}</button>
+          <button type="button" class="${activeFilter === "improvement" ? "active" : ""}" data-simple-report-filter="improvement">需改进 ${simpleReport.improvements.length}</button>
+        </div>
+      </header>
+      <div class="simple-report-timeline">${timelineHtml}</div>
+    </section>
   </div>`;
 }
 
@@ -6708,7 +6811,7 @@ function renderPlayerScoreContent(model) {
       ? `<div class="player-score-upgrade-banner"><i data-lucide="scan-search"></i><span><strong>${upgradeTitle}</strong><small>${upgradeDetail}</small></span>${state.currentMatch ? `<button class="command-button secondary" type="button" data-player-score-reparse><i data-lucide="rotate-cw"></i><span>升级分析</span></button>` : ""}</div>`
       : "";
   if (mode === "brief") {
-    root.innerHTML = `${upgrade}${renderPlayerScoreBrief(model)}`;
+    root.innerHTML = `${upgrade}${renderSimplePlayerReport(model)}`;
     installImageFallback(root, heroImage("unknown"));
     refreshIcons(root);
     return;
@@ -6862,9 +6965,13 @@ function renderPlayerReportReviewBar() {
 function reviewPlayerScoreInsight(insightId, occurrenceIndex = null) {
   const model = playerScoreModel();
   const insight = [
+    ...(model.simpleReport?.timeline || []),
     ...(model.brief?.strengths || []),
     ...(model.brief?.priorities || []),
-  ].find((item) => String(item.id) === String(insightId));
+  ].find((item, index, items) => (
+    items.findIndex((candidate) => String(candidate.id) === String(item.id)) === index
+    && String(item.id) === String(insightId)
+  ));
   const normalizedIndex = occurrenceIndex == null ? null : Number(occurrenceIndex);
   const occurrence = Number.isInteger(normalizedIndex)
     ? insight?.occurrences?.[normalizedIndex] || null
@@ -8597,6 +8704,12 @@ function bindEvents() {
     if (filter) {
       state.playerScoreRosterFilter = filter.dataset.playerScoreRosterFilter;
       renderPlayerScoreRoster();
+      return;
+    }
+    const simpleFilter = event.target.closest("[data-simple-report-filter]");
+    if (simpleFilter) {
+      state.simpleReportFilter = simpleFilter.dataset.simpleReportFilter;
+      renderPlayerScoreContent(playerScoreModel());
       return;
     }
     const openDimension = event.target.closest("[data-player-score-open-dimension]");

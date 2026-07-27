@@ -537,15 +537,16 @@ test("ordinary report normalizes every reviewable combat timing occurrence", () 
 
 test("ordinary player report cards expose concrete Replay review actions", () => {
   const appSource = readFileSync(new URL("../../app.js", import.meta.url), "utf8");
-  const start = appSource.indexOf("function renderPlayerScoreBrief(model)");
+  const start = appSource.indexOf("function renderSimplePlayerReport(model)");
   const end = appSource.indexOf("function renderPlayerScoreLane", start);
   const briefRenderer = appSource.slice(start, end);
 
   assert.match(briefRenderer, /查看这一波/);
   assert.match(briefRenderer, /data-player-score-review=/);
-  assert.match(briefRenderer, /查看评分依据/);
   assert.match(briefRenderer, /data-player-score-review-occurrence=/);
+  assert.match(briefRenderer, /presentSimpleInsight/);
   assert.doesNotMatch(briefRenderer, />查看片段</);
+  assert.doesNotMatch(briefRenderer, /查看评分依据/);
   assert.match(appSource, /function reviewPlayerScoreInsight\(/);
   assert.match(appSource, /reviewPlayerScoreInsight\(review\.dataset\.playerScoreReview\)/);
 });
