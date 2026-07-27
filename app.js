@@ -148,13 +148,13 @@ import {
   combatContributionDrilldown,
   combatVisionStatus,
   countPlayerLaneWaves,
+  createReadingModeController,
   createMatchCache,
   coverageImpactFor,
   filterCombatContributionFights,
   formatCountdownSeconds,
   matchHistoryGuidance,
   normalizeMatchCache,
-  normalizeReadingMode,
   normalizeMatchSubject,
   normalizePlayerReportInsightOccurrences,
   normalizePlayerReportJumpTarget,
@@ -387,9 +387,6 @@ const MATCH_CACHE_KEY_PREFIX = "dota-lens-match-cache-v1";
 const WARD_MAP_ZOOM_MIN = 1;
 const WARD_MAP_ZOOM_MAX = 4;
 const WARD_MAP_ZOOM_FACTOR = 1.22;
-const DEFAULT_READING_MODE = normalizeReadingMode(
-  window.localStorage.getItem(READING_MODE_KEY),
-);
 const SAVED_SIDEBAR_STATE = window.localStorage.getItem(SIDEBAR_STATE_KEY);
 const DEFAULT_SIDEBAR_COLLAPSED = SAVED_SIDEBAR_STATE == null
   ? window.matchMedia("(max-width: 1279px)").matches
@@ -921,7 +918,7 @@ const state = {
   segmentFilter: "all",
   settingsPanel: "account",
   selectedHeroSlot: 0,
-  readingMode: DEFAULT_READING_MODE,
+  readingMode: "simple",
   playerScoreSection: "overview",
   playerScoreRosterFilter: "all",
   selectedPlayerScoreEvidence: null,
@@ -975,16 +972,21 @@ const state = {
   pendingSubjectRequired: false,
 };
 
-function setReadingMode(mode, { persist = true, render = true } = {}) {
-  state.readingMode = normalizeReadingMode(mode);
-  document.body.dataset.readingMode = state.readingMode;
-  document.querySelectorAll("[data-reading-mode]").forEach((button) => {
-    const active = button.dataset.readingMode === state.readingMode;
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-pressed", String(active));
-  });
-  if (persist) window.localStorage.setItem(READING_MODE_KEY, state.readingMode);
-  if (render && state.page === "detail") renderDetailView(state.detailView);
+const readingModeController = createReadingModeController({
+  storage: window.localStorage,
+  storageKey: READING_MODE_KEY,
+  getControls: () => document.querySelectorAll("[data-reading-mode]"),
+  applyMode: (mode) => {
+    state.readingMode = mode;
+    document.body.dataset.readingMode = mode;
+  },
+  render: () => {
+    if (state.page === "detail") renderDetailView(state.detailView);
+  },
+});
+
+function setReadingMode(mode, options = {}) {
+  return readingModeController.set(mode, options);
 }
 
 const wardMapDrag = {
@@ -6949,7 +6951,7 @@ function returnToPlayerScoreReport() {
       && Number(context.playerSlot) !== Number(state.selectedHeroSlot)) {
     selectHero(Number(context.playerSlot));
   }
-  setReadingMode(context.readingMode, { render: false });
+  readingModeController.restoreFromReviewContext(context, { render: false });
   state.playerScoreSection = context.playerScoreSection || "overview";
   state.selectedPlayerScoreEvidence = context.selectedEvidence || {
     type: "brief-insight",
@@ -8873,7 +8875,7 @@ async function init() {
   setFarmCompactView(state.farmCompactView);
   setBuildCompactView(state.buildCompactView);
   setCombatCompactView(state.combatCompactView);
-  setReadingMode(state.readingMode, { persist: false, render: false });
+  readingModeController.restore();
   setPlayerScoreEvidenceOpen(false);
   renderMatches();
   renderReplays();

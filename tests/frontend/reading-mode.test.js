@@ -1,14 +1,94 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import {
+import * as appCore from "../../app-core.js";
+
+const {
   buildSimplePlayerReport,
   normalizeReadingMode,
   presentSimpleInsight,
-} from "../../app-core.js";
+} = appCore;
 
 const htmlSource = readFileSync(new URL("../../index.html", import.meta.url), "utf8");
 const appSource = readFileSync(new URL("../../app.js", import.meta.url), "utf8");
+
+function memoryStorage(initial = {}) {
+  const values = new Map(Object.entries(initial));
+  return {
+    getItem(key) {
+      return values.has(key) ? values.get(key) : null;
+    },
+    setItem(key, value) {
+      values.set(key, String(value));
+    },
+  };
+}
+
+function readingModeControl(surface, readingMode) {
+  const classes = new Set();
+  const attributes = new Map();
+  return {
+    surface,
+    dataset: { readingMode },
+    classList: {
+      toggle(name, active) {
+        if (active) classes.add(name);
+        else classes.delete(name);
+      },
+      contains(name) {
+        return classes.has(name);
+      },
+    },
+    setAttribute(name, value) {
+      attributes.set(name, String(value));
+    },
+    getAttribute(name) {
+      return attributes.get(name) ?? null;
+    },
+  };
+}
+
+function readingModeHarness(storedValue = null) {
+  assert.equal(
+    typeof appCore.createReadingModeController,
+    "function",
+    "app-core must expose the executable reading-mode boundary",
+  );
+  const storageKey = "reading-mode-test";
+  const storage = memoryStorage(storedValue == null ? {} : { [storageKey]: storedValue });
+  const controls = [
+    readingModeControl("top", "simple"),
+    readingModeControl("top", "professional"),
+    readingModeControl("settings", "simple"),
+    readingModeControl("settings", "professional"),
+  ];
+  let appliedMode = null;
+  let renderCount = 0;
+  const controller = appCore.createReadingModeController({
+    storage,
+    storageKey,
+    getControls: () => controls,
+    applyMode: (mode) => { appliedMode = mode; },
+    render: () => { renderCount += 1; },
+  });
+  return {
+    controller,
+    controls,
+    storage,
+    storageKey,
+    appliedMode: () => appliedMode,
+    renderCount: () => renderCount,
+  };
+}
+
+function controlState(control) {
+  return {
+    surface: control.surface,
+    mode: control.dataset.readingMode,
+    active: control.classList.contains("active"),
+    pressed: control.getAttribute("aria-pressed"),
+  };
+}
 
 function localizedInsight(overrides = {}) {
   const id = overrides.id || "localized";
@@ -80,6 +160,64 @@ test("global reading mode controls replace the player report local preference", 
   assert.match(appSource, /const READING_MODE_KEY = "dota-lens-reading-mode-v1"/);
   assert.match(appSource, /function setReadingMode\(/);
   assert.doesNotMatch(appSource, /PLAYER_SCORE_MODE_KEY/);
+});
+
+test("reading mode controller synchronizes top and settings controls", () => {
+  const harness = readingModeHarness();
+
+  assert.equal(harness.controller.set("professional"), "professional");
+  assert.equal(harness.appliedMode(), "professional");
+  assert.equal(harness.storage.getItem(harness.storageKey), "professional");
+  assert.equal(harness.renderCount(), 1);
+  assert.deepEqual(harness.controls.map(controlState), [
+    { surface: "top", mode: "simple", active: false, pressed: "false" },
+    { surface: "top", mode: "professional", active: true, pressed: "true" },
+    { surface: "settings", mode: "simple", active: false, pressed: "false" },
+    { surface: "settings", mode: "professional", active: true, pressed: "true" },
+  ]);
+});
+
+test("reading mode controller restores persisted mode and rejects invalid storage", () => {
+  const restored = readingModeHarness("professional");
+  const invalid = readingModeHarness("deep");
+
+  assert.equal(restored.controller.restore(), "professional");
+  assert.equal(restored.appliedMode(), "professional");
+  assert.equal(restored.renderCount(), 0);
+  assert.deepEqual(restored.controls.map(controlState), [
+    { surface: "top", mode: "simple", active: false, pressed: "false" },
+    { surface: "top", mode: "professional", active: true, pressed: "true" },
+    { surface: "settings", mode: "simple", active: false, pressed: "false" },
+    { surface: "settings", mode: "professional", active: true, pressed: "true" },
+  ]);
+
+  assert.equal(invalid.controller.restore(), "simple");
+  assert.equal(invalid.appliedMode(), "simple");
+  assert.deepEqual(invalid.controls.map(controlState), [
+    { surface: "top", mode: "simple", active: true, pressed: "true" },
+    { surface: "top", mode: "professional", active: false, pressed: "false" },
+    { surface: "settings", mode: "simple", active: true, pressed: "true" },
+    { surface: "settings", mode: "professional", active: false, pressed: "false" },
+  ]);
+});
+
+test("reading mode controller restores the report review context", () => {
+  const harness = readingModeHarness("professional");
+  harness.controller.restore();
+
+  assert.equal(
+    harness.controller.restoreFromReviewContext({ readingMode: "simple" }, { render: false }),
+    "simple",
+  );
+  assert.equal(harness.appliedMode(), "simple");
+  assert.equal(harness.storage.getItem(harness.storageKey), "simple");
+  assert.equal(harness.renderCount(), 0);
+  assert.deepEqual(harness.controls.map(controlState), [
+    { surface: "top", mode: "simple", active: true, pressed: "true" },
+    { surface: "top", mode: "professional", active: false, pressed: "false" },
+    { surface: "settings", mode: "simple", active: true, pressed: "true" },
+    { surface: "settings", mode: "professional", active: false, pressed: "false" },
+  ]);
 });
 
 test("simple report always returns all six responsibility domains", () => {

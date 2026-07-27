@@ -1097,6 +1097,37 @@ export function normalizeReadingMode(value) {
   return value === "professional" ? "professional" : "simple";
 }
 
+export function createReadingModeController({
+  storage,
+  storageKey,
+  getControls,
+  applyMode,
+  render: renderView,
+}) {
+  function set(mode, { persist = true, render = true } = {}) {
+    const readingMode = normalizeReadingMode(mode);
+    applyMode(readingMode);
+    getControls().forEach((control) => {
+      const active = control.dataset.readingMode === readingMode;
+      control.classList.toggle("active", active);
+      control.setAttribute("aria-pressed", String(active));
+    });
+    if (persist) storage.setItem(storageKey, readingMode);
+    if (render) renderView(readingMode);
+    return readingMode;
+  }
+
+  function restore() {
+    return set(storage.getItem(storageKey), { persist: false, render: false });
+  }
+
+  function restoreFromReviewContext(context, options = {}) {
+    return set(context?.readingMode, options);
+  }
+
+  return { set, restore, restoreFromReviewContext };
+}
+
 function simpleDomainStatus(score) {
   if (score == null) return "insufficient";
   if (score >= 68) return "good";
