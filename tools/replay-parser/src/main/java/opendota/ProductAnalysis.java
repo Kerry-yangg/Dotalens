@@ -24,7 +24,7 @@ import com.google.gson.JsonObject;
  * desktop product.
  */
 final class ProductAnalysis {
-    static final String CURRENT_SCHEMA = "product-modules/2.10";
+    static final String CURRENT_SCHEMA = "product-modules/2.11";
     private static final int RADIANT = 2;
     private static final int DIRE = 3;
     private static final double ROSHAN_PIT_CONTEXT_RADIUS_PCT = 6.0;
@@ -33,6 +33,7 @@ final class ProductAnalysis {
     private final GoldReasonCatalog goldReasons;
     private final PatchAbilityMetadata abilityMetadata;
     private final boolean negativeScoringEnabled;
+    private final String replayPatch;
     private final Map<String, Integer> heroSlots = new HashMap<>();
     private final Map<Integer, NavigableMap<Integer, Snapshot>> snapshots = new TreeMap<>();
     private final Map<Integer, Integer> actionCounts = new HashMap<>();
@@ -48,6 +49,7 @@ final class ProductAnalysis {
     private final List<ControlPoint> controls = new ArrayList<>();
     private final List<TeleportChannelPoint> teleportChannels = new ArrayList<>();
     private final List<StealthModifierEvent> stealthModifierEvents = new ArrayList<>();
+    private final List<RunePoint> runePickups = new ArrayList<>();
     private final List<ObjectivePoint> objectives = new ArrayList<>();
     private final Map<Integer, WardPoint> wards = new LinkedHashMap<>();
     private final Map<Integer, UnitTrack> unitTracks = new LinkedHashMap<>();
@@ -64,6 +66,7 @@ final class ProductAnalysis {
     }
 
     ProductAnalysis(String patchName, boolean negativeScoringEnabled) {
+        replayPatch = patchName == null || patchName.isBlank() ? "unknown" : patchName;
         coordinates = new MapCoordinateService(patchName);
         goldReasons = new GoldReasonCatalog(patchName);
         abilityMetadata = PatchAbilityMetadata.load(patchName);
@@ -77,7 +80,8 @@ final class ProductAnalysis {
         }
         switch (type) {
             case "interval" -> acceptInterval(event);
-            case "unit_enter", "unit_state", "unit_left", "visibility" -> acceptUnitEvent(event, type);
+            case "unit_enter", "unit_state", "unit_position", "unit_left", "visibility" ->
+                acceptUnitEvent(event, type);
             case "actions" -> acceptAction(event);
             case "DOTA_COMBATLOG_PURCHASE" -> acceptPurchase(event);
             case "DOTA_ABILITY_LEVEL" -> acceptAbilityLevel(event);
@@ -99,6 +103,7 @@ final class ProductAnalysis {
             case "DOTA_COMBATLOG_TEAM_BUILDING_KILL" -> acceptBuilding(event);
             case "CHAT_MESSAGE_ROSHAN_KILL", "CHAT_MESSAGE_AEGIS", "CHAT_MESSAGE_COURIER_LOST" ->
                 acceptChatObjective(event, type);
+            case "CHAT_MESSAGE_RUNE_PICKUP" -> acceptRunePickup(event);
             default -> {
                 // The product index intentionally omits low-value raw event types.
             }
@@ -117,11 +122,13 @@ final class ProductAnalysis {
         List<RoshanAttempt> roshanAttempts = buildRoshanAttempts();
         Map<Integer, LaneAssignment> laneAssignments = inferLaneAssignments(Math.min(safeDuration, 600));
         JsonArray laneWaves = buildLaneWaves(safeDuration);
+        JsonArray laneSpatialWindows = buildLaneSpatialWindows(safeDuration);
         JsonArray campStates = buildCampStates(safeDuration);
         rebuildVisibilityIndex(safeDuration, wardRows);
         ensureAnalysisActive();
         JsonObject buildModule = buildBuildModule();
-        JsonObject farmModule = buildFarmModule(safeDuration, wardRows, laneAssignments, laneWaves, campStates);
+        JsonObject farmModule = buildFarmModule(safeDuration, wardRows, laneAssignments,
+                laneWaves, laneSpatialWindows, campStates);
         ensureAnalysisActive();
         JsonObject laningModule = buildLaningModule(safeDuration, wardRows, laneAssignments);
         ensureAnalysisActive();
@@ -154,8 +161,8 @@ final class ProductAnalysis {
         modules.add("timeline", timelineModule);
         modules.add("players", buildPlayerMetrics(safeDuration, wardRows, laneAssignments,
                 laningModule, combatModule, farmModule));
-        modules.add("module_evidence", buildModuleEvidence(wardRows, objectiveRows, combatModule,
-                objectiveModule, timelineModule));
+        modules.add("module_evidence", buildModuleEvidence(wardRows, objectiveRows, farmModule,
+                combatModule, objectiveModule, timelineModule));
         modules.add("coordinate_system", coordinates.manifest());
         modules.add("ability_metadata", abilityMetadata.manifest());
         return modules;
@@ -168,13 +175,17 @@ final class ProductAnalysis {
     }
 
     private JsonObject buildModuleEvidence(List<JsonObject> wardRows, List<JsonObject> objectiveRows,
-            JsonObject combatModule, JsonObject objectiveModule, JsonObject timelineModule) {
+            JsonObject farmModule, JsonObject combatModule, JsonObject objectiveModule,
+            JsonObject timelineModule) {
         long snapshotRows = snapshots.values().stream().mapToLong(Map::size).sum();
         long snapshotSlots = snapshots.values().stream().filter(rows -> !rows.isEmpty()).count();
         long farmRows = goldPoints.stream()
                 .filter(point -> point.value > 0 && point.classification.countsAsIncome()).count();
         long laneUnitTracks = unitTracks.values().stream().filter(track -> track.kind.equals("lane_creep")).count();
         long neutralUnitTracks = unitTracks.values().stream().filter(track -> track.kind.equals("neutral")).count();
+        boolean sampledLanePositions = unitTracks.values().stream()
+                .anyMatch(track -> track.kind.equals("lane_creep")
+                        && track.positionSamples.size() >= 2);
         boolean directVisibility = !heroVisibilityEvents.isEmpty() || snapshots.values().stream()
                 .flatMap(rows -> rows.values().stream()).anyMatch(snapshot -> snapshot.visibleByTeam != null);
         int fights = combatModule.getAsJsonArray("fights").size();
@@ -190,10 +201,11 @@ final class ProductAnalysis {
         result.add("build", moduleEvidence("fact", purchases.isEmpty() && abilityLevels.isEmpty() ? "partial" : "available",
                 purchases.isEmpty() && abilityLevels.isEmpty() ? 45 : 96,
                 List.of("CombatLog purchases", "Replay inventory"),
-                purchases.isEmpty() ? List.of("purchase_events") : List.of()));
+                purchases.isEmpty() ? List.of("purchase_events", "courier_entity_inventory")
+                        : List.of("courier_entity_inventory", "courier_order_log")));
         List<String> farmMissing = new ArrayList<>();
         if (farmRows == 0) farmMissing.add("gold_events");
-        if (laneUnitTracks == 0) farmMissing.add("lane_creep_positions");
+        if (laneUnitTracks == 0 || !sampledLanePositions) farmMissing.add("lane_creep_positions");
         if (neutralUnitTracks == 0) farmMissing.add("camp_occupancy");
         farmMissing.add("team_resource_claims");
         result.add("farm", moduleEvidence("derived", farmRows > 0 || laneUnitTracks > 0 ? "available" : "missing",
@@ -202,7 +214,9 @@ final class ProductAnalysis {
                 List.of("CombatLog gold", "Replay interval", "Replay unit lifecycle"), farmMissing));
         result.add("laning", moduleEvidence("derived", snapshotSlots == 10 ? "available" : "partial",
                 snapshotSlots == 10 ? 86 : 48, List.of("Replay interval"),
-                List.of("lane_creep_positions", "tower_health_timeline", "exact_pull_state")));
+                sampledLanePositions
+                        ? List.of("tower_health_timeline", "exact_pull_state")
+                        : List.of("lane_creep_positions", "tower_health_timeline", "exact_pull_state")));
         List<String> visionMissing = new ArrayList<>();
         if (wardRows.isEmpty()) visionMissing.add("ward_lifecycle");
         if (!directVisibility) visionMissing.add("exact_fog_of_war_mask");
@@ -611,6 +625,14 @@ final class ProductAnalysis {
                 normalizedSlot(actorSlot), null, null));
     }
 
+    private void acceptRunePickup(JsonObject event) {
+        EventStamp stamp = eventStamp(event);
+        Integer slot = normalizedSlot(integerValue(event, "player1"));
+        Integer runeCode = integerValue(event, "value");
+        if (stamp == null || slot == null) return;
+        runePickups.add(new RunePoint(stamp, slot, runeCode));
+    }
+
     private void resolveActorSlots() {
         purchases.forEach(event -> event.resolve(heroSlots));
         abilityLevels.forEach(event -> event.resolve(heroSlots));
@@ -757,11 +779,157 @@ final class ProductAnalysis {
             JsonArray inventory = new JsonArray();
             inventoryPoints.getOrDefault(slot, List.of()).forEach(point -> inventory.add(point.toJson()));
             player.add("inventory", inventory);
+            player.add("item_delivery_lifecycles", buildItemDeliveryLifecycles(currentSlot));
             bySlot.add(Integer.toString(slot), player);
         }
         JsonObject module = new JsonObject();
+        module.addProperty("schema", "item-delivery-lifecycle/1.0");
+        module.addProperty("courier_inventory_observed", false);
+        module.addProperty("usable_definition", "main_inventory_or_dedicated_slot_observed");
         module.add("by_slot", bySlot);
         return module;
+    }
+
+    private JsonArray buildItemDeliveryLifecycles(int slot) {
+        List<ActorEvent> slotPurchases = purchases.stream()
+                .filter(event -> event.slot != null && event.slot == slot)
+                .sorted((left, right) -> compareEventStamps(left.stamp, right.stamp))
+                .toList();
+        List<InventoryPoint> points = inventoryPoints.getOrDefault(slot, List.of()).stream()
+                .sorted((left, right) -> compareEventStamps(left.stamp, right.stamp))
+                .toList();
+        Map<String, Integer> ordinals = new HashMap<>();
+        JsonArray rows = new JsonArray();
+        for (ActorEvent purchase : slotPurchases) {
+            int ordinal = ordinals.merge(purchase.key, 1, Integer::sum);
+            InventoryMilestones milestones = inventoryMilestones(
+                    points, purchase.key, ordinal, purchase.stamp.gameTimeMs);
+            JsonObject row = new JsonObject();
+            String purchaseId = purchaseId(purchase);
+            row.addProperty("id", "delivery-" + purchaseId);
+            row.addProperty("purchase_id", purchaseId);
+            row.addProperty("key", purchase.key);
+            row.addProperty("purchase_ordinal", ordinal);
+            row.addProperty("purchased_at", purchase.time);
+            row.addProperty("purchased_game_time_ms", purchase.stamp.gameTimeMs);
+            addNullable(row, "first_inventory_seen_at", milestoneTime(milestones.firstSeen));
+            addNullable(row, "first_stash_at", milestoneTime(milestones.firstStash));
+            addNullable(row, "first_carried_at", milestoneTime(milestones.firstCarried));
+            addNullable(row, "first_usable_at", milestoneTime(milestones.firstUsable));
+            addNullable(row, "purchase_to_stash_seconds",
+                    delaySeconds(purchase.stamp, milestones.firstStash));
+            addNullable(row, "stash_to_carried_seconds",
+                    delaySeconds(milestones.firstStash, milestones.firstCarried));
+            addNullable(row, "carried_to_usable_seconds",
+                    delaySeconds(milestones.firstCarried, milestones.firstUsable));
+            addNullable(row, "total_to_usable_seconds",
+                    delaySeconds(purchase.stamp, milestones.firstUsable));
+
+            Snapshot carriedSnapshot = milestones.firstCarried == null ? null
+                    : snapshotAt(slot, milestones.firstCarried.time);
+            Position carriedPosition = positionOf(carriedSnapshot);
+            boolean carriedAtBase = carriedPosition != null
+                    && regionCode(carriedPosition).contains("base");
+            boolean courierInferred = milestones.firstStash != null
+                    && milestones.firstCarried != null
+                    && milestones.firstCarried.time > milestones.firstStash.time
+                    && !carriedAtBase;
+            String deliveryMode;
+            if (milestones.firstUsable == null) {
+                deliveryMode = "usable_state_unobserved";
+            } else if (milestones.firstStash == null
+                    && milestones.firstUsable.time - purchase.time <= 2) {
+                deliveryMode = carriedAtBase ? "direct_at_base" : "direct_inventory_observed";
+            } else if (courierInferred) {
+                deliveryMode = "courier_delivery_inferred";
+            } else if (milestones.firstStash != null && carriedAtBase) {
+                deliveryMode = "base_pickup_or_return";
+            } else {
+                deliveryMode = "delivery_path_unknown";
+            }
+            row.addProperty("delivery_mode", deliveryMode);
+            row.addProperty("courier_delivery_inferred", courierInferred);
+            row.addProperty("courier_entity_observed", false);
+            row.addProperty("state", milestones.firstUsable != null ? "usable_observed"
+                    : milestones.firstCarried != null ? "carried_not_usable_observed"
+                            : milestones.firstSeen != null ? "inventory_seen_not_delivered"
+                                    : "inventory_appearance_missing");
+            int confidence = milestones.firstUsable == null ? 45
+                    : courierInferred ? 88 : milestones.firstStash != null ? 78 : 72;
+            row.addProperty("confidence", confidence);
+            row.addProperty("evidence", "purchase_log_plus_hero_inventory_slots");
+            JsonArray missing = new JsonArray();
+            missing.add("courier_entity_inventory");
+            missing.add("courier_order_log");
+            missing.add("backpack_muted_state");
+            row.add("missing_evidence", missing);
+            InventoryPoint localized = milestones.firstUsable != null
+                    ? milestones.firstUsable : milestones.firstCarried;
+            if (localized != null) {
+                Position position = positionOf(snapshotAt(slot, localized.time));
+                if (position != null) addPosition(row, position);
+            }
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    private static InventoryMilestones inventoryMilestones(List<InventoryPoint> points,
+            String key, int ordinal, long purchaseTimeMs) {
+        InventoryPoint firstSeen = null;
+        InventoryPoint firstStash = null;
+        InventoryPoint firstCarried = null;
+        InventoryPoint firstUsable = null;
+        for (InventoryPoint point : points) {
+            if (point.stamp.gameTimeMs < purchaseTimeMs - 2_000) continue;
+            List<Integer> slots = inventorySlots(point.items, key);
+            if (slots.size() < ordinal) continue;
+            int slot = slots.get(Math.min(ordinal - 1, slots.size() - 1));
+            if (firstSeen == null) firstSeen = point;
+            if (slot >= 9 && slot <= 14 && firstStash == null) firstStash = point;
+            if ((slot >= 0 && slot <= 8 || slot == 15 || slot == 16)
+                    && firstCarried == null) {
+                firstCarried = point;
+            }
+            if ((slot >= 0 && slot <= 5 || slot == 15 || slot == 16)
+                    && firstUsable == null) {
+                firstUsable = point;
+            }
+        }
+        return new InventoryMilestones(firstSeen, firstStash, firstCarried, firstUsable);
+    }
+
+    private static List<Integer> inventorySlots(JsonArray items, String key) {
+        List<Integer> slots = new ArrayList<>();
+        if (items == null) return slots;
+        for (JsonElement element : items) {
+            if (!element.isJsonObject()) continue;
+            JsonObject item = element.getAsJsonObject();
+            if (!key.equals(stringValue(item, "key"))) continue;
+            Integer slot = integerValue(item, "slot");
+            if (slot != null) slots.add(slot);
+        }
+        slots.sort(Integer::compareTo);
+        return slots;
+    }
+
+    private static Integer milestoneTime(InventoryPoint point) {
+        return point == null ? null : point.time;
+    }
+
+    private static Integer delaySeconds(EventStamp from, InventoryPoint to) {
+        return from == null || to == null ? null
+                : (int) Math.max(0, Math.round((to.stamp.gameTimeMs - from.gameTimeMs) / 1000.0));
+    }
+
+    private static Integer delaySeconds(InventoryPoint from, InventoryPoint to) {
+        return from == null || to == null ? null
+                : (int) Math.max(0, Math.round((to.stamp.gameTimeMs - from.stamp.gameTimeMs) / 1000.0));
+    }
+
+    private static String purchaseId(ActorEvent purchase) {
+        return "purchase-" + purchase.slot + "-" + purchase.time + "-" + purchase.key
+                + "-" + Math.max(0, purchase.stamp.eventSequence);
     }
 
     private List<ActorEvent> uniqueAbilityLevels() {
@@ -939,12 +1107,15 @@ final class ProductAnalysis {
         }
         JsonObject module = new JsonObject();
         module.addProperty("review_end", reviewEnd);
-        module.addProperty("model", "lane-pair/1.1");
+        module.addProperty("model", "lane-pair/1.2");
         module.add("positions_by_slot", positionsBySlot);
         module.add("matchup_slot_by_slot", matchupBySlot);
         module.add("reviews_by_slot", reviewsBySlot);
         JsonArray missing = new JsonArray();
-        missing.add("lane_creep_positions");
+        boolean sampledLanePositions = unitTracks.values().stream()
+                .anyMatch(track -> track.kind.equals("lane_creep")
+                        && track.positionSamples.size() >= 2);
+        if (!sampledLanePositions) missing.add("lane_creep_positions");
         missing.add("tower_health_timeline");
         missing.add("exact_pull_state");
         module.add("missing_evidence", missing);
@@ -1017,9 +1188,12 @@ final class ProductAnalysis {
         }
         row.add("factors", factors);
         JsonArray missing = new JsonArray();
-        missing.add("兵线单位精确位置");
+        boolean sampledLanePositions = unitTracks.values().stream()
+                .anyMatch(track -> track.kind.equals("lane_creep")
+                        && track.positionSamples.size() >= 2);
+        if (!sampledLanePositions) missing.add("兵线单位精确位置");
         missing.add("防御塔血量时间线");
-        missing.add("拉野兵线归属");
+        missing.add("拉野单位仇恨命令");
         row.add("missing", missing);
         return row;
     }
@@ -1286,7 +1460,8 @@ final class ProductAnalysis {
     }
 
     private JsonObject buildFarmModule(int duration, List<JsonObject> wardRows,
-            Map<Integer, LaneAssignment> laneAssignments, JsonArray laneWaves, JsonArray campStates) {
+            Map<Integer, LaneAssignment> laneAssignments, JsonArray laneWaves,
+            JsonArray laneSpatialWindows, JsonArray campStates) {
         JsonObject heatBySlot = new JsonObject();
         JsonObject goldBySlot = new JsonObject();
         JsonObject diagnosticsBySlot = new JsonObject();
@@ -1295,6 +1470,10 @@ final class ProductAnalysis {
         JsonObject stackEventsBySlot = new JsonObject();
         JsonObject stackValueSummaryBySlot = new JsonObject();
         JsonObject cyclesBySlot = new JsonObject();
+        JsonObject runesBySlot = new JsonObject();
+        JsonObject supportAwayBySlot = new JsonObject();
+        JsonObject suspectedPullsBySlot = new JsonObject();
+        JsonObject levelSpikesBySlot = new JsonObject();
         for (int slot = 0; slot < 10; slot++) {
             heatBySlot.add(Integer.toString(slot), buildHeatCells(slot, duration));
             goldBySlot.add(Integer.toString(slot), buildGoldEvents(slot));
@@ -1306,6 +1485,13 @@ final class ProductAnalysis {
             stackEventsBySlot.add(Integer.toString(slot), stackEvents);
             stackValueSummaryBySlot.add(Integer.toString(slot), stackValueSummary(stackEvents));
             cyclesBySlot.add(Integer.toString(slot), buildLaneJungleCycles(slot, duration));
+            runesBySlot.add(Integer.toString(slot), buildRuneOpportunities(slot, duration));
+            supportAwayBySlot.add(Integer.toString(slot),
+                    buildSupportAwayWindows(slot, duration, wardRows, laneAssignments));
+            suspectedPullsBySlot.add(Integer.toString(slot),
+                    buildSuspectedPulls(slot, duration, laneAssignments));
+            levelSpikesBySlot.add(Integer.toString(slot),
+                    buildLevelSpikeWindows(slot, duration, laneAssignments));
         }
         JsonObject module = new JsonObject();
         module.add("mechanics", buildFarmMechanics());
@@ -1331,6 +1517,10 @@ final class ProductAnalysis {
         module.add("stack_events_by_slot", stackEventsBySlot);
         module.add("stack_value_summary_by_slot", stackValueSummaryBySlot);
         module.add("lane_jungle_cycles_by_slot", cyclesBySlot);
+        module.add("rune_opportunities_by_slot", runesBySlot);
+        module.add("support_away_windows_by_slot", supportAwayBySlot);
+        module.add("suspected_pulls_by_slot", suspectedPullsBySlot);
+        module.add("level_spike_windows_by_slot", levelSpikesBySlot);
         module.add("unit_kills", buildUnitKills());
         module.add("creep_resolutions", buildCreepResolutions(duration));
         module.add("lane_opportunities_by_slot",
@@ -1346,7 +1536,17 @@ final class ProductAnalysis {
         resourceSchema.addProperty("states", "observed_present,observed_cleared,visibility_lost,unknown");
         resourceSchema.addProperty("evidence", "replay_unit_lifecycle");
         module.add("resource_state_schema", resourceSchema);
+        JsonObject laneSpatialSchema = new JsonObject();
+        laneSpatialSchema.addProperty("schema", "lane-spatial/1.0");
+        laneSpatialSchema.addProperty("sample_interval_pre20_seconds", 5);
+        laneSpatialSchema.addProperty("sample_interval_post20_seconds", 15);
+        laneSpatialSchema.addProperty("push_depth_range", "-100 own base to +100 enemy base");
+        laneSpatialSchema.addProperty("tower_zone_radius_pct", 7.5);
+        laneSpatialSchema.addProperty("tower_zone_is_global_safety_proof", false);
+        laneSpatialSchema.addProperty("evidence", "sampled_lane_creep_positions");
+        module.add("lane_spatial_schema", laneSpatialSchema);
         module.add("lane_waves", laneWaves);
+        module.add("lane_spatial_windows", laneSpatialWindows);
         module.add("camp_states", campStates);
         return module;
     }
@@ -1391,7 +1591,7 @@ final class ProductAnalysis {
 
     private JsonObject buildFarmMechanics() {
         JsonObject mechanics = new JsonObject();
-        mechanics.addProperty("patch_baseline", "7.41d");
+        mechanics.addProperty("patch_baseline", replayPatch);
         mechanics.addProperty("lane_spawn_first", 0);
         mechanics.addProperty("lane_spawn_interval", 30);
         mechanics.addProperty("neutral_spawn_first", 60);
@@ -1415,7 +1615,338 @@ final class ProductAnalysis {
         return mechanics;
     }
 
+    private JsonArray buildRuneOpportunities(int slot, int duration) {
+        List<RunePoint> exact = runePickups.stream()
+                .filter(rune -> rune.slot == slot && rune.time >= 0 && rune.time <= duration)
+                .sorted(Comparator.comparingLong(rune -> rune.stamp.gameTimeMs))
+                .toList();
+        List<RunePoint> events = new ArrayList<>(exact);
+        if (events.isEmpty()) {
+            NavigableMap<Integer, Snapshot> rows = snapshots.get(slot);
+            Snapshot previous = null;
+            if (rows != null) {
+                for (Snapshot snapshot : rows.values()) {
+                    if (snapshot.time < 0 || snapshot.time > duration) continue;
+                    int delta = previous == null ? 0
+                            : positiveDelta(snapshot.runePickups, previous.runePickups);
+                    for (int index = 0; index < delta; index++) {
+                        events.add(new RunePoint(snapshot.stamp, slot, null));
+                    }
+                    previous = snapshot;
+                }
+            }
+        }
+
+        JsonArray result = new JsonArray();
+        int sequence = 0;
+        for (RunePoint rune : events) {
+            String type = runeType(rune.runeCode);
+            JsonObject row = new JsonObject();
+            String id = "rune-" + slot + "-" + rune.time + "-"
+                    + (rune.runeCode == null ? "unknown" : rune.runeCode) + "-" + sequence++;
+            row.addProperty("id", id);
+            row.addProperty("slot", slot);
+            rune.stamp.annotate(row);
+            addNullable(row, "rune_code", rune.runeCode);
+            row.addProperty("rune_type", type);
+            int directGold = goldPoints.stream()
+                    .filter(point -> point.slot != null && point.slot == slot && point.value > 0
+                            && Math.abs(point.stamp.gameTimeMs - rune.stamp.gameTimeMs) <= 2_500
+                            && "map_resource".equals(point.classification.category()))
+                    .mapToInt(point -> point.value)
+                    .sum();
+            Snapshot before = snapshotAt(slot, Math.max(0, rune.time - 2));
+            Snapshot after = snapshotAt(slot, Math.min(duration, rune.time + 2));
+            int observedXp = before == null || after == null ? 0
+                    : positiveDelta(after.xp, before.xp);
+            int observedNetworth = before == null || after == null ? 0
+                    : positiveDelta(after.networth, before.networth);
+            row.addProperty("direct_gold", directGold);
+            row.addProperty("observed_xp_delta", observedXp);
+            row.addProperty("observed_networth_delta", observedNetworth);
+            row.addProperty("xp_delta_is_exclusive_rune_reward", false);
+            row.addProperty("event_evidence", rune.runeCode == null
+                    ? "snapshot_counter_delta" : "chat_event_exact");
+            row.addProperty("confidence", rune.runeCode == null ? 72 : 96);
+            Position position = positionOf(snapshotAt(slot, rune.time));
+            if (position != null) addPosition(row, position);
+            result.add(row);
+        }
+        return result;
+    }
+
+    private JsonArray buildSupportAwayWindows(int slot, int duration, List<JsonObject> wardRows,
+            Map<Integer, LaneAssignment> assignments) {
+        LaneAssignment assignment = assignments.get(slot);
+        if (assignment == null || assignment.position < 4) return new JsonArray();
+        int corePosition = assignment.position == 5 ? 1 : 3;
+        Integer coreSlot = slotByPosition(assignments, slot < 5 ? 0 : 5, corePosition);
+        if (coreSlot == null) return new JsonArray();
+        NavigableMap<Integer, Snapshot> rows = snapshots.get(slot);
+        if (rows == null || rows.isEmpty()) return new JsonArray();
+
+        int end = Math.min(duration, 1200);
+        List<List<Snapshot>> windows = new ArrayList<>();
+        List<Snapshot> active = new ArrayList<>();
+        Snapshot last = null;
+        for (Snapshot snapshot : rows.values()) {
+            if (snapshot.time < 60 || snapshot.time > end) continue;
+            Position position = positionOf(snapshot);
+            boolean alive = snapshot.lifeState == null || snapshot.lifeState == 0;
+            boolean away = alive && position != null
+                    && !assignment.lane.equals(laneForPosition(position));
+            if (!away || last != null && snapshot.time - last.time > 12) {
+                if (!active.isEmpty()) windows.add(active);
+                active = new ArrayList<>();
+            }
+            if (away) {
+                active.add(snapshot);
+                last = snapshot;
+            } else {
+                last = null;
+            }
+        }
+        if (!active.isEmpty()) windows.add(active);
+
+        JsonArray result = new JsonArray();
+        int sequence = 0;
+        for (List<Snapshot> window : windows) {
+            Snapshot first = window.get(0);
+            Snapshot lastSnapshot = window.get(window.size() - 1);
+            int start = first.time;
+            int finish = Math.max(start + 1, lastSnapshot.time);
+            int runes = (int) runePickups.stream()
+                    .filter(rune -> rune.slot == slot && rune.time >= start && rune.time <= finish)
+                    .count();
+            runes = Math.max(runes, positiveDelta(lastSnapshot.runePickups, first.runePickups));
+            int stacks = positiveDelta(lastSnapshot.campsStacked, first.campsStacked);
+            int kills = positiveDelta(lastSnapshot.kills, first.kills);
+            int assists = positiveDelta(lastSnapshot.assists, first.assists);
+            int wards = (int) wardRows.stream()
+                    .filter(ward -> intValue(ward, "ownerSlot", -1) == slot
+                            && intValue(ward, "placedAt", -1) >= start
+                            && intValue(ward, "placedAt", -1) <= finish)
+                    .count();
+            Snapshot coreBefore = snapshotAt(coreSlot, start);
+            Snapshot coreAfter = snapshotAt(coreSlot, finish);
+            int coreDeaths = coreBefore == null || coreAfter == null ? 0
+                    : positiveDelta(coreAfter.deaths, coreBefore.deaths);
+            int coreSoloXp = coreBefore == null || coreAfter == null ? 0
+                    : positiveDelta(coreAfter.xp, coreBefore.xp);
+            int coreLastHits = coreBefore == null || coreAfter == null ? 0
+                    : positiveDelta(coreAfter.lh, coreBefore.lh);
+            int productive = runes + stacks + kills + assists + wards;
+            String outcome = coreDeaths > 0 ? "costly"
+                    : productive > 0 ? "productive"
+                            : coreSoloXp >= 120 ? "solo_xp_value" : "unproven";
+            if (finish - start < 5 && productive == 0 && coreDeaths == 0) continue;
+
+            JsonObject row = new JsonObject();
+            row.addProperty("id", "support-away-" + slot + "-" + start + "-" + sequence++);
+            row.addProperty("slot", slot);
+            row.addProperty("core_slot", coreSlot);
+            row.addProperty("lane", assignment.lane);
+            row.addProperty("start", start);
+            row.addProperty("end", finish);
+            row.addProperty("duration", finish - start);
+            row.addProperty("runes", runes);
+            row.addProperty("stacks", stacks);
+            row.addProperty("wards", wards);
+            row.addProperty("kills", kills);
+            row.addProperty("assists", assists);
+            row.addProperty("core_deaths", coreDeaths);
+            row.addProperty("core_solo_xp", coreSoloXp);
+            row.addProperty("core_last_hits", coreLastHits);
+            row.addProperty("outcome", outcome);
+            row.addProperty("confidence", coreBefore == null || coreAfter == null ? 62 : 84);
+            row.addProperty("evidence", "hero_snapshots_plus_exact_events");
+            Position position = positionOf(first);
+            if (position != null) addPosition(row, position);
+            result.add(row);
+        }
+        return result;
+    }
+
+    private JsonArray buildSuspectedPulls(int slot, int duration,
+            Map<Integer, LaneAssignment> assignments) {
+        LaneAssignment assignment = assignments.get(slot);
+        if (assignment == null || assignment.position < 4) return new JsonArray();
+        int team = teamForSlot(slot);
+        int end = Math.min(duration, 1200);
+        Map<String, PullAggregate> candidates = new LinkedHashMap<>();
+        for (UnitTrack track : unitTracks.values()) {
+            if (!track.kind.equals("lane_creep") || track.team == null || track.team != team) continue;
+            for (PositionSample sample : track.positionSamples) {
+                int time = sample.time;
+                if (time < 60 || time > end || !isPullTiming(time)) continue;
+                MapCoordinateService.Point point = canonicalPoint(sample.position);
+                MapCoordinateService.CampAnchor camp = coordinates.nearestCamp(point);
+                if (camp == null || camp.distance() > 5.0) continue;
+                String trackLane = coordinates.nearestLane(
+                        canonicalPoint(track.firstPosition != null
+                                ? track.firstPosition : sample.position));
+                if (!assignment.lane.equals(trackLane)) continue;
+                int bucket = Math.round(time / 5.0f) * 5;
+                String key = camp.id() + ":" + bucket;
+                candidates.computeIfAbsent(key,
+                        ignored -> new PullAggregate(camp, bucket, assignment.lane))
+                        .add(track.handle);
+            }
+        }
+
+        JsonArray result = new JsonArray();
+        int sequence = 0;
+        for (PullAggregate candidate : candidates.values()) {
+            if (candidate.creepHandles.size() < 2) continue;
+            Snapshot support = snapshotAt(slot, candidate.time);
+            MapCoordinateService.Point supportPoint = canonicalPoint(positionOf(support));
+            if (supportPoint == null
+                    || Math.hypot(supportPoint.x() - candidate.camp.point().x(),
+                            supportPoint.y() - candidate.camp.point().y()) > 8.0) {
+                continue;
+            }
+            boolean neutralPresent = unitTracks.values().stream()
+                    .filter(track -> track.kind.equals("neutral") && track.activeAt(candidate.time))
+                    .map(track -> canonicalPoint(track.positionAt(candidate.time, 8)))
+                    .filter(java.util.Objects::nonNull)
+                    .anyMatch(point -> Math.hypot(point.x() - candidate.camp.point().x(),
+                            point.y() - candidate.camp.point().y()) <= 5.0);
+            JsonObject row = new JsonObject();
+            row.addProperty("id", "suspected-pull-" + slot + "-" + candidate.time
+                    + "-" + sequence++);
+            row.addProperty("slot", slot);
+            row.addProperty("time", candidate.time);
+            row.addProperty("lane", candidate.lane);
+            row.addProperty("camp_id", candidate.camp.id());
+            row.addProperty("lane_creep_count", candidate.creepHandles.size());
+            row.addProperty("neutral_present", neutralPresent);
+            row.addProperty("classification", "suspected");
+            row.addProperty("confirmed", false);
+            row.addProperty("confidence", neutralPresent
+                    ? Math.min(90, 72 + candidate.creepHandles.size() * 4) : 66);
+            row.addProperty("evidence", neutralPresent
+                    ? "support_plus_lane_creeps_plus_neutral_near_camp"
+                    : "support_plus_lane_creeps_near_camp");
+            row.addProperty("missing_evidence", "lane_aggro_order_and_exact_camp_combat");
+            coordinates.annotate(row, candidate.camp.point(), true);
+            result.add(row);
+        }
+        return result;
+    }
+
+    private JsonArray buildLevelSpikeWindows(int slot, int duration,
+            Map<Integer, LaneAssignment> assignments) {
+        NavigableMap<Integer, Snapshot> rows = snapshots.get(slot);
+        if (rows == null || rows.isEmpty()) return new JsonArray();
+        JsonArray result = new JsonArray();
+        Snapshot previous = null;
+        Set<Integer> levels = Set.of(3, 6, 12, 18);
+        for (Snapshot current : rows.values()) {
+            if (previous == null) {
+                previous = current;
+                continue;
+            }
+            if (current.time < 0 || current.time > duration
+                    || current.level == null || previous.level == null
+                    || current.level <= previous.level || !levels.contains(current.level)) {
+                previous = current;
+                continue;
+            }
+            int start = current.time;
+            int end = Math.min(duration, start + 45);
+            Snapshot after = snapshotAt(slot, end);
+            if (after == null) {
+                previous = current;
+                continue;
+            }
+            LaneAssignment assignment = assignments.get(slot);
+            Position startPosition = positionOf(current);
+            boolean onAssignedLane = assignment != null && startPosition != null
+                    && assignment.lane.equals(laneForPosition(startPosition));
+            double enemyDistance = nearestEnemyDistance(slot, start);
+            boolean opportunityGate = (current.lifeState == null || current.lifeState == 0)
+                    && onAssignedLane && enemyDistance <= 18.0;
+            int heroDamage = damages.stream()
+                    .filter(point -> point.attackerSlot != null && point.attackerSlot == slot
+                            && point.targetHero && point.time >= start && point.time <= end)
+                    .mapToInt(point -> point.value)
+                    .sum();
+            int killAssists = positiveDelta(after.kills, current.kills)
+                    + positiveDelta(after.assists, current.assists);
+            int lastHits = positiveDelta(after.lh, current.lh);
+            boolean used = opportunityGate
+                    && (heroDamage >= 350 || killAssists > 0 || lastHits >= 6);
+            String outcome = used ? "used"
+                    : opportunityGate ? "unused_reviewable" : "context_only";
+            JsonObject row = new JsonObject();
+            row.addProperty("id", "level-spike-" + slot + "-" + start + "-" + current.level);
+            row.addProperty("slot", slot);
+            row.addProperty("start", start);
+            row.addProperty("end", end);
+            row.addProperty("level", current.level);
+            row.addProperty("outcome", outcome);
+            row.addProperty("opportunity_gate", opportunityGate);
+            row.addProperty("enemy_distance_pct", round2(enemyDistance));
+            row.addProperty("hero_damage", heroDamage);
+            row.addProperty("kill_assists", killAssists);
+            row.addProperty("last_hits", lastHits);
+            row.addProperty("confidence", opportunityGate ? 84 : 58);
+            row.addProperty("evidence", "level_snapshot_plus_bounded_followup_window");
+            row.addProperty("hero_specific_power_spike_confirmed", false);
+            if (startPosition != null) addPosition(row, startPosition);
+            result.add(row);
+            previous = current;
+        }
+        return result;
+    }
+
+    private double nearestEnemyDistance(int slot, int time) {
+        MapCoordinateService.Point own = canonicalPoint(positionOf(snapshotAt(slot, time)));
+        if (own == null) return Double.MAX_VALUE;
+        double best = Double.MAX_VALUE;
+        int start = slot < 5 ? 5 : 0;
+        for (int enemy = start; enemy < start + 5; enemy++) {
+            MapCoordinateService.Point point = canonicalPoint(positionOf(snapshotAt(enemy, time)));
+            if (point == null) continue;
+            best = Math.min(best, Math.hypot(own.x() - point.x(), own.y() - point.y()));
+        }
+        return best;
+    }
+
+    private static boolean isPullTiming(int time) {
+        int second = Math.floorMod(time, 60);
+        return second >= 12 && second <= 28 || second >= 42 && second <= 58;
+    }
+
+    private static String runeType(Integer code) {
+        if (code == null) return "unknown";
+        return switch (code) {
+            case 0 -> "double_damage";
+            case 1 -> "haste";
+            case 2 -> "illusion";
+            case 3 -> "invisibility";
+            case 4 -> "regeneration";
+            case 5 -> "bounty";
+            case 6 -> "arcane";
+            case 7 -> "water";
+            case 8 -> "wisdom";
+            case 9 -> "shield";
+            default -> "unknown";
+        };
+    }
+
     private JsonArray buildLaneWaves(int duration) {
+        Map<String, LaneWaveAggregate> waves = laneWaveAggregates();
+        JsonArray rows = new JsonArray();
+        waves.values().stream()
+                .filter(wave -> wave.expectedSpawn <= duration)
+                .sorted(Comparator.comparingInt((LaneWaveAggregate wave) -> wave.expectedSpawn)
+                        .thenComparingInt(wave -> wave.team).thenComparing(wave -> wave.lane))
+                .forEach(wave -> rows.add(wave.toJson()));
+        return rows;
+    }
+
+    private Map<String, LaneWaveAggregate> laneWaveAggregates() {
         Map<String, LaneWaveAggregate> waves = new LinkedHashMap<>();
         for (UnitTrack track : unitTracks.values()) {
             if (!track.kind.equals("lane_creep") || track.team == null) continue;
@@ -1431,13 +1962,143 @@ final class ProductAnalysis {
                     ignored -> new LaneWaveAggregate(track.team, lane, waveIndex, expectedSpawn))
                     .add(track);
         }
+        return waves;
+    }
+
+    private JsonArray buildLaneSpatialWindows(int duration) {
+        Map<String, LaneWavePair> pairs = new LinkedHashMap<>();
+        for (LaneWaveAggregate wave : laneWaveAggregates().values()) {
+            if (wave.expectedSpawn > duration) continue;
+            String key = wave.lane + ":" + wave.waveIndex;
+            LaneWavePair pair = pairs.computeIfAbsent(key,
+                    ignored -> new LaneWavePair(wave.lane, wave.waveIndex, wave.expectedSpawn));
+            if (wave.team == RADIANT) pair.radiant = wave;
+            if (wave.team == DIRE) pair.dire = wave;
+        }
         JsonArray rows = new JsonArray();
-        waves.values().stream()
-                .filter(wave -> wave.expectedSpawn <= duration)
-                .sorted(Comparator.comparingInt((LaneWaveAggregate wave) -> wave.expectedSpawn)
-                        .thenComparingInt(wave -> wave.team).thenComparing(wave -> wave.lane))
-                .forEach(wave -> rows.add(wave.toJson()));
+        pairs.values().stream()
+                .filter(pair -> pair.radiant != null && pair.dire != null)
+                .sorted(Comparator.comparingInt((LaneWavePair pair) -> pair.expectedSpawn)
+                        .thenComparing(pair -> pair.lane))
+                .map(this::laneSpatialWindow)
+                .filter(java.util.Objects::nonNull)
+                .forEach(rows::add);
         return rows;
+    }
+
+    private JsonObject laneSpatialWindow(LaneWavePair pair) {
+        Set<Integer> sampleTimes = new java.util.TreeSet<>();
+        for (UnitTrack track : pair.radiant.tracks) {
+            track.positionSamples.forEach(sample -> sampleTimes.add(sample.time));
+        }
+        for (UnitTrack track : pair.dire.tracks) {
+            track.positionSamples.forEach(sample -> sampleTimes.add(sample.time));
+        }
+        sampleTimes.removeIf(time -> time < pair.expectedSpawn - 5
+                || time > pair.expectedSpawn + 180);
+
+        LaneWaveCenter bestRadiant = null;
+        LaneWaveCenter bestDire = null;
+        int meetingTime = -1;
+        double meetingDistance = Double.MAX_VALUE;
+        for (int time : sampleTimes) {
+            LaneWaveCenter radiant = waveCenter(pair.radiant, time);
+            LaneWaveCenter dire = waveCenter(pair.dire, time);
+            if (radiant == null || dire == null) continue;
+            double distance = Math.hypot(
+                    radiant.point.x() - dire.point.x(),
+                    radiant.point.y() - dire.point.y());
+            if (distance < meetingDistance) {
+                meetingDistance = distance;
+                meetingTime = time;
+                bestRadiant = radiant;
+                bestDire = dire;
+            }
+            if (distance <= 8.0) break;
+        }
+        if (bestRadiant == null || bestDire == null) return null;
+
+        MapCoordinateService.Point meeting = coordinates.canonical(
+                (bestRadiant.point.x() + bestDire.point.x()) / 2.0f,
+                (bestRadiant.point.y() + bestDire.point.y()) / 2.0f,
+                "observed_lane_creep_centroid",
+                null,
+                null);
+        MapCoordinateService.LaneProjection projection = coordinates.projectToLane(meeting, pair.lane);
+        if (meeting == null || projection == null) return null;
+
+        JsonObject row = new JsonObject();
+        row.addProperty("id", "lane-space-" + pair.lane + "-" + pair.waveIndex);
+        row.addProperty("lane", pair.lane);
+        row.addProperty("wave_index", pair.waveIndex);
+        row.addProperty("expected_spawn", pair.expectedSpawn);
+        row.addProperty("meeting_time", meetingTime);
+        row.addProperty("meeting_distance_pct", round2(meetingDistance));
+        row.addProperty("state", meetingDistance <= 8.0
+                ? "observed_meeting" : "closest_observed_approach");
+        row.addProperty("lane_progress_pct", round2(projection.progress() * 100));
+        row.addProperty("radiant_push_depth", round2(projection.progress() * 200 - 100));
+        row.addProperty("dire_push_depth", round2((1 - projection.progress()) * 200 - 100));
+        row.add("radiant_wave_center", bestRadiant.toJson(coordinates));
+        row.add("dire_wave_center", bestDire.toJson(coordinates));
+        row.add("radiant_tower_zone", towerZone(RADIANT, pair.lane, meeting, meetingTime));
+        row.add("dire_tower_zone", towerZone(DIRE, pair.lane, meeting, meetingTime));
+        coordinates.annotate(row, meeting, true);
+        int confidence = meetingDistance <= 8.0
+                ? Math.min(96, 70 + (bestRadiant.units + bestDire.units) * 4) : 58;
+        row.addProperty("confidence", confidence);
+        row.addProperty("evidence", "sampled_lane_creep_centroids");
+        row.addProperty("tower_zone_is_enemy_safety_proof", false);
+        return row;
+    }
+
+    private LaneWaveCenter waveCenter(LaneWaveAggregate wave, int time) {
+        double x = 0;
+        double y = 0;
+        int units = 0;
+        for (UnitTrack track : wave.tracks) {
+            if (!track.activeAt(time)) continue;
+            Position position = track.positionAt(time, 3);
+            MapCoordinateService.Point point = canonicalPoint(position);
+            if (point == null) continue;
+            x += point.x();
+            y += point.y();
+            units++;
+        }
+        if (units < 2) return null;
+        MapCoordinateService.Point center = coordinates.canonical(
+                (float) (x / units), (float) (y / units),
+                "sampled_lane_creep_centroid", null, null);
+        return center == null ? null : new LaneWaveCenter(time, units, center);
+    }
+
+    private JsonObject towerZone(int team, String lane, MapCoordinateService.Point point, int time) {
+        MapCoordinateService.TowerAnchor tower = coordinates.laneTowers(team, lane).stream()
+                .filter(candidate -> towerAliveAt(candidate.key(), time))
+                .map(candidate -> new MapCoordinateService.TowerAnchor(
+                        candidate.key(), candidate.tier(), candidate.point(),
+                        Math.hypot(point.x() - candidate.point().x(),
+                                point.y() - candidate.point().y())))
+                .min(Comparator.comparingDouble(MapCoordinateService.TowerAnchor::distance))
+                .orElse(null);
+        JsonObject row = new JsonObject();
+        row.addProperty("team", team == RADIANT ? "radiant" : "dire");
+        row.addProperty("inside", tower != null && tower.distance() <= 7.5);
+        row.addProperty("radius_pct", 7.5);
+        row.addProperty("meaning", "near_living_allied_tower_not_global_safety_proof");
+        if (tower != null) {
+            row.addProperty("tower_key", tower.key());
+            row.addProperty("tier", tower.tier());
+            row.addProperty("distance_pct", round2(tower.distance()));
+            row.addProperty("tower_alive", true);
+            coordinates.annotate(row, tower.point(), true);
+        }
+        return row;
+    }
+
+    private boolean towerAliveAt(String key, int time) {
+        return objectives.stream().noneMatch(objective -> objective.kind.equals("building")
+                && key.equals(objective.target) && objective.time <= time);
     }
 
     private JsonArray buildCreepResolutions(int duration) {
@@ -6168,6 +6829,7 @@ final class ProductAnalysis {
         DeathPoint combatDeath;
         Integer observedGold;
         int samples;
+        final List<PositionSample> positionSamples = new ArrayList<>();
 
         UnitTrack(int handle, String unit, String kind, Integer team, EventStamp firstStamp) {
             this.handle = handle;
@@ -6192,6 +6854,15 @@ final class ProductAnalysis {
             if (position != null) {
                 if (firstPosition == null) firstPosition = position;
                 lastPosition = position;
+                if (positionSamples.isEmpty()
+                        || positionSamples.get(positionSamples.size() - 1).time != time) {
+                    if (positionSamples.size() < 900) {
+                        positionSamples.add(new PositionSample(time, position));
+                    }
+                } else {
+                    positionSamples.set(positionSamples.size() - 1,
+                            new PositionSample(time, position));
+                }
             }
             if (observedMaxHp != null && observedMaxHp > 0) maxHp = observedMaxHp;
             if ((lifeState != null && lifeState != 0) || hp != null && hp <= 0) {
@@ -6210,6 +6881,25 @@ final class ProductAnalysis {
 
         Position referencePosition() {
             return lastPosition != null ? lastPosition : firstPosition;
+        }
+
+        boolean activeAt(int time) {
+            return time >= firstObserved
+                    && (deathTime == null || time <= deathTime)
+                    && (leftTime == null || time <= leftTime);
+        }
+
+        Position positionAt(int time, int tolerance) {
+            PositionSample best = null;
+            int bestDistance = Integer.MAX_VALUE;
+            for (PositionSample sample : positionSamples) {
+                int distance = Math.abs(sample.time - time);
+                if (distance < bestDistance) {
+                    best = sample;
+                    bestDistance = distance;
+                }
+            }
+            return best == null || bestDistance > tolerance ? null : best.position;
         }
     }
 
@@ -6305,6 +6995,30 @@ final class ProductAnalysis {
             row.addProperty("confidence", offset <= 12 ? 92 : offset <= 25 ? 72 : 48);
             row.addProperty("evidence", "replay_lane_creep_lifecycle");
             row.addProperty("observed_enter_is_spawn_proof", false);
+            return row;
+        }
+    }
+
+    private static final class LaneWavePair {
+        final String lane;
+        final int waveIndex;
+        final int expectedSpawn;
+        LaneWaveAggregate radiant;
+        LaneWaveAggregate dire;
+
+        LaneWavePair(String lane, int waveIndex, int expectedSpawn) {
+            this.lane = lane;
+            this.waveIndex = waveIndex;
+            this.expectedSpawn = expectedSpawn;
+        }
+    }
+
+    private record LaneWaveCenter(int time, int units, MapCoordinateService.Point point) {
+        JsonObject toJson(MapCoordinateService coordinates) {
+            JsonObject row = new JsonObject();
+            row.addProperty("time", time);
+            row.addProperty("unit_count", units);
+            coordinates.annotate(row, point, true);
             return row;
         }
     }
@@ -6701,6 +7415,27 @@ final class ProductAnalysis {
             stamp.annotate(row);
             row.add("items", items.deepCopy());
             return row;
+        }
+    }
+
+    private record InventoryMilestones(InventoryPoint firstSeen, InventoryPoint firstStash,
+            InventoryPoint firstCarried, InventoryPoint firstUsable) {
+    }
+
+    private static final class PullAggregate {
+        final MapCoordinateService.CampAnchor camp;
+        final int time;
+        final String lane;
+        final Set<Integer> creepHandles = new LinkedHashSet<>();
+
+        PullAggregate(MapCoordinateService.CampAnchor camp, int time, String lane) {
+            this.camp = camp;
+            this.time = time;
+            this.lane = lane;
+        }
+
+        void add(int handle) {
+            creepHandles.add(handle);
         }
     }
 
@@ -7106,6 +7841,20 @@ final class ProductAnalysis {
         }
     }
 
+    private static final class RunePoint {
+        final EventStamp stamp;
+        final int time;
+        final int slot;
+        final Integer runeCode;
+
+        RunePoint(EventStamp stamp, int slot, Integer runeCode) {
+            this.stamp = stamp;
+            this.time = stamp.gameSecond;
+            this.slot = slot;
+            this.runeCode = runeCode;
+        }
+    }
+
     private static final class RoshanAttempt {
         String id;
         final List<DamagePoint> hits = new ArrayList<>();
@@ -7446,6 +8195,7 @@ final class ProductAnalysis {
             this(x, y, "map_percent", x, y);
         }
     }
+    private record PositionSample(int time, Position position) {}
     private record Detection(int time, int heroSlot) {}
     private record LaneAssignment(int slot, int position, String lane, double confidence) {}
 

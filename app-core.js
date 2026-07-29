@@ -915,6 +915,7 @@ export function patchCoverageImpact(match = {}) {
 export function matchHistoryGuidance(availability = {}) {
   const code = String(availability.code || "");
   const likelyImmortalDraft = availability.likely_immortal_draft === true;
+  const checks = matchHistoryChecks({ likelyImmortalDraft });
   if (code === "private_match_history") {
     return {
       kind: "private",
@@ -922,15 +923,263 @@ export function matchHistoryGuidance(availability = {}) {
       detail: likelyImmortalDraft
         ? "8500+ Immortal Draft 对局由 Valve 设为私有，不进入公开比赛历史，Replay 仅向参赛者开放。请先在 Dota 2 客户端下载自己的录像，再导入 Dota Lens。"
         : "该账号的公开比赛历史不可用。账号本人可以在 Dota 2 客户端下载录像，再导入 Dota Lens。",
+      checks,
       canImportReplay: true,
     };
   }
   return {
     kind: "empty",
     title: "公开比赛历史为空",
-    detail: "请确认 Steam 数字 ID 和“公开比赛数据”设置；也可以直接导入本机 Replay。",
+    detail: "这不一定是账号填写错误，请按下面三项逐一确认。",
+    checks,
     canImportReplay: true,
   };
+}
+
+function matchHistoryChecks({ likelyImmortalDraft = false } = {}) {
+  return [
+    {
+      key: "public_history",
+      title: "账号是否公开了比赛数据？",
+      detail: "在 Dota 2 设置的“社交”中开启“公开比赛数据”，等待公开 API 同步后再读取。",
+    },
+    {
+      key: "immortal_draft",
+      title: "账号是否达到 8500 分以上？",
+      detail: likelyImmortalDraft
+        ? "该账号很可能属于 8500+ Immortal Draft。Valve 不公开这类比赛历史，需要在客户端下载自己的 Replay 后本地导入。"
+        : "8500+ Immortal Draft 对局通常不会进入公开比赛历史；参赛者仍可从 Dota 2 客户端下载 Replay 后导入。",
+    },
+    {
+      key: "opendota",
+      title: "OpenDota 或公开 API 是否暂时异常？",
+      detail: "公开服务偶尔会限流或返回 5xx。稍后重试；已有本地 Replay 的分析不受影响。",
+    },
+  ];
+}
+
+export function matchListFailureGuidance({
+  errorCode = "",
+  errorMessage = "",
+  parserOnline = false,
+} = {}) {
+  const code = String(errorCode || "");
+  const message = String(errorMessage || "");
+  const upstream = code.startsWith("opendota_")
+    || /opendota|http\s*(?:429|5\d\d)/iu.test(message);
+  const timedOut = code === "request_timeout";
+  const localUnavailable = !parserOnline && !upstream;
+
+  return {
+    kind: upstream ? "upstream" : localUnavailable ? "parser" : "connection",
+    title: upstream
+      ? "OpenDota 暂时无法提供比赛列表"
+      : localUnavailable
+        ? "本地解析器未连接"
+        : timedOut
+          ? "读取比赛列表超时"
+          : "比赛列表暂时不可用",
+    detail: upstream
+      ? "本地功能仍可使用。先排除账号公开状态和 8500+ 对局限制，再重试公开服务。"
+      : localUnavailable
+        ? "请先确认本地解析器已经启动，再重新读取比赛。"
+        : "请按下面三项排查；仍然失败时复制反馈信息发给开发者。",
+    checks: matchHistoryChecks(),
+    canRetry: true,
+    canImportReplay: true,
+    canCopyFeedback: true,
+  };
+}
+
+export function parseFailureGuidance(job = {}) {
+  let code = String(job.error_code || "parse_failed");
+  const rawMessage = String(job.message || "").toLowerCase();
+  if (code === "parse_failed"
+      && rawMessage.includes("permission denied")
+      && (rawMessage.includes("getsockopt") || rawMessage.includes("socket"))) {
+    code = "network_access_denied";
+  } else if (code === "parse_failed"
+      && /connection refused|connection reset|connect timed out|network is unreachable|no route to host/iu.test(rawMessage)) {
+    code = "network_unavailable";
+  }
+  const identity = job.error_context && typeof job.error_context === "object"
+    ? job.error_context : {};
+  const declaredId = identity.declared_match_id ?? job.match_id ?? "--";
+  const internalId = identity.internal_match_id ?? "--";
+  const byCode = {
+    network_access_denied: {
+      title: "解析器联网权限被阻止",
+      detail: "本地解析器无法访问网络或 OpenDota，因此在获取 Replay 信息时失败。",
+      suggestions: [
+        "关闭并重新启动 Dota Lens，让本地解析器重新取得联网权限。",
+        "确认防火墙或安全软件没有拦截 Java 和 Dota Lens。",
+        "已有 DEM 文件时可直接使用“导入本机 Replay”，绕过在线下载。",
+      ],
+    },
+    network_unavailable: {
+      title: "当前网络或公开服务不可用",
+      detail: "解析器未能连接 OpenDota 或 Replay 下载服务，录像本身不一定有问题。",
+      suggestions: [
+        "确认网络可用后重新解析。",
+        "若 OpenDota 正在故障，请稍后再试。",
+        "已有 DEM 文件时可直接导入本机 Replay。",
+      ],
+    },
+    replay_unavailable: {
+      title: "公开服务没有提供这场录像",
+      detail: "OpenDota 没有拿到 Replay 地址；账号未公开比赛或 8500+ Immortal Draft 对局都可能出现这种情况。",
+      suggestions: [
+        "确认账号已开启“公开比赛数据”。",
+        "8500+ 对局请在 Dota 2 客户端下载自己的 Replay，再本地导入。",
+        "普通公开对局可以稍后重试，等待公开服务同步。",
+      ],
+    },
+    replay_server_unavailable: {
+      title: "Valve Replay 下载服务暂时不可用",
+      detail: "解析器已经找到录像地址，但下载服务连续返回错误。",
+      suggestions: [
+        "稍后重新解析，避免连续快速重试。",
+        "若客户端已经下载录像，直接导入 DEM 文件。",
+      ],
+    },
+    rate_limited: {
+      title: "公开服务请求过于频繁",
+      detail: "OpenDota 暂时限制了请求频率，这不是 Replay 文件损坏。",
+      suggestions: [
+        "等待几分钟后再重新解析。",
+        "不要同时反复提交同一场比赛。",
+      ],
+    },
+    parse_incomplete: {
+      title: "录像内容不完整",
+      detail: "Replay 缺少完整结束标记，继续生成报告可能产生错误结论。",
+      suggestions: [
+        "重新下载或重新导入完整的 DEM 文件。",
+        "确认文件下载完成后再开始解析。",
+      ],
+    },
+    replay_corrupt: {
+      title: "录像文件损坏或下载不完整",
+      detail: "压缩包或 DEM 无法完整读取，当前文件不能用于可信分析。",
+      suggestions: [
+        "删除这场录像的本地缓存后重新解析。",
+        "也可以从 Dota 2 客户端重新下载并导入。",
+      ],
+    },
+    replay_match_id_mismatch: {
+      title: "导入的比赛 ID 与录像不一致",
+      detail: `导入时使用比赛 ${declaredId}，但录像内部记录为 ${internalId}。`,
+      suggestions: [
+        "按录像内部比赛 ID 重命名文件后重新导入。",
+        "确认没有选错其他比赛的 DEM 文件。",
+      ],
+    },
+    request_failed: {
+      title: "无法创建本地解析任务",
+      detail: "桌面端没有成功连接本地解析器，任务尚未开始。",
+      suggestions: [
+        "确认解析器状态显示“已就绪”。",
+        "重新启动 Dota Lens 后再提交解析。",
+      ],
+    },
+    request_timeout: {
+      title: "本地解析器响应超时",
+      detail: "任务可能仍在后台运行，请先到任务页确认，避免重复提交。",
+      suggestions: [
+        "等待片刻并刷新任务状态。",
+        "确认任务确实停止后，再取消或重新解析。",
+      ],
+    },
+    job_not_found: {
+      title: "上次任务已经中断",
+      detail: "本地解析器重启后没有找到原任务，但已有 Replay 缓存仍可复用。",
+      suggestions: [
+        "点击“重新解析”创建新任务。",
+        "若仍失败，请复制下面的反馈信息。",
+      ],
+    },
+    parse_failed: {
+      title: "本地 Replay 解析失败",
+      detail: "解析器遇到了尚未归类的错误，保留技术信息可以帮助定位原因。",
+      suggestions: [
+        "先点击“重新解析”尝试一次。",
+        "若再次失败，请复制反馈信息并附上发生问题的操作步骤。",
+      ],
+    },
+  };
+  return byCode[code] || {
+    title: "Replay 解析未完成",
+    detail: "解析器返回了未收录的错误类型，请保留反馈信息以便定位。",
+    suggestions: [
+      "重新解析一次并观察是否停在相同阶段。",
+      "复制反馈信息发给开发者。",
+    ],
+  };
+}
+
+function privacySafeDiagnosticText(value, privateValues = []) {
+  let text = String(value ?? "").replace(/[\r\n\t]+/gu, " ").trim();
+  privateValues
+    .map((item) => String(item ?? "").trim())
+    .filter(Boolean)
+    .forEach((item) => {
+      text = text.split(item).join("[已隐藏账号]");
+    });
+  return text.slice(0, 500);
+}
+
+function parserDiagnosticLine(parserStatus = {}) {
+  const version = privacySafeDiagnosticText(parserStatus.version || "未知");
+  const status = privacySafeDiagnosticText(parserStatus.status || "unavailable");
+  const pid = Number(parserStatus.pid);
+  return `Parser: ${version} (${status}${Number.isFinite(pid) ? `, PID ${pid}` : ""})`;
+}
+
+export function buildMatchListFailureReport({
+  errorCode = "match_list_failed",
+  errorMessage = "",
+  parserStatus = {},
+  appVersion = "未知",
+} = {}) {
+  return [
+    "Dota Lens 比赛列表读取失败",
+    `生成时间: ${new Date().toISOString()}`,
+    `应用版本: ${privacySafeDiagnosticText(appVersion)}`,
+    parserDiagnosticLine(parserStatus),
+    `错误代码: ${privacySafeDiagnosticText(errorCode)}`,
+    `错误信息: ${privacySafeDiagnosticText(errorMessage) || "未提供"}`,
+    `浏览器联网状态: ${typeof navigator === "undefined" ? "未知" : navigator.onLine ? "online" : "offline"}`,
+  ].join("\n");
+}
+
+export function buildParseFailureReport(job = {}, {
+  appVersion = "未知",
+  parserStatus = {},
+} = {}) {
+  const privateValues = [job.account_id, job.accountId];
+  const safe = (value) => privacySafeDiagnosticText(value, privateValues);
+  const phaseDurations = job.phase_durations_ms && typeof job.phase_durations_ms === "object"
+    ? Object.entries(job.phase_durations_ms)
+      .map(([phase, duration]) => `${safe(phase)}=${Math.max(0, Math.round(Number(duration) || 0))}ms`)
+      .join(", ")
+    : "";
+  const lines = [
+    "Dota Lens Replay 解析失败反馈",
+    `生成时间: ${new Date().toISOString()}`,
+    `比赛 ID: ${safe(job.match_id) || "未知"}`,
+    `任务 ID: ${safe(job.id) || "未知"}`,
+    `应用版本: ${safe(appVersion)}`,
+    parserDiagnosticLine(parserStatus),
+    `错误代码: ${safe(job.error_code || "parse_failed")}`,
+    `失败阶段: ${safe(job.failed_stage || job.stage) || "未知"}`,
+    `进度: ${Math.max(0, Math.min(100, Math.round(Number(job.progress) || 0)))}%`,
+    `HTTP 状态: ${safe(job.http_status) || "无"}`,
+    `可以重试: ${job.retryable === true ? "是" : job.retryable === false ? "否" : "未知"}`,
+    `原始错误: ${safe(job.message) || "未提供"}`,
+    `更新时间: ${safe(job.updated_at) || "未知"}`,
+  ];
+  if (phaseDurations) lines.push(`阶段耗时: ${phaseDurations}`);
+  return lines.join("\n");
 }
 
 export function simplifyPlayerReportText(value) {
@@ -1174,9 +1423,48 @@ function simpleInsightKey(insight) {
   return `fact:${insight.kind}:${insight.category || ""}:${insight.title || ""}:${insight.time ?? ""}`;
 }
 
+function simpleInsightEntityKey(insight) {
+  if (!insight.jumpTarget.entityId) return "";
+  return `${insight.jumpTarget.entityType}:${insight.jumpTarget.entityId}`;
+}
+
+function mergeSimpleReportInsight(existing, incoming) {
+  const occurrences = [...existing.occurrences, ...incoming.occurrences];
+  const incomingHasConclusion = ["strength", "positive", "improvement", "problem", "priority"]
+    .includes(incoming.kind);
+  return {
+    ...existing,
+    kind: existing.kind === "context" && incomingHasConclusion ? incoming.kind : existing.kind,
+    category: existing.category || incoming.category,
+    fact: existing.fact || incoming.fact,
+    impact: existing.impact || incoming.impact,
+    judgment: existing.judgment || incoming.judgment,
+    action: existing.action || incoming.action,
+    occurrences: [...new Map(occurrences.map((occurrence) => [
+      `${occurrence.jumpTarget.entityType}:${occurrence.jumpTarget.entityId}:${occurrence.time}`,
+      occurrence,
+    ])).values()],
+  };
+}
+
+function normalizeSimpleImportantEvent(source = {}) {
+  return {
+    ...normalizeSimpleReportInsight({
+      ...source,
+      root_cause_id: source.root_cause_id ?? source.rootCauseId ?? source.dedupe_key,
+      time_start: source.time_start ?? source.timeStart,
+      time_end: source.time_end ?? source.timeEnd,
+    }),
+    importantEvent: true,
+    relatedEventTypes: Array.isArray(source.related_event_types)
+      ? [...source.related_event_types] : [],
+  };
+}
+
 export function buildSimplePlayerReport({
   dimensions = [],
   insights = [],
+  importantEvents = [],
   stories = [],
   training = [],
 } = {}) {
@@ -1212,17 +1500,36 @@ export function buildSimplePlayerReport({
         merged.set(key, insight);
         return;
       }
-      const occurrences = [...existing.occurrences, ...insight.occurrences];
-      merged.set(key, {
-        ...existing,
-        occurrences: [...new Map(occurrences.map((occurrence) => [
-          `${occurrence.jumpTarget.entityId}:${occurrence.time}`,
-          occurrence,
-        ])).values()],
-      });
+      merged.set(key, mergeSimpleReportInsight(existing, insight));
     });
 
-  const timeline = [...merged.values()].sort(
+  const timelineEntries = new Map();
+  const importantByEntity = new Map();
+  (Array.isArray(importantEvents) ? importantEvents : [])
+    .map(normalizeSimpleImportantEvent)
+    .filter((event) => event.jumpTarget.reviewable)
+    .forEach((event) => {
+      const key = simpleInsightKey(event);
+      const existing = timelineEntries.get(key);
+      timelineEntries.set(key, existing ? mergeSimpleReportInsight(existing, event) : event);
+      const entityKey = simpleInsightEntityKey(event);
+      if (entityKey) importantByEntity.set(entityKey, key);
+    });
+  merged.forEach((insight, key) => {
+    const entityKey = simpleInsightEntityKey(insight);
+    const importantKey = timelineEntries.has(key)
+      ? key : importantByEntity.get(entityKey);
+    if (importantKey && timelineEntries.has(importantKey)) {
+      timelineEntries.set(
+        importantKey,
+        mergeSimpleReportInsight(timelineEntries.get(importantKey), insight),
+      );
+      return;
+    }
+    timelineEntries.set(key, insight);
+  });
+
+  const timeline = [...timelineEntries.values()].sort(
     (left, right) => (left.time ?? Number.MAX_SAFE_INTEGER)
       - (right.time ?? Number.MAX_SAFE_INTEGER),
   );
@@ -1232,6 +1539,7 @@ export function buildSimplePlayerReport({
     domains,
     strengths: timeline.filter((insight) => strengthKinds.has(insight.kind)),
     improvements: timeline.filter((insight) => improvementKinds.has(insight.kind)),
+    contexts: timeline.filter((insight) => insight.kind === "context"),
     timeline,
     stories: Array.isArray(stories) ? [...stories] : [],
     primaryTraining: Array.isArray(training) ? training[0] || null : null,
@@ -1263,10 +1571,15 @@ export function resolvePlayerReportReviewNavigation(value = {}) {
     ward: ["vision", "selectedWardId"],
     lane_checkpoint: ["development", null],
     route_window: ["farm", "selectedFarmDiagnosticId"],
-    purchase: ["build", null],
+    purchase: ["build", "selectedBuildEventId"],
+    item_delivery: ["build", "selectedBuildEventId"],
     ability: ["build", null],
-    objective: ["map", null],
+    objective: ["map", "selectedMapEventId"],
     teleport: ["map", null],
+    rune: ["map", null],
+    support_window: ["development", null],
+    suspected_pull: ["development", null],
+    level_spike: ["development", null],
   };
   const mapped = entityNavigation[target.entityType];
   const validViews = new Set([
@@ -1290,7 +1603,8 @@ export function resolvePlayerReportReviewNavigation(value = {}) {
     view,
     selectedStateKey: mapped?.[1] || null,
     selectedId: mapped?.[1] ? target.entityId : null,
-    developmentSideView: target.entityType === "lane_checkpoint" ? "lane" : null,
+    developmentSideView: ["lane_checkpoint", "support_window", "suspected_pull", "level_spike"]
+      .includes(target.entityType) ? "lane" : null,
     seekTime,
     rangeStart: target.rangeValid ? target.rangeStart : seekTime,
     rangeEnd: target.rangeValid ? target.rangeEnd : seekTime,

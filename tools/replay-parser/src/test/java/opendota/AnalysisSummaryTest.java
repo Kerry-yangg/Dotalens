@@ -53,7 +53,7 @@ class AnalysisSummaryTest {
 
         assertEquals("dota-lens/1.0", summary.get("schema").getAsString());
         JsonObject modules = summary.getAsJsonObject("modules");
-        assertEquals("product-modules/2.10", modules.get("schema").getAsString());
+        assertEquals("product-modules/2.11", modules.get("schema").getAsString());
         for (String module : new String[] { "snapshots", "development", "build", "farm", "laning", "vision",
                 "combat", "map", "timeline", "players", "time_contract" }) {
             assertTrue(modules.has(module), "missing product module: " + module);
@@ -97,7 +97,11 @@ class AnalysisSummaryTest {
         assertFalse(report.getAsJsonObject("score_card").getAsJsonObject("root_cause_summary")
                 .get("attribution_only").getAsBoolean());
         assertEquals(5, report.getAsJsonObject("brief").getAsJsonArray("domain_scores").size());
-        assertEquals(3, report.getAsJsonArray("story_nodes").size());
+        assertEquals("player-report-event-candidates/1.1",
+                report.get("event_candidate_model").getAsString());
+        assertEquals(report.getAsJsonArray("important_events").size(),
+                report.getAsJsonArray("story_nodes").size());
+        assertTrue(report.has("event_candidates"));
         assertTrue(report.getAsJsonArray("training_plan").size() > 0);
         assertTrue(report.getAsJsonObject("evidence_index").size() > 0);
         assertEquals(20, playerModule.getAsJsonObject("role_profiles").getAsJsonObject("1")

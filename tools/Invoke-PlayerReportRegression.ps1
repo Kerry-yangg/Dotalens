@@ -15,7 +15,12 @@ param(
 
     [switch]$KeepParser,
 
-    [switch]$IncludeCandidates
+    [switch]$IncludeCandidates,
+
+    [string]$SelectedMatchId = '',
+
+    [ValidateRange(0, 1000)]
+    [int]$MaxMatches = 0
 )
 
 Set-StrictMode -Version Latest
@@ -345,7 +350,13 @@ function Invoke-ReplayParse {
             Start-Sleep -Seconds 1
         } while ([DateTimeOffset]::Now -lt $deadline)
         if ($job.status -ne 'completed') {
-            throw "Replay job ended as '$($job.status)': $($job.error)"
+            $jobErrorProperty = $job.PSObject.Properties['error']
+            $jobError = if ($jobErrorProperty -and $null -ne $jobErrorProperty.Value) {
+                [string]$jobErrorProperty.Value
+            } else {
+                'no parser error detail'
+            }
+            throw "Replay job ended as '$($job.status)': $jobError"
         }
     } catch {
         $parseFailure = $_
@@ -419,16 +430,64 @@ if ($IncludeCandidates) {
 } else {
     $selectedMatches = @($allMatches | Where-Object { $_.matrix_enabled -eq $true })
 }
+if (-not [string]::IsNullOrWhiteSpace($SelectedMatchId)) {
+    $canonicalSelectedMatchId = Get-CanonicalMatchId -MatchId $SelectedMatchId
+    $selectedMatches = @($selectedMatches | Where-Object {
+        (Get-CanonicalMatchId -MatchId $_.match_id) -eq $canonicalSelectedMatchId
+    })
+    if ($selectedMatches.Count -eq 0) {
+        throw "Selected match is not enabled by the manifest: $canonicalSelectedMatchId"
+    }
+}
+if ($MaxMatches -gt 0) {
+    $selectedMatches = @($selectedMatches | Select-Object -First $MaxMatches)
+}
 
 New-Item -ItemType Directory -Force -Path $checkpointDirectory, $runsDirectory | Out-Null
 $runDirectory = Join-Path $runsDirectory ([DateTimeOffset]::Now.ToString('yyyyMMddTHHmmssfffffffZ'))
 New-Item -ItemType Directory -Force -Path $runDirectory | Out-Null
+$latestProgressPath = Join-Path $runtimeRoot 'latest-progress.json'
 $matchResults = @()
 $positionCounts = @{}
 
+function Write-RunProgress {
+    param(
+        [Parameter(Mandatory)][string]$Phase,
+        [Parameter(Mandatory)][int]$Completed,
+        [string]$CurrentMatchId = '',
+        [string]$LastMatchStatus = '',
+        [string]$LastError = ''
+    )
+
+    $progress = [ordered]@{
+        schema = 'player-report-regression-progress/1.0'
+        mode = $Mode
+        phase = $Phase
+        matches_total = $selectedMatches.Count
+        matches_completed = $Completed
+        current_match_id = if ($CurrentMatchId) { $CurrentMatchId } else { $null }
+        last_match_status = if ($LastMatchStatus) { $LastMatchStatus } else { $null }
+        last_error = if ($LastError) { $LastError } else { $null }
+        run_directory = Get-RelativeProjectPath -Path $runDirectory
+        updated_at = [DateTimeOffset]::Now.ToString('o')
+    }
+    Write-AtomicJson -Path (Join-Path $runDirectory 'progress.json') -Value $progress
+    Write-AtomicJson -Path $latestProgressPath -Value $progress
+    Write-Host (
+        "[player-report-regression] phase=$Phase completed=$Completed/$($selectedMatches.Count)" `
+        + $(if ($CurrentMatchId) { " match=$CurrentMatchId" } else { '' }) `
+        + $(if ($LastMatchStatus) { " status=$LastMatchStatus" } else { '' })
+    )
+}
+
+Write-RunProgress -Phase 'starting' -Completed 0
+
 try {
-    foreach ($match in $selectedMatches) {
+    for ($matchIndex = 0; $matchIndex -lt $selectedMatches.Count; $matchIndex++) {
+        $match = $selectedMatches[$matchIndex]
         $matchId = [string]$match.match_id
+        Write-RunProgress -Phase 'processing_match' -Completed $matchIndex `
+            -CurrentMatchId $matchId
         $checkpointPath = $null
         $result = [ordered]@{
             match_id = $matchId
@@ -503,11 +562,6 @@ try {
             $result.aggregate_fallback_count = [int]$validation.result.aggregate_fallback_count
             $result.duplicate_applied_key_count = [int]$validation.result.duplicate_applied_key_count
             $result.max_root_negative_overall = [double]$validation.result.max_root_negative_overall
-            if ($validation.exit_code -ne 0 -or -not $validation.result.valid) {
-                $errors = @($validation.result.errors | ForEach-Object { [string]$_ })
-                throw "Task 8 validation failed: $($errors -join '; ')"
-            }
-
             foreach ($report in @($validation.result.reports)) {
                 $position = [string]$report.position
                 if ($position -match '^[1-5]$') {
@@ -515,6 +569,11 @@ try {
                     $positionCounts[$position] += 1
                 }
             }
+            if ($validation.exit_code -ne 0 -or -not $validation.result.valid) {
+                $errors = @($validation.result.errors | ForEach-Object { [string]$_ })
+                throw "Task 8 validation failed: $($errors -join '; ')"
+            }
+
             $result.status = 'validated'
         } catch {
             $result.error = ConvertTo-SafeError -ErrorRecord $_
@@ -550,6 +609,9 @@ try {
             }
         }
         $matchResults += [pscustomobject]$result
+        Write-RunProgress -Phase 'match_completed' -Completed ($matchIndex + 1) `
+            -CurrentMatchId $matchId -LastMatchStatus $result.status `
+            -LastError ([string]($result.error ?? ''))
     }
 } finally {
     Stop-OwnedParser
@@ -609,6 +671,14 @@ if ($aggregate.failures.Count -gt 0) {
     }
 }
 $markdown -join [Environment]::NewLine | Set-Content -LiteralPath $aggregateMarkdownPath -Encoding utf8
+
+Write-RunProgress -Phase 'completed' -Completed $selectedMatches.Count `
+    -LastMatchStatus $(if ($aggregate.failures.Count -gt 0) { 'failed' } else { 'validated' }) `
+    -LastError $(if ($aggregate.failures.Count -gt 0) {
+        "$($aggregate.failures.Count) match(es) failed"
+    } else {
+        ''
+    })
 
 Write-Host "Player report regression aggregate: $(Get-RelativeProjectPath -Path $aggregateJsonPath)"
 if ($aggregate.failures.Count -gt 0) {

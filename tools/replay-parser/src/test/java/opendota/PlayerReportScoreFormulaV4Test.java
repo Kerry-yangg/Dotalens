@@ -63,6 +63,28 @@ class PlayerReportScoreFormulaV4Test {
     }
 
     @Test
+    void emitsZeroValueAuditForRootWithoutScoringImpacts() {
+        JsonObject report = report(dimension("combat_duty", "utility", 100, 70, true));
+        JsonObject context = new JsonObject();
+        context.addProperty("id", "context-without-impact");
+        context.addProperty("kind", "context");
+        context.add("scoring_impacts", new JsonArray());
+        report.getAsJsonArray("root_causes").add(context);
+
+        PlayerReportScoringV4.apply(report);
+
+        JsonObject summary = context.getAsJsonObject("scoring_summary");
+        assertNotNull(summary);
+        assertEquals(0, summary.get("candidate_negative_overall").getAsDouble(), EPSILON);
+        assertEquals(6, summary.get("root_cap").getAsDouble(), EPSILON);
+        assertEquals(1, summary.get("root_cap_factor").getAsDouble(), EPSILON);
+        assertFalse(summary.get("root_cap_applied").getAsBoolean());
+        assertEquals(0, summary.get("duplicate_suppressed_count").getAsInt());
+        assertEquals(0, summary.get("applied_negative_overall").getAsDouble(), EPSILON);
+        assertEquals(0, summary.get("applied_modifier_total").getAsDouble(), EPSILON);
+    }
+
+    @Test
     void suppressesTheSameResultAcrossMultipleRoots() {
         JsonObject report = report(dimension("combat_duty", "utility", 100, 70, true));
         report.getAsJsonArray("root_causes").add(root(

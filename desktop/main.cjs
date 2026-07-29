@@ -10,7 +10,7 @@ const APP_URL = `${APP_SCHEME}://app/`;
 const API_STATUS_URL = "http://127.0.0.1:5600/api/status";
 const API_SHUTDOWN_URL = "http://127.0.0.1:5600/api/shutdown";
 const API_BASE_URL = "http://127.0.0.1:5600/api";
-const PARSER_API_VERSION = "1.6.1";
+const PARSER_API_VERSION = "1.7.0";
 const userDataOverride = process.env.DOTA_LENS_USER_DATA_DIR
   ? path.resolve(process.env.DOTA_LENS_USER_DATA_DIR)
   : null;
@@ -434,11 +434,13 @@ function createWindow() {
       await new Promise((resolve) => setTimeout(resolve, 250));
       const metrics = await mainWindow.webContents.executeJavaScript(`(() => {
         const selectors = [
+          '#match-subject-dialog',
           '#detail-farm', '.farm-main-layout', '.farm-map-panel', '.farm-map-canvas', '.farm-diagnosis-panel',
           '#detail-development', '.development-layout', '.lane-review',
           '#detail-vision', '.ward-main-layout', '.ward-map-panel', '.ward-browser-panel', '.ward-inspector-panel',
           '#detail-combat', '.combat-layout', '.combat-map-panel', '.combat-map-canvas',
           '.combat-vision-panel', '.combat-contribution-panel', '.combat-inspector-panel',
+          '#detail-player-score',
           '#detail-players', '.scoreboard', '.scoreboard-table-scroll', '.scoreboard-table-head', '.scoreboard-row',
           '#page-settings', '.settings-layout', '.settings-content', '#settings-dota', '#settings-parser',
           '#settings-dota-path', '#settings-replay-path', '#settings-temp-path'

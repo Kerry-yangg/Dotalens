@@ -15,6 +15,7 @@ const { players } = loadPlayerReportAnalysis(matchId, projectRoot);
 const validation = validatePlayerReportBundle(players, {
   requireAtomic: true,
   requireServerAudit: true,
+  requireEventPool: true,
 });
 const errors = [...validation.errors];
 const { reports } = validation;

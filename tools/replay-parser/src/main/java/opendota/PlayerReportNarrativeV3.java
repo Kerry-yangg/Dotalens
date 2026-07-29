@@ -37,11 +37,13 @@ final class PlayerReportNarrativeV3 {
                 timingCoveredFightIds);
         ensureAggregateStrength(insights, dimensionRows, slot, position, reportConfidence);
 
+        PlayerReportEventCandidatePool.Result eventPool = PlayerReportEventCandidatePool.build(
+                modules, insights, evidenceIndex, slot, position, reportConfidence);
+        mergeGeneratedInsights(insights, eventPool.generatedInsights());
         JsonArray rootCauses = PlayerReportRootCauseAnalysis.aggregate(
                 modules, facts, insights, evidenceIndex, slot, position, dimensionRows);
         linkDimensionInsights(dimensionRows, insights);
-        JsonArray storyNodes = storyNodes(facts, lane, farm, fights, slot, position, reportConfidence,
-                phaseScores, dimensionRows, evidenceIndex);
+        JsonArray storyNodes = eventPool.storyNodes();
         JsonArray insightRows = toArray(insights);
         JsonArray trainingPlan = trainingPlan(insights, slot, position);
         JsonObject scoreCard = scoreCard(report, dimensionRows, reportConfidence, overall, rootCauses);
@@ -54,6 +56,9 @@ final class PlayerReportNarrativeV3 {
         report.add("root_causes", rootCauses);
         report.add("training_plan", trainingPlan);
         report.add("evidence_index", evidenceIndex);
+        report.addProperty("event_candidate_model", PlayerReportEventCandidatePool.MODEL);
+        report.add("event_candidates", eventPool.candidates());
+        report.add("important_events", eventPool.importantEvents());
         report.addProperty("localization_model", PlayerReportLocalization.MODEL);
 
         JsonArray caveats = new JsonArray();
@@ -470,15 +475,15 @@ final class PlayerReportNarrativeV3 {
         String key = stringValue(best, "key", "dimension");
         String source = stringValue(best, "source", "");
         JsonArray refs = array(best, "metric_refs");
-        JsonObject insight = insight("insight:aggregate:" + slot + ":" + key, "strength",
-                categoryForSource(source), "positive", reportConfidence, 0, 0, "",
-                dimensionLabel(key) + "是本场相对稳定项",
+        JsonObject insight = insight("insight:aggregate:" + slot + ":" + key, "context",
+                categoryForSource(source), "reference", reportConfidence, 0, 0, "",
+                dimensionLabel(key) + "是本场聚合参考项",
                 "该位置维度得分 " + intValue(best, "score", 0) + "，权重 "
                         + intValue(best, "weight", 0) + "%。",
                 "结论来自本场同位置职责模型的聚合事实，不代表跨比赛百分位。",
-                "这一项为本场职责完成提供了稳定基础。",
-                keepAction(position, source), moduleForSource(source), 0, slot, strings(refs));
-        insight.add("dimension_impacts", impacts(canonicalDimension(source), 2.0));
+                "该项只用于专业模式理解整体表现，不代替可定位的个人优点。",
+                "", moduleForSource(source), 0, slot, strings(refs));
+        insight.add("dimension_impacts", new JsonArray());
         insights.add(insight);
     }
 
@@ -712,10 +717,18 @@ final class PlayerReportNarrativeV3 {
     private static JsonObject brief(JsonArray stories, List<JsonObject> insights, JsonArray training,
             JsonArray dimensions, int confidence, int overall) {
         JsonObject row = new JsonObject();
-        JsonObject lane = stories.get(0).getAsJsonObject();
-        JsonObject mid = stories.get(1).getAsJsonObject();
-        JsonObject late = stories.get(2).getAsJsonObject();
-        row.addProperty("verdict", storyPhrase(lane) + "；" + storyPhrase(mid) + "，" + storyPhrase(late) + "。");
+        JsonObject firstStrength = firstStory(stories, "strength");
+        JsonObject firstIssue = firstStory(stories, "improvement");
+        StringBuilder verdict = new StringBuilder();
+        verdict.append("本场识别到 ").append(stories.size()).append(" 个可回看的重要时刻");
+        if (firstStrength != null) {
+            verdict.append("；做得好：").append(storyPhrase(firstStrength));
+        }
+        if (firstIssue != null) {
+            verdict.append("；优先复核：").append(storyPhrase(firstIssue));
+        }
+        verdict.append("。");
+        row.addProperty("verdict", verdict.toString());
         row.addProperty("next_match_focus", training.size() > 0
                 ? stringValue(training.get(0).getAsJsonObject(), "action", "")
                 : "下一局只选择一个有时间证据的职责动作练习。");
@@ -727,12 +740,12 @@ final class PlayerReportNarrativeV3 {
 
         JsonArray strengths = new JsonArray();
         insights.stream().filter(item -> "strength".equals(stringValue(item, "kind", "")))
-                .limit(2).forEach(item -> strengths.add(stringValue(item, "id", "")));
+                .forEach(item -> strengths.add(stringValue(item, "id", "")));
         row.add("strengths", strengths);
 
         JsonArray priorities = new JsonArray();
         insights.stream().filter(item -> "improvement".equals(stringValue(item, "kind", "")))
-                .limit(3).forEach(item -> priorities.add(stringValue(item, "id", "")));
+                .forEach(item -> priorities.add(stringValue(item, "id", "")));
         row.add("priorities", priorities);
 
         JsonArray trainingRefs = new JsonArray();
@@ -741,6 +754,24 @@ final class PlayerReportNarrativeV3 {
         }
         row.add("training_plan", trainingRefs);
         return row;
+    }
+
+    private static JsonObject firstStory(JsonArray stories, String kind) {
+        for (JsonElement element : stories) {
+            if (!element.isJsonObject()) continue;
+            JsonObject story = element.getAsJsonObject();
+            if (kind.equals(stringValue(story, "kind", ""))) return story;
+        }
+        return null;
+    }
+
+    private static void mergeGeneratedInsights(List<JsonObject> insights,
+            List<JsonObject> generatedInsights) {
+        Set<String> ids = new LinkedHashSet<>();
+        for (JsonObject insight : insights) ids.add(stringValue(insight, "id", ""));
+        for (JsonObject insight : generatedInsights) {
+            if (ids.add(stringValue(insight, "id", ""))) insights.add(insight);
+        }
     }
 
     private static JsonArray domainScores(JsonArray dimensions, int confidence, int overall) {

@@ -6,6 +6,8 @@ import { HERO_META } from "../../hero-meta.js";
 import { renderPlayerScoreAtomicAudit } from "../../player-score-atomic-audit.js";
 import {
   activeTaskFromHistory,
+  buildMatchListFailureReport,
+  buildParseFailureReport,
   buildSimplePlayerReport,
   combatVisionStatus,
   countPlayerLaneWaves,
@@ -13,6 +15,7 @@ import {
   coverageImpactFor,
   formatCountdownSeconds,
   matchHistoryGuidance,
+  matchListFailureGuidance,
   normalizeMatchCache,
   normalizeMatchSubject,
   normalizePlayerReportInsightOccurrences,
@@ -22,6 +25,7 @@ import {
   ordinaryPlayerReportInsightEligible,
   patchCoverageImpact,
   patchResolutionLabel,
+  parseFailureGuidance,
   playerReportUpgradeState,
   recomputePlayerReportBaseComponents,
   recomputePlayerReportScoreAudit,
@@ -197,6 +201,93 @@ test("private Immortal Draft history points participants to local Replay import"
   assert.match(guidance.detail, /8500\+/);
   assert.match(guidance.detail, /参赛者/);
   assert.equal(guidance.canImportReplay, true);
+});
+
+test("empty match history explains public-data, 8500+, and OpenDota restrictions", () => {
+  const guidance = matchHistoryGuidance({
+    code: "no_public_matches",
+    public_history_available: false,
+  });
+  const checks = guidance.checks.map((item) => `${item.title} ${item.detail}`).join(" ");
+
+  assert.match(checks, /公开比赛数据/);
+  assert.match(checks, /8500\+/);
+  assert.match(checks, /OpenDota|公开 API/);
+  assert.equal(guidance.canImportReplay, true);
+});
+
+test("match list failures provide diagnosis and copyable feedback", () => {
+  const guidance = matchListFailureGuidance({
+    errorCode: "opendota_unavailable",
+    errorMessage: "OpenDota returned HTTP 521",
+    parserOnline: true,
+  });
+  const checks = guidance.checks.map((item) => `${item.title} ${item.detail}`).join(" ");
+  const report = buildMatchListFailureReport({
+    errorCode: "opendota_unavailable",
+    errorMessage: "OpenDota returned HTTP 521",
+    parserStatus: { version: "1.6.0", pid: 1234, status: "ready" },
+    appVersion: "0.5.0",
+  });
+
+  assert.equal(guidance.kind, "upstream");
+  assert.match(checks, /公开比赛数据/);
+  assert.match(checks, /8500\+/);
+  assert.match(checks, /OpenDota/);
+  assert.equal(guidance.canRetry, true);
+  assert.equal(guidance.canImportReplay, true);
+  assert.match(report, /opendota_unavailable/);
+  assert.match(report, /HTTP 521/);
+  assert.match(report, /Parser: 1\.6\.0/);
+});
+
+test("parse failures expose a plain-language cause and privacy-safe feedback block", () => {
+  const job = {
+    id: "job-network",
+    match_id: 8916299050,
+    account_id: 42424242,
+    status: "failed",
+    progress: 8,
+    error_code: "network_access_denied",
+    failed_stage: "resolving",
+    retryable: true,
+    message: "Permission denied: getsockopt",
+    updated_at: "2026-07-28T08:30:50Z",
+    phase_durations_ms: { resolving: 13988 },
+  };
+  const guidance = parseFailureGuidance(job);
+  const report = buildParseFailureReport(job, {
+    appVersion: "0.5.0",
+    parserStatus: { version: "1.6.0", pid: 29212, status: "ready" },
+  });
+
+  assert.match(guidance.title, /联网|网络/);
+  assert.match(guidance.detail, /OpenDota|网络/);
+  assert.ok(guidance.suggestions.length >= 2);
+  assert.match(report, /比赛 ID: 8916299050/);
+  assert.match(report, /错误代码: network_access_denied/);
+  assert.match(report, /失败阶段: resolving/);
+  assert.match(report, /Permission denied: getsockopt/);
+  assert.doesNotMatch(report, /42424242|account_id/);
+});
+
+test("legacy generic parse failures still explain a recognizable network cause", () => {
+  const guidance = parseFailureGuidance({
+    error_code: "parse_failed",
+    message: "Permission denied: getsockopt",
+  });
+
+  assert.match(guidance.title, /联网|网络/);
+  assert.match(guidance.detail, /OpenDota|网络/);
+});
+
+test("failure screens expose retry, local import, and feedback actions", () => {
+  const app = readFileSync(new URL("../../app.js", import.meta.url), "utf8");
+
+  assert.match(app, /data-retry-matches/);
+  assert.match(app, /data-import-private-replay/);
+  assert.match(app, /data-copy-match-error/);
+  assert.match(app, /data-task-action="copy-error"/);
 });
 
 test("Replay import is wired to the local parser instead of a simulated queue", () => {
@@ -675,6 +766,34 @@ test("player report review navigation selects the target entity and preroll", ()
   assert.equal(ward.view, "vision");
   assert.equal(ward.selectedStateKey, "selectedWardId");
 
+  const purchase = resolvePlayerReportReviewNavigation({
+    module: "build",
+    entityType: "purchase",
+    entityId: "purchase-0-640-blink-640",
+    time: 640,
+    rangeStart: 620,
+    rangeEnd: 660,
+    locationLevel: "L2",
+    mapFocus: { region: "radiant_jungle" },
+  });
+  assert.equal(purchase.view, "build");
+  assert.equal(purchase.selectedStateKey, "selectedBuildEventId");
+  assert.equal(purchase.selectedId, "purchase-0-640-blink-640");
+
+  const objective = resolvePlayerReportReviewNavigation({
+    module: "map",
+    entityType: "objective",
+    entityId: "objective-7",
+    time: 1120,
+    rangeStart: 1105,
+    rangeEnd: 1135,
+    locationLevel: "L3",
+    mapFocus: { coordinateValid: true, x: 72, y: 77, region: "river" },
+  });
+  assert.equal(objective.view, "map");
+  assert.equal(objective.selectedStateKey, "selectedMapEventId");
+  assert.equal(objective.selectedId, "objective-7");
+
   const lane = resolvePlayerReportReviewNavigation({
     module: "development",
     entityType: "lane_checkpoint",
@@ -688,6 +807,36 @@ test("player report review navigation selects the target entity and preroll", ()
   assert.equal(lane.view, "development");
   assert.equal(lane.developmentSideView, "lane");
   assert.equal(lane.selectedStateKey, null);
+
+  for (const entityType of ["support_window", "suspected_pull", "level_spike"]) {
+    const tempo = resolvePlayerReportReviewNavigation({
+      module: "development",
+      entityType,
+      entityId: `${entityType}-1`,
+      time: 420,
+      rangeStart: 408,
+      rangeEnd: 438,
+      locationLevel: "L3",
+      mapFocus: { coordinateValid: true, x: 35, y: 35, region: "river" },
+    });
+    assert.equal(tempo.view, "development");
+    assert.equal(tempo.developmentSideView, "lane");
+    assert.equal(tempo.rangeStart, 408);
+    assert.equal(tempo.rangeEnd, 438);
+  }
+
+  const rune = resolvePlayerReportReviewNavigation({
+    module: "map",
+    entityType: "rune",
+    entityId: "rune-0-420",
+    time: 420,
+    rangeStart: 408,
+    rangeEnd: 432,
+    locationLevel: "L3",
+    mapFocus: { coordinateValid: true, x: 35, y: 35, region: "river" },
+  });
+  assert.equal(rune.view, "map");
+  assert.equal(rune.rangeStart, 408);
 
   assert.equal(resolvePlayerReportReviewNavigation({
     entityType: "death",
@@ -710,6 +859,22 @@ test("player report Replay review bar owns a bounded playback window", () => {
   assert.match(appSource, /playerReportReviewWindow/);
   assert.match(appSource, /rangeEnd/);
   assert.match(appSource, /renderPlayerReportReviewBar/);
+});
+
+test("professional player report exposes P1 lane delivery and tempo facts", () => {
+  const appSource = readFileSync(new URL("../../app.js", import.meta.url), "utf8");
+  const styles = readFileSync(new URL("../../styles.css", import.meta.url), "utf8");
+
+  assert.match(appSource, /renderPlayerScoreP1Audit/);
+  assert.match(appSource, /lane_pressure/);
+  assert.match(appSource, /item_delivery/);
+  assert.match(appSource, /rune_control/);
+  assert.match(appSource, /support_route/);
+  assert.match(appSource, /suspected_pull/);
+  assert.match(appSource, /level_spike/);
+  assert.match(appSource, /model\.eventCandidates\.map/);
+  assert.match(styles, /\.player-score-p1-audit/);
+  assert.match(styles, /\.player-score-p1-row/);
 });
 
 test("ordinary player report copy hides internal model language", () => {

@@ -8,8 +8,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.net.ConnectException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
@@ -22,6 +24,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -33,6 +36,44 @@ import com.sun.net.httpserver.HttpServer;
 class ReplayJobManagerTest {
     @TempDir
     Path temporaryDirectory;
+
+    @Test
+    void retriesTransientWindowsFileLocksWhenReplacingAnalysisArtifacts() throws Exception {
+        Path source = temporaryDirectory.resolve("summary.json.part");
+        Path target = temporaryDirectory.resolve("summary.json");
+        Files.writeString(source, "new", StandardCharsets.UTF_8);
+        Files.writeString(target, "old", StandardCharsets.UTF_8);
+        AtomicInteger calls = new AtomicInteger();
+
+        ReplayJobManager.moveReplacing(source, target, (from, to, options) -> {
+            if (calls.getAndIncrement() < 2) {
+                throw new AccessDeniedException(from.toString(), to.toString(), "fixture lock");
+            }
+            Files.move(from, to, options);
+        }, 4, 0);
+
+        assertEquals(3, calls.get());
+        assertEquals("new", Files.readString(target, StandardCharsets.UTF_8));
+        assertFalse(Files.exists(source));
+    }
+
+    @Test
+    void doesNotRetryNonFilesystemMoveFailures() throws Exception {
+        Path source = temporaryDirectory.resolve("summary.json.part");
+        Path target = temporaryDirectory.resolve("summary.json");
+        Files.writeString(source, "new", StandardCharsets.UTF_8);
+        AtomicInteger calls = new AtomicInteger();
+
+        IOException error = assertThrows(IOException.class,
+                () -> ReplayJobManager.moveReplacing(source, target, (from, to, options) -> {
+                    calls.incrementAndGet();
+                    throw new IOException("fixture permanent failure");
+                }, 6, 0));
+
+        assertEquals("fixture permanent failure", error.getMessage());
+        assertEquals(1, calls.get());
+        assertTrue(Files.exists(source));
+    }
 
     @Test
     void importsParticipantReplayIntoTheLocalCache() throws Exception {
@@ -337,6 +378,16 @@ class ReplayJobManagerTest {
         JsonObject context = ReplayJobManager.errorContext(error);
         assertEquals(9001L, context.get("declared_match_id").getAsLong());
         assertEquals(9002L, context.get("internal_match_id").getAsLong());
+    }
+
+    @Test
+    void distinguishesParserNetworkPermissionFromGenericParseFailure() {
+        assertEquals("network_access_denied",
+                ReplayJobManager.errorCode(new IOException("Permission denied: getsockopt")));
+        assertEquals("network_unavailable",
+                ReplayJobManager.errorCode(new ConnectException("Connection refused")));
+        assertEquals("parse_failed",
+                ReplayJobManager.errorCode(new IOException("Unrelated parser failure")));
     }
 
     @Test

@@ -112,6 +112,8 @@ public class Parse {
     private final NavigableMap<Integer, Long> gameTimeByDemoTick = new TreeMap<>();
     private final SchemaProbe schemaProbe = new SchemaProbe();
     private final boolean unitEventsEnabled = envFlag("DOTA_LENS_UNIT_EVENTS", true);
+    private final Set<Integer> trackedLaneCreepHandles = new LinkedHashSet<>();
+    private int nextLaneCreepSampleTime;
 
     // Draft stage variable
     boolean[] draftOrderProcessed = new boolean[24];
@@ -539,6 +541,9 @@ public class Parse {
             output(probeEntry);
         }
         emitTrackedUnit(ctx, e, "unit_enter", null);
+        if ("lane_creep".equals(SchemaProbe.classifyEntity(entityName))) {
+            trackedLaneCreepHandles.add(e.getHandle());
+        }
 
         if (entityName.equals("CDOTAWearableItem")) {
             Integer accountId = getEntityProperty(e, "m_iAccountID", null);
@@ -586,6 +591,7 @@ public class Parse {
     @OnEntityLeft
     public void onEntityLeft(Context ctx, Entity entity) {
         emitTrackedUnit(ctx, entity, "unit_left", null);
+        if (entity != null) trackedLaneCreepHandles.remove(entity.getHandle());
     }
 
     private void emitTrackedUnit(Context ctx, Entity entity, String eventType, String property) {
@@ -1033,6 +1039,7 @@ public class Parse {
                     }
                     output(entry);
                 }
+                emitLaneCreepPositionSamples(ctx);
                 nextInterval += INTERVAL;
             }
 
@@ -1050,6 +1057,26 @@ public class Parse {
                 isDotaPlusProcessed = true;
             }
         }
+    }
+
+    private void emitLaneCreepPositionSamples(Context ctx) {
+        if (doBlob || !unitEventsEnabled || time == null || time < 0
+                || time < nextLaneCreepSampleTime || trackedLaneCreepHandles.isEmpty()) {
+            return;
+        }
+        nextLaneCreepSampleTime = time + (time <= 1200 ? 5 : 15);
+        Entities entities = ctx.getProcessor(Entities.class);
+        List<Integer> missing = new ArrayList<>();
+        for (Integer handle : trackedLaneCreepHandles) {
+            Entity entity = entities.getByHandle(handle);
+            if (entity == null) {
+                missing.add(handle);
+                continue;
+            }
+            Entry sample = buildUnitEntry(ctx, entity, "unit_position", "lane_creep");
+            output(sample);
+        }
+        trackedLaneCreepHandles.removeAll(missing);
     }
 
     private List<Item> getHeroInventory(Context ctx, Entity eHero) {

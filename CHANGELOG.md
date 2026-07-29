@@ -2,13 +2,43 @@
 
 ## Unreleased
 
+No changes yet.
+
+## 0.5.0 - 2026-07-29
+
 ### Added
 
 - Let users choose how many recent matches to load, from 1 to 500, with a persisted default of 20.
+- Add `player-report/4.0` with recomputable overall and dimension scores, atomic evidence, role-specific duties, root-cause merging, and a six-point per-root overall penalty cap.
+- Add `player-report-event-candidates/1.1`, combining combat, deaths, wards, objectives, teleports, purchases, item delivery, lane pressure, rune control, support routes, suspected pulls, and level-spike windows.
+- Add simple and professional reading modes. Simple mode keeps plain-language full-match strengths, problems, facts, advice, maps, and bounded Replay jumps; professional mode expands formulas and technical evidence.
+- Add complete item purchase-to-delivery-to-usable timing, lane meeting and push-depth facts, rune value, support-away evidence, suspected pulls, and level-spike usage.
+- Add a first-launch usage guide with operation screenshots and an in-app update center.
+- Add a 15-Replay, 150-player protocol matrix and 15 reviewed five-position Golden reports.
 
 ### Changed
 
-- Forward the selected match count through Parser API `1.6.1` to OpenDota instead of fixing every request at 20 matches.
+- Forward the selected match count through Parser API `1.7.0` to OpenDota instead of fixing every request at 20 matches.
+- Select all evidence-gated important moments instead of fixed phase stories, and give every actionable conclusion a time, map position, entity, module, and bounded playback range.
+- Make the usage guide the default page, remove the standalone full-timeline and data-coverage tabs, and keep secondary metrics collapsed in simple mode.
+- Keep local Replay analysis available when OpenDota is offline or a high-MMR public match has no downloadable Replay.
+- Persist task history and reading preferences across application restarts.
+
+### Fixed
+
+- Prevent the same outcome or root cause from being scored twice across dimensions.
+- Keep item-delivery and purchase jump identities distinct while selecting the localized delivery fact as the primary story.
+- Synchronize the configurable match-count copy across the match list and account settings.
+- Bind a player before EXE layout capture so covered analysis pages cannot produce false-positive screenshots.
+- Keep all three vision filters readable at the 1024-pixel desktop viewport.
+- Preserve localized hero portraits and reject broken hero images in desktop layout smoke tests.
+
+### Known limitations
+
+- The Windows installer is not code-signed and may trigger Microsoft Defender SmartScreen.
+- Electron still uses its default application icon.
+- The main entry and chart runtime bundles remain larger than 500 kB after minification.
+- Replay parsing can peak near 2 GB of parser memory on large matches.
 
 ## 0.4.5 - 2026-07-25
 

@@ -39,3 +39,9 @@ test("match count can be edited from the list and account settings", () => {
   assert.match(app, /playerMatchesPath\(normalized,\s*matchLimit\)/);
   assert.match(app, /setMatchLimit\(/);
 });
+
+test("empty match guidance follows the selected match count", () => {
+  assert.match(app, /data-match-limit-copy/);
+  assert.match(app, /querySelectorAll\("\[data-match-limit-copy\]"\)/);
+  assert.match(app, /最近最多 \$\{state\.matchLimit\} 场比赛/);
+});

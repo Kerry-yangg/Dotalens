@@ -72,8 +72,8 @@ class PlayerReportNarrativeV3Test {
 
         JsonObject winningReport = bySlot.getAsJsonObject("0").getAsJsonObject("report");
         JsonObject losingReport = bySlot.getAsJsonObject("5").getAsJsonObject("report");
-        JsonObject winningStory = findStory(winningReport, "story:lane");
-        JsonObject losingStory = findStory(losingReport, "story:lane");
+        JsonObject winningStory = findStoryByEventType(winningReport, "lane");
+        JsonObject losingStory = findStoryByEventType(losingReport, "lane");
 
         assertNotNull(winningStory);
         assertNotNull(losingStory);
@@ -713,6 +713,17 @@ class PlayerReportNarrativeV3Test {
         for (JsonElement element : report.getAsJsonArray("story_nodes")) {
             JsonObject story = element.getAsJsonObject();
             if (id.equals(story.get("id").getAsString())) return story;
+        }
+        return null;
+    }
+
+    private static JsonObject findStoryByEventType(JsonObject report, String eventType) {
+        for (JsonElement element : report.getAsJsonArray("story_nodes")) {
+            JsonObject story = element.getAsJsonObject();
+            JsonArray types = story.getAsJsonArray("related_event_types");
+            if (types != null && types.contains(new com.google.gson.JsonPrimitive(eventType))) {
+                return story;
+            }
         }
         return null;
     }

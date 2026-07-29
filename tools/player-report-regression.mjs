@@ -21,6 +21,7 @@ import { gunzipSync } from "node:zlib";
 
 const REPORT_MODEL = "player-report/4.0";
 const ATOMIC_MODEL = "player-report-base-components/1.0";
+const EVENT_CANDIDATE_MODEL = "player-report-event-candidates/1.1";
 const VALIDATION_SCHEMA = "player-report-regression-validation/1.0";
 const GOLDEN_SCHEMA = "player-report-golden/1.0";
 const SCORE_TOLERANCE = 0.05;
@@ -657,9 +658,113 @@ function auditServerDeclarations({
   }
 }
 
+function appendEventCandidateDiagnostics(report, slotErrors, required) {
+  const model = String(report?.event_candidate_model || "");
+  if (!model) {
+    if (required) slotErrors.push("missing_event_candidate_model");
+    return;
+  }
+  if (model !== EVENT_CANDIDATE_MODEL) {
+    slotErrors.push(`event_candidate_model=${model}`);
+    return;
+  }
+  const candidates = Array.isArray(report?.event_candidates)
+    ? report.event_candidates : null;
+  const importantEvents = Array.isArray(report?.important_events)
+    ? report.important_events : null;
+  const stories = Array.isArray(report?.story_nodes) ? report.story_nodes : null;
+  if (!candidates) slotErrors.push("event_candidates_missing");
+  if (!importantEvents) slotErrors.push("important_events_missing");
+  if (!stories) slotErrors.push("event_story_nodes_missing");
+  if (!candidates || !importantEvents || !stories) return;
+
+  const candidateIds = new Set();
+  const selectedDedupeKeys = new Set();
+  let selectedCount = 0;
+  for (const candidate of candidates) {
+    const id = String(candidate?.id || "");
+    if (!id) slotErrors.push("event_candidate_id_missing");
+    else if (candidateIds.has(id)) slotErrors.push(`event_candidate_id_duplicate=${id}`);
+    else candidateIds.add(id);
+    if (candidate?.selected !== true) continue;
+    selectedCount += 1;
+    const dedupeKey = String(candidate?.dedupe_key || "");
+    if (!dedupeKey) slotErrors.push(`event_candidate_dedupe_missing=${id}`);
+    else if (selectedDedupeKeys.has(dedupeKey)) {
+      slotErrors.push(`event_candidate_selected_duplicate=${dedupeKey}`);
+    } else selectedDedupeKeys.add(dedupeKey);
+  }
+
+  const momentIds = new Set();
+  const momentDedupeKeys = new Set();
+  for (const event of importantEvents) {
+    const id = String(event?.id || "");
+    const dedupeKey = String(event?.dedupe_key || "");
+    if (!id) slotErrors.push("important_event_id_missing");
+    else if (momentIds.has(id)) slotErrors.push(`important_event_id_duplicate=${id}`);
+    else momentIds.add(id);
+    if (!dedupeKey) slotErrors.push(`important_event_dedupe_missing=${id}`);
+    else if (momentDedupeKeys.has(dedupeKey)) {
+      slotErrors.push(`important_event_dedupe_duplicate=${dedupeKey}`);
+    } else momentDedupeKeys.add(dedupeKey);
+
+    const importance = finiteJsonNumber(event?.importance_score);
+    if (importance == null || importance < 60 || importance > 100) {
+      slotErrors.push(
+        `important_event_score_invalid=${id}:${displayValue(event?.importance_score)}`,
+      );
+    }
+    const relatedTypes = uniqueSortedStrings(event?.related_event_types);
+    if (!relatedTypes.length) slotErrors.push(`important_event_types_missing=${id}`);
+    const sourceIds = uniqueSortedStrings(event?.source_candidate_ids);
+    if (!sourceIds.length) slotErrors.push(`important_event_sources_missing=${id}`);
+    for (const sourceId of sourceIds) {
+      if (!candidateIds.has(sourceId)) {
+        slotErrors.push(`important_event_source_unknown=${id}:${sourceId}`);
+      }
+    }
+
+    const jump = event?.jump_target;
+    const entityType = String(jump?.entity_type || "");
+    const entityId = String(jump?.entity_id || "");
+    const start = finiteJsonNumber(jump?.range_start);
+    const end = finiteJsonNumber(jump?.range_end);
+    const focus = jump?.map_focus;
+    const region = String(focus?.region || "");
+    const x = finiteJsonNumber(focus?.x);
+    const y = finiteJsonNumber(focus?.y);
+    const coordinates = focus?.coordinate_valid === true
+      && x != null && y != null && x >= 0 && x <= 100 && y >= 0 && y <= 100;
+    const located = coordinates || Boolean(
+      region && !["unknown", "未定位"].includes(region),
+    );
+    if (!entityType || !entityId) slotErrors.push(`important_event_entity_missing=${id}`);
+    if (start == null || end == null || end <= start) {
+      slotErrors.push(`important_event_range_invalid=${id}`);
+    }
+    if (!located) slotErrors.push(`important_event_location_missing=${id}`);
+  }
+  if (selectedCount !== importantEvents.length) {
+    slotErrors.push(
+      `important_event_selection_count=${selectedCount}/${importantEvents.length}`,
+    );
+  }
+  if (stories.length !== importantEvents.length) {
+    slotErrors.push(
+      `important_event_story_count=${stories.length}/${importantEvents.length}`,
+    );
+  }
+  for (const dedupeKey of momentDedupeKeys) {
+    if (!selectedDedupeKeys.has(dedupeKey)) {
+      slotErrors.push(`important_event_without_selected_candidate=${dedupeKey}`);
+    }
+  }
+}
+
 export function validatePlayerReportBundle(players, options = {}) {
   const requireAtomic = options.requireAtomic === true;
   const requireServerAudit = options.requireServerAudit === true;
+  const requireEventPool = options.requireEventPool === true;
   const errors = [];
   const reports = [];
   const positionCounts = { "1": 0, "2": 0, "3": 0, "4": 0, "5": 0 };
@@ -709,6 +814,7 @@ export function validatePlayerReportBundle(players, options = {}) {
       slotErrors.push(`score_card.model=${scoreCard.model}`);
     }
     if (requireAtomic && !atomicModel) slotErrors.push("missing_atomic_component_model");
+    appendEventCandidateDiagnostics(report, slotErrors, requireEventPool);
 
     const slotNumber = Number(slot);
     const reportSlot = report.slot;
@@ -1205,6 +1311,47 @@ function projectMainStrengthId(report, semantic) {
   );
 }
 
+function projectEventCandidateSummary(report) {
+  const candidates = Array.isArray(report?.event_candidates)
+    ? report.event_candidates : [];
+  const typeCounts = {};
+  let selected = 0;
+  for (const candidate of candidates) {
+    const type = String(candidate?.event_type || "unknown");
+    typeCounts[type] = (typeCounts[type] || 0) + 1;
+    if (candidate?.selected === true) selected += 1;
+  }
+  return {
+    total: candidates.length,
+    selected,
+    type_counts: Object.fromEntries(
+      Object.entries(typeCounts).sort(([left], [right]) =>
+        left < right ? -1 : left > right ? 1 : 0),
+    ),
+  };
+}
+
+function projectImportantEvent(event) {
+  const jump = projectJumpTarget(event?.jump_target ?? event?.jumpTarget);
+  return {
+    id: String(event?.id || ""),
+    dedupe_key: String(event?.dedupe_key ?? event?.dedupeKey ?? ""),
+    kind: String(event?.kind || ""),
+    importance_score: projectNumber(
+      event?.importance_score ?? event?.importanceScore,
+    ),
+    time_start: projectNumber(event?.time_start ?? event?.timeStart),
+    time_end: projectNumber(event?.time_end ?? event?.timeEnd),
+    related_event_types: uniqueSortedStrings(
+      event?.related_event_types ?? event?.relatedEventTypes,
+    ),
+    source_candidate_ids: uniqueSortedStrings(
+      event?.source_candidate_ids ?? event?.sourceCandidateIds,
+    ),
+    jump_target_identity: jumpTargetIdentity(jump),
+  };
+}
+
 export function projectGoldenReport({ matchId, slot, report }) {
   const scoreCard = isRecord(report?.score_card) ? report.score_card : {};
   const dimensions = Array.isArray(scoreCard.dimensions)
@@ -1230,6 +1377,10 @@ export function projectGoldenReport({ matchId, slot, report }) {
     .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
     .map(([, target]) => target);
   const semantic = projectSemantic(report);
+  const importantEvents = (Array.isArray(report?.important_events)
+    ? report.important_events : [])
+    .map(projectImportantEvent)
+    .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
 
   return {
     schema: GOLDEN_SCHEMA,
@@ -1253,6 +1404,9 @@ export function projectGoldenReport({ matchId, slot, report }) {
       training_target_id: semantic.training_target_id,
       root_cause_ids: rootCauseIds,
     },
+    event_candidate_model: String(report?.event_candidate_model || ""),
+    event_candidate_summary: projectEventCandidateSummary(report),
+    important_events: importantEvents,
     jump_targets: jumpTargets,
   };
 }
@@ -2052,6 +2206,67 @@ export function compareGolden(expected, actual, policy = {}) {
     }
   }
 
+  if (recordChange(
+    changes,
+    "event_candidate_model",
+    expected?.event_candidate_model || "",
+    actual?.event_candidate_model || "",
+  )) {
+    addHard(
+      "event_candidate_model",
+      expected?.event_candidate_model || "",
+      actual?.event_candidate_model || "",
+      "event_candidate_protocol_changed",
+    );
+  }
+  if (recordChange(
+    changes,
+    "event_candidate_summary",
+    expected?.event_candidate_summary || { total: 0, selected: 0, type_counts: {} },
+    actual?.event_candidate_summary || { total: 0, selected: 0, type_counts: {} },
+  )) {
+    addApproval(
+      "event_candidate_summary",
+      expected?.event_candidate_summary || { total: 0, selected: 0, type_counts: {} },
+      actual?.event_candidate_summary || { total: 0, selected: 0, type_counts: {} },
+      "event_candidate_coverage_changed",
+    );
+  }
+  const expectedEvents = indexByKey(
+    (Array.isArray(expected?.important_events) ? expected.important_events : [])
+      .map((event) => ({ ...event, key: String(event?.id || "") })),
+  );
+  const actualEvents = indexByKey(
+    (Array.isArray(actual?.important_events) ? actual.important_events : [])
+      .map((event) => ({ ...event, key: String(event?.id || "") })),
+  );
+  const expectedEventIds = [...expectedEvents.keys()].sort();
+  const actualEventIds = [...actualEvents.keys()].sort();
+  if (recordChange(
+    changes,
+    "important_events.ids",
+    expectedEventIds,
+    actualEventIds,
+  )) {
+    addApproval(
+      "important_events.ids",
+      expectedEventIds,
+      actualEventIds,
+      "important_event_selection_changed",
+    );
+  }
+  for (const id of expectedEventIds) {
+    if (!actualEvents.has(id)) continue;
+    const expectedEvent = expectedEvents.get(id);
+    const actualEvent = actualEvents.get(id);
+    delete expectedEvent.key;
+    delete actualEvent.key;
+    const path = `important_events.${id}`;
+    if (recordChange(changes, path, expectedEvent, actualEvent)) {
+      addApproval(path, expectedEvent, actualEvent, "important_event_payload_changed");
+    }
+  }
+
   const expectedJump = jumpTargetIndex(expected?.jump_targets);
   const actualJump = jumpTargetIndex(actual?.jump_targets);
   for (const identity of expectedJump.duplicates) {
@@ -2394,6 +2609,7 @@ function reportForSubject(context, row) {
   const validation = validatePlayerReportBundle(analysis.players, {
     requireAtomic: true,
     requireServerAudit: true,
+    requireEventPool: true,
   });
   if (!validation.valid) {
     throw new Error(
@@ -2657,6 +2873,7 @@ function candidatesMarkdown(context) {
     const validation = validatePlayerReportBundle(analysis.players, {
       requireAtomic: true,
       requireServerAudit: true,
+      requireEventPool: true,
     });
     if (!validation.valid) {
       throw new Error(
@@ -2851,6 +3068,7 @@ export function runRegressionCli(argv = process.argv.slice(2), options = {}) {
       const result = validatePlayerReportBundle(analysis.players, {
         requireAtomic: true,
         requireServerAudit: true,
+        requireEventPool: true,
       });
       console.log(JSON.stringify(result, null, 2));
       return result.valid ? 0 : 1;

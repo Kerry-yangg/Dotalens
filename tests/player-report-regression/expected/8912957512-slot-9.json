@@ -215,6 +215,22 @@
         {
           "key": "",
           "dimension": "map_tempo",
+          "score_path": "context_only",
+          "applied_delta": 0,
+          "dedupe_key": "map_tempo|consequence:consequence:death:9:1164,consequence:item-delay:9:1164",
+          "dedupe_status": "not_applicable"
+        },
+        {
+          "key": "",
+          "dimension": "map_tempo",
+          "score_path": "context_only",
+          "applied_delta": 0,
+          "dedupe_key": "map_tempo|consequence:consequence:death:9:1289,consequence:item-delay:9:1289",
+          "dedupe_status": "not_applicable"
+        },
+        {
+          "key": "",
+          "dimension": "map_tempo",
           "score_path": "modifier",
           "applied_delta": -2.46,
           "dedupe_key": "map_tempo|consequence:consequence:objective:9:2721",
@@ -372,6 +388,22 @@
           "applied_delta": 0,
           "dedupe_key": "survival_risk|consequence:consequence:death:9:1080,consequence:item-delay:9:1080,consequence:objective:9:1100,consequence:vision-gap:9:fight-27",
           "dedupe_status": "not_applicable"
+        },
+        {
+          "key": "",
+          "dimension": "survival_risk",
+          "score_path": "context_only",
+          "applied_delta": 0,
+          "dedupe_key": "survival_risk|consequence:consequence:death:9:1164,consequence:item-delay:9:1164",
+          "dedupe_status": "not_applicable"
+        },
+        {
+          "key": "",
+          "dimension": "survival_risk",
+          "score_path": "context_only",
+          "applied_delta": 0,
+          "dedupe_key": "survival_risk|consequence:consequence:death:9:1289,consequence:item-delay:9:1289",
+          "dedupe_status": "not_applicable"
         }
       ]
     },
@@ -488,6 +520,13 @@
   ],
   "semantic": {
     "strength_ids": [
+      "event-insight:item_delivery:delivery-purchase-9-1382-manta-164658",
+      "event-insight:item_delivery:delivery-purchase-9-1545-blink-183756",
+      "event-insight:item_delivery:delivery-purchase-9-2336-butterfly-275291",
+      "event-insight:item_delivery:delivery-purchase-9-2831-sphere-334135",
+      "event-insight:item_delivery:delivery-purchase-9-850-bfury-103428",
+      "event-insight:teleport:teleport-9-955-0",
+      "insight:fight-56:9",
       "insight:lane-core-9",
       "insight:pattern:on-time-follow-up:9:15"
     ],
@@ -499,10 +538,535 @@
       "combat:fight-27:9",
       "combat:fight-56:9",
       "farm:diagnostic-9-11",
-      "lane:9:600"
+      "fight:fight-24",
+      "fight:fight-31",
+      "fight:fight-32",
+      "lane:9:600",
+      "level-spike:level-spike-9-181-3",
+      "purchase:purchase-9-1382-manta-164658",
+      "purchase:purchase-9-1545-blink-183756",
+      "purchase:purchase-9-2336-butterfly-275291",
+      "purchase:purchase-9-2831-sphere-334135",
+      "purchase:purchase-9-850-bfury-103428"
     ]
   },
+  "event_candidate_model": "player-report-event-candidates/1.1",
+  "event_candidate_summary": {
+    "total": 93,
+    "selected": 18,
+    "type_counts": {
+      "combat": 4,
+      "death": 6,
+      "farm": 1,
+      "item_delivery": 5,
+      "lane": 1,
+      "lane_pressure": 21,
+      "level_spike": 4,
+      "objective": 28,
+      "purchase": 5,
+      "rune_control": 2,
+      "teleport": 16
+    }
+  },
+  "important_events": [
+    {
+      "id": "moment:fight:fight-1",
+      "dedupe_key": "fight:fight-1",
+      "kind": "strength",
+      "importance_score": 78,
+      "time_start": 5,
+      "time_end": 159,
+      "related_event_types": [
+        "combat"
+      ],
+      "source_candidate_ids": [
+        "candidate:insight:insight:pattern:on-time-follow-up:9:15"
+      ],
+      "jump_target_identity": "combat|fight|fight-1|9|15"
+    },
+    {
+      "id": "moment:fight:fight-24",
+      "dedupe_key": "fight:fight-24",
+      "kind": "strength",
+      "importance_score": 62,
+      "time_start": 955,
+      "time_end": 955,
+      "related_event_types": [
+        "teleport"
+      ],
+      "source_candidate_ids": [
+        "candidate:teleport:teleport-9-955-0"
+      ],
+      "jump_target_identity": "combat|fight|fight-24|9|941"
+    },
+    {
+      "id": "moment:fight:fight-27",
+      "dedupe_key": "fight:fight-27",
+      "kind": "improvement",
+      "importance_score": 81,
+      "time_start": 1052,
+      "time_end": 1085,
+      "related_event_types": [
+        "combat"
+      ],
+      "source_candidate_ids": [
+        "candidate:insight:advice:fight-27:9"
+      ],
+      "jump_target_identity": "combat|fight|fight-27|9|1052"
+    },
+    {
+      "id": "moment:fight:fight-31",
+      "dedupe_key": "fight:fight-31",
+      "kind": "improvement",
+      "importance_score": 64,
+      "time_start": 1164,
+      "time_end": 1164,
+      "related_event_types": [
+        "death"
+      ],
+      "source_candidate_ids": [
+        "candidate:death:timeline-3199"
+      ],
+      "jump_target_identity": "combat|fight|fight-31|9|1138"
+    },
+    {
+      "id": "moment:fight:fight-32",
+      "dedupe_key": "fight:fight-32",
+      "kind": "improvement",
+      "importance_score": 64,
+      "time_start": 1289,
+      "time_end": 1317,
+      "related_event_types": [
+        "death",
+        "teleport"
+      ],
+      "source_candidate_ids": [
+        "candidate:death:timeline-3553",
+        "candidate:teleport:teleport-9-1317-3"
+      ],
+      "jump_target_identity": "combat|fight|fight-32|9|1262"
+    },
+    {
+      "id": "moment:fight:fight-56",
+      "dedupe_key": "fight:fight-56",
+      "kind": "strength",
+      "importance_score": 78,
+      "time_start": 2046,
+      "time_end": 2072,
+      "related_event_types": [
+        "combat",
+        "teleport"
+      ],
+      "source_candidate_ids": [
+        "candidate:insight:insight:fight-56:9",
+        "candidate:teleport:teleport-9-2062-8"
+      ],
+      "jump_target_identity": "combat|fight|fight-56|9|2046"
+    },
+    {
+      "id": "moment:fight:fight-67",
+      "dedupe_key": "fight:fight-67",
+      "kind": "improvement",
+      "importance_score": 83,
+      "time_start": 2608,
+      "time_end": 2792,
+      "related_event_types": [
+        "combat"
+      ],
+      "source_candidate_ids": [
+        "candidate:insight:insight:pattern:critical_late_arrival:9:2618"
+      ],
+      "jump_target_identity": "combat|fight|fight-67|9|2618"
+    },
+    {
+      "id": "moment:lane:lane:9:600",
+      "dedupe_key": "lane:lane:9:600",
+      "kind": "strength",
+      "importance_score": 78,
+      "time_start": 600,
+      "time_end": 600,
+      "related_event_types": [
+        "lane"
+      ],
+      "source_candidate_ids": [
+        "candidate:insight:insight:lane-core-9"
+      ],
+      "jump_target_identity": "development|lane_checkpoint|lane:9:600|9|600"
+    },
+    {
+      "id": "moment:level-spike:level-spike-9-181-3",
+      "dedupe_key": "level-spike:level-spike-9-181-3",
+      "kind": "improvement",
+      "importance_score": 73,
+      "time_start": 181,
+      "time_end": 226,
+      "related_event_types": [
+        "level_spike"
+      ],
+      "source_candidate_ids": [
+        "candidate:level-spike:level-spike-9-181-3"
+      ],
+      "jump_target_identity": "development|level_spike|level-spike-9-181-3|9|181"
+    },
+    {
+      "id": "moment:objective:highground:dire:2539",
+      "dedupe_key": "objective:highground:dire:2539",
+      "kind": "context",
+      "importance_score": 88,
+      "time_start": 2539,
+      "time_end": 2561,
+      "related_event_types": [
+        "objective"
+      ],
+      "source_candidate_ids": [
+        "candidate:objective:objective-13",
+        "candidate:objective:objective-14",
+        "candidate:objective:objective-15"
+      ],
+      "jump_target_identity": "map|objective|objective-14|9|2555"
+    },
+    {
+      "id": "moment:objective:highground:dire:2721",
+      "dedupe_key": "objective:highground:dire:2721",
+      "kind": "context",
+      "importance_score": 96,
+      "time_start": 2721,
+      "time_end": 2887,
+      "related_event_types": [
+        "objective"
+      ],
+      "source_candidate_ids": [
+        "candidate:objective:objective-18",
+        "candidate:objective:objective-19",
+        "candidate:objective:objective-20",
+        "candidate:objective:objective-23",
+        "candidate:objective:objective-24",
+        "candidate:objective:objective-25",
+        "candidate:objective:objective-26",
+        "candidate:objective:objective-27",
+        "candidate:objective:objective-28"
+      ],
+      "jump_target_identity": "map|objective|objective-28|9|2887"
+    },
+    {
+      "id": "moment:objective:roshan:16",
+      "dedupe_key": "objective:roshan:16",
+      "kind": "context",
+      "importance_score": 88,
+      "time_start": 1926,
+      "time_end": 1926,
+      "related_event_types": [
+        "objective"
+      ],
+      "source_candidate_ids": [
+        "candidate:objective:objective-10",
+        "candidate:objective:objective-9"
+      ],
+      "jump_target_identity": "map|objective|objective-10|9|1926"
+    },
+    {
+      "id": "moment:objective:roshan:21",
+      "dedupe_key": "objective:roshan:21",
+      "kind": "context",
+      "importance_score": 88,
+      "time_start": 2611,
+      "time_end": 2613,
+      "related_event_types": [
+        "objective"
+      ],
+      "source_candidate_ids": [
+        "candidate:objective:objective-16",
+        "candidate:objective:objective-17"
+      ],
+      "jump_target_identity": "map|objective|objective-16|9|2611"
+    },
+    {
+      "id": "moment:purchase:purchase-9-1382-manta-164658",
+      "dedupe_key": "purchase:purchase-9-1382-manta-164658",
+      "kind": "strength",
+      "importance_score": 68,
+      "time_start": 1382,
+      "time_end": 1382,
+      "related_event_types": [
+        "item_delivery",
+        "purchase"
+      ],
+      "source_candidate_ids": [
+        "candidate:item-delivery:delivery-purchase-9-1382-manta-164658",
+        "candidate:purchase:purchase-9-1382-manta-164658"
+      ],
+      "jump_target_identity": "build|item_delivery|purchase-9-1382-manta-164658|9|1382"
+    },
+    {
+      "id": "moment:purchase:purchase-9-1545-blink-183756",
+      "dedupe_key": "purchase:purchase-9-1545-blink-183756",
+      "kind": "strength",
+      "importance_score": 76,
+      "time_start": 1545,
+      "time_end": 1562,
+      "related_event_types": [
+        "item_delivery",
+        "purchase"
+      ],
+      "source_candidate_ids": [
+        "candidate:item-delivery:delivery-purchase-9-1545-blink-183756",
+        "candidate:purchase:purchase-9-1545-blink-183756"
+      ],
+      "jump_target_identity": "build|item_delivery|purchase-9-1545-blink-183756|9|1562"
+    },
+    {
+      "id": "moment:purchase:purchase-9-2336-butterfly-275291",
+      "dedupe_key": "purchase:purchase-9-2336-butterfly-275291",
+      "kind": "strength",
+      "importance_score": 68,
+      "time_start": 2336,
+      "time_end": 2336,
+      "related_event_types": [
+        "item_delivery",
+        "purchase"
+      ],
+      "source_candidate_ids": [
+        "candidate:item-delivery:delivery-purchase-9-2336-butterfly-275291",
+        "candidate:purchase:purchase-9-2336-butterfly-275291"
+      ],
+      "jump_target_identity": "build|item_delivery|purchase-9-2336-butterfly-275291|9|2336"
+    },
+    {
+      "id": "moment:purchase:purchase-9-2831-sphere-334135",
+      "dedupe_key": "purchase:purchase-9-2831-sphere-334135",
+      "kind": "strength",
+      "importance_score": 68,
+      "time_start": 2831,
+      "time_end": 2834,
+      "related_event_types": [
+        "item_delivery",
+        "purchase"
+      ],
+      "source_candidate_ids": [
+        "candidate:item-delivery:delivery-purchase-9-2831-sphere-334135",
+        "candidate:purchase:purchase-9-2831-sphere-334135"
+      ],
+      "jump_target_identity": "build|item_delivery|purchase-9-2831-sphere-334135|9|2834"
+    },
+    {
+      "id": "moment:purchase:purchase-9-850-bfury-103428",
+      "dedupe_key": "purchase:purchase-9-850-bfury-103428",
+      "kind": "strength",
+      "importance_score": 68,
+      "time_start": 850,
+      "time_end": 850,
+      "related_event_types": [
+        "item_delivery",
+        "purchase"
+      ],
+      "source_candidate_ids": [
+        "candidate:item-delivery:delivery-purchase-9-850-bfury-103428",
+        "candidate:purchase:purchase-9-850-bfury-103428"
+      ],
+      "jump_target_identity": "build|item_delivery|purchase-9-850-bfury-103428|9|850"
+    }
+  ],
   "jump_targets": [
+    {
+      "id": "",
+      "module": "build",
+      "entity_type": "item_delivery",
+      "entity_id": "purchase-9-1382-manta-164658",
+      "player_slot": 9,
+      "time": 1382,
+      "range_start": 1372,
+      "range_end": 1392,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 86.97000122070312,
+        "y": 58.38999938964844,
+        "region": "bottom_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "entity_cell",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "build",
+      "entity_type": "item_delivery",
+      "entity_id": "purchase-9-1545-blink-183756",
+      "player_slot": 9,
+      "time": 1562,
+      "range_start": 1535,
+      "range_end": 1572,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 43.2599983215332,
+        "y": 11.4399995803833,
+        "region": "top_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "entity_cell",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "build",
+      "entity_type": "item_delivery",
+      "entity_id": "purchase-9-2336-butterfly-275291",
+      "player_slot": 9,
+      "time": 2336,
+      "range_start": 2326,
+      "range_end": 2346,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 42.900001525878906,
+        "y": 27.479999542236328,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "entity_cell",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "build",
+      "entity_type": "item_delivery",
+      "entity_id": "purchase-9-2831-sphere-334135",
+      "player_slot": 9,
+      "time": 2834,
+      "range_start": 2821,
+      "range_end": 2844,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 89.08000183105469,
+        "y": 19.420000076293945,
+        "region": "dire_base",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "entity_cell",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "build",
+      "entity_type": "item_delivery",
+      "entity_id": "purchase-9-850-bfury-103428",
+      "player_slot": 9,
+      "time": 850,
+      "range_start": 840,
+      "range_end": 860,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 32.2599983215332,
+        "y": 32.150001525878906,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "entity_cell",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "build",
+      "entity_type": "purchase",
+      "entity_id": "purchase-9-1382-manta-164658",
+      "player_slot": 9,
+      "time": 1382,
+      "range_start": 1362,
+      "range_end": 1402,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 86.97000122070312,
+        "y": 58.38999938964844,
+        "region": "bottom_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "player_snapshot",
+        "coordinate_version": "snapshot-columns/1.1",
+        "location_confidence": 82
+      }
+    },
+    {
+      "id": "",
+      "module": "build",
+      "entity_type": "purchase",
+      "entity_id": "purchase-9-1545-blink-183756",
+      "player_slot": 9,
+      "time": 1545,
+      "range_start": 1525,
+      "range_end": 1565,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 65.4000015258789,
+        "y": 32.150001525878906,
+        "region": "mid_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "player_snapshot",
+        "coordinate_version": "snapshot-columns/1.1",
+        "location_confidence": 82
+      }
+    },
+    {
+      "id": "",
+      "module": "build",
+      "entity_type": "purchase",
+      "entity_id": "purchase-9-2336-butterfly-275291",
+      "player_slot": 9,
+      "time": 2336,
+      "range_start": 2316,
+      "range_end": 2356,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 42.900001525878906,
+        "y": 27.479999542236328,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "player_snapshot",
+        "coordinate_version": "snapshot-columns/1.1",
+        "location_confidence": 82
+      }
+    },
+    {
+      "id": "",
+      "module": "build",
+      "entity_type": "purchase",
+      "entity_id": "purchase-9-2831-sphere-334135",
+      "player_slot": 9,
+      "time": 2831,
+      "range_start": 2811,
+      "range_end": 2851,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 89.08000183105469,
+        "y": 19.420000076293945,
+        "region": "dire_base",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "player_snapshot",
+        "coordinate_version": "snapshot-columns/1.1",
+        "location_confidence": 82
+      }
+    },
+    {
+      "id": "",
+      "module": "build",
+      "entity_type": "purchase",
+      "entity_id": "purchase-9-850-bfury-103428",
+      "player_slot": 9,
+      "time": 850,
+      "range_start": 830,
+      "range_end": 870,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 32.2599983215332,
+        "y": 32.150001525878906,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "player_snapshot",
+        "coordinate_version": "snapshot-columns/1.1",
+        "location_confidence": 82
+      }
+    },
     {
       "id": "",
       "module": "combat",
@@ -627,6 +1191,26 @@
       "id": "",
       "module": "combat",
       "entity_type": "fight",
+      "entity_id": "fight-24",
+      "player_slot": 9,
+      "time": 941,
+      "range_start": 931,
+      "range_end": 978,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 56.41999816894531,
+        "y": 57.29999923706055,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "map_percent",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": 96
+      }
+    },
+    {
+      "id": "",
+      "module": "combat",
+      "entity_type": "fight",
       "entity_id": "fight-27",
       "player_slot": 9,
       "time": 1052,
@@ -641,6 +1225,26 @@
         "coordinate_source": "map_percent",
         "coordinate_version": "dota-map-coordinates/2.0",
         "location_confidence": 96
+      }
+    },
+    {
+      "id": "",
+      "module": "combat",
+      "entity_type": "fight",
+      "entity_id": "fight-28",
+      "player_slot": 9,
+      "time": 1063,
+      "range_start": 1053,
+      "range_end": 1095,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 51.689998626708984,
+        "y": 89.55000305175781,
+        "region": "bottom_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "map_percent",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": 86
       }
     },
     {
@@ -677,6 +1281,46 @@
         "x": 85,
         "y": 74.41000366210938,
         "region": "bottom_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "map_percent",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": 96
+      }
+    },
+    {
+      "id": "",
+      "module": "combat",
+      "entity_type": "fight",
+      "entity_id": "fight-30",
+      "player_slot": 9,
+      "time": 1118,
+      "range_start": 1108,
+      "range_end": 1138,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 48.209999084472656,
+        "y": 70.16000366210938,
+        "region": "radiant_jungle",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "map_percent",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": 90
+      }
+    },
+    {
+      "id": "",
+      "module": "combat",
+      "entity_type": "fight",
+      "entity_id": "fight-31",
+      "player_slot": 9,
+      "time": 1138,
+      "range_start": 1128,
+      "range_end": 1170,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 26.59000015258789,
+        "y": 6.829999923706055,
+        "region": "top_lane",
         "coordinate_space": "map_percent",
         "coordinate_source": "map_percent",
         "coordinate_version": "dota-map-coordinates/2.0",
@@ -747,6 +1391,26 @@
       "id": "",
       "module": "combat",
       "entity_type": "fight",
+      "entity_id": "fight-45",
+      "player_slot": 9,
+      "time": 1696,
+      "range_start": 1686,
+      "range_end": 1713,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 91.9800033569336,
+        "y": 13.829999923706055,
+        "region": "dire_base",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "map_percent",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": 96
+      }
+    },
+    {
+      "id": "",
+      "module": "combat",
+      "entity_type": "fight",
       "entity_id": "fight-46",
       "player_slot": 9,
       "time": 1816,
@@ -777,6 +1441,26 @@
         "x": 55.08000183105469,
         "y": 34.13999938964844,
         "region": "dire_jungle",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "map_percent",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": 96
+      }
+    },
+    {
+      "id": "",
+      "module": "combat",
+      "entity_type": "fight",
+      "entity_id": "fight-54",
+      "player_slot": 9,
+      "time": 1945,
+      "range_start": 1935,
+      "range_end": 1960,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 49.689998626708984,
+        "y": 59.40999984741211,
+        "region": "mid_lane",
         "coordinate_space": "map_percent",
         "coordinate_source": "map_percent",
         "coordinate_version": "dota-map-coordinates/2.0",
@@ -867,6 +1551,26 @@
       "id": "",
       "module": "combat",
       "entity_type": "fight",
+      "entity_id": "fight-60",
+      "player_slot": 9,
+      "time": 2231,
+      "range_start": 2221,
+      "range_end": 2265,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 94.55999755859375,
+        "y": 12.770000457763672,
+        "region": "dire_base",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "map_percent",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": 96
+      }
+    },
+    {
+      "id": "",
+      "module": "combat",
+      "entity_type": "fight",
       "entity_id": "fight-61",
       "player_slot": 9,
       "time": 2330,
@@ -901,6 +1605,26 @@
         "coordinate_source": "map_percent",
         "coordinate_version": "dota-map-coordinates/2.0",
         "location_confidence": 91
+      }
+    },
+    {
+      "id": "",
+      "module": "combat",
+      "entity_type": "fight",
+      "entity_id": "fight-63",
+      "player_slot": 9,
+      "time": 2401,
+      "range_start": 2391,
+      "range_end": 2442,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 54.33000183105469,
+        "y": 23.15999984741211,
+        "region": "dire_jungle",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "map_percent",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": 84
       }
     },
     {
@@ -967,6 +1691,26 @@
       "id": "",
       "module": "combat",
       "entity_type": "fight",
+      "entity_id": "fight-70",
+      "player_slot": 9,
+      "time": 2810,
+      "range_start": 2800,
+      "range_end": 2839,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 72.54000091552734,
+        "y": 52.54999923706055,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "map_percent",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": 96
+      }
+    },
+    {
+      "id": "",
+      "module": "combat",
+      "entity_type": "fight",
       "entity_id": "fight-71",
       "player_slot": 9,
       "time": 2816,
@@ -981,6 +1725,26 @@
         "coordinate_source": "map_percent",
         "coordinate_version": "dota-map-coordinates/2.0",
         "location_confidence": 95
+      }
+    },
+    {
+      "id": "",
+      "module": "combat",
+      "entity_type": "fight",
+      "entity_id": "fight-72",
+      "player_slot": 9,
+      "time": 2826,
+      "range_start": 2816,
+      "range_end": 2839,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 64.2300033569336,
+        "y": 13.119999885559082,
+        "region": "top_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "map_percent",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": 96
       }
     },
     {
@@ -1005,23 +1769,423 @@
     },
     {
       "id": "",
-      "module": "combat",
-      "entity_type": "",
-      "entity_id": "",
+      "module": "development",
+      "entity_type": "lane_checkpoint",
+      "entity_id": "lane-space-top-52",
       "player_slot": 9,
-      "time": 1262,
-      "range_start": 1262,
-      "range_end": 1262
+      "time": 1622,
+      "range_start": 1607,
+      "range_end": 1642,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 23.8700008392334,
+        "y": 14.550000190734863,
+        "region": "top_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "observed_lane_creep_centroid",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
     },
     {
       "id": "",
-      "module": "combat",
-      "entity_type": "",
-      "entity_id": "",
+      "module": "development",
+      "entity_type": "lane_checkpoint",
+      "entity_id": "lane-space-top-65",
       "player_slot": 9,
-      "time": 731,
-      "range_start": 731,
-      "range_end": 731
+      "time": 1955,
+      "range_start": 1940,
+      "range_end": 1975,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 39.540000915527344,
+        "y": 44.72999954223633,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "observed_lane_creep_centroid",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "development",
+      "entity_type": "lane_checkpoint",
+      "entity_id": "lane-space-top-71",
+      "player_slot": 9,
+      "time": 2144,
+      "range_start": 2129,
+      "range_end": 2164,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 39.29999923706055,
+        "y": 44.5099983215332,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "observed_lane_creep_centroid",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "development",
+      "entity_type": "lane_checkpoint",
+      "entity_id": "lane-space-top-73",
+      "player_slot": 9,
+      "time": 2202,
+      "range_start": 2187,
+      "range_end": 2222,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 39.43000030517578,
+        "y": 44.81999969482422,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "observed_lane_creep_centroid",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "development",
+      "entity_type": "lane_checkpoint",
+      "entity_id": "lane-space-top-76",
+      "player_slot": 9,
+      "time": 2285,
+      "range_start": 2270,
+      "range_end": 2305,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 39.40999984741211,
+        "y": 44.72999954223633,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "observed_lane_creep_centroid",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "development",
+      "entity_type": "lane_checkpoint",
+      "entity_id": "lane-space-top-79",
+      "player_slot": 9,
+      "time": 2382,
+      "range_start": 2367,
+      "range_end": 2402,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 42.11000061035156,
+        "y": 45.5,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "observed_lane_creep_centroid",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "development",
+      "entity_type": "lane_checkpoint",
+      "entity_id": "lane-space-top-80",
+      "player_slot": 9,
+      "time": 2406,
+      "range_start": 2391,
+      "range_end": 2426,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 39.58000183105469,
+        "y": 44.75,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "observed_lane_creep_centroid",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "development",
+      "entity_type": "lane_checkpoint",
+      "entity_id": "lane-space-top-81",
+      "player_slot": 9,
+      "time": 2437,
+      "range_start": 2422,
+      "range_end": 2457,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 37.630001068115234,
+        "y": 44.2400016784668,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "observed_lane_creep_centroid",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "development",
+      "entity_type": "lane_checkpoint",
+      "entity_id": "lane-space-top-82",
+      "player_slot": 9,
+      "time": 2474,
+      "range_start": 2459,
+      "range_end": 2494,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 36.689998626708984,
+        "y": 45.79999923706055,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "observed_lane_creep_centroid",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "development",
+      "entity_type": "lane_checkpoint",
+      "entity_id": "lane-space-top-84",
+      "player_slot": 9,
+      "time": 2526,
+      "range_start": 2511,
+      "range_end": 2546,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 39.540000915527344,
+        "y": 44.68000030517578,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "observed_lane_creep_centroid",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "development",
+      "entity_type": "lane_checkpoint",
+      "entity_id": "lane-space-top-86",
+      "player_slot": 9,
+      "time": 2586,
+      "range_start": 2571,
+      "range_end": 2606,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 39.52000045776367,
+        "y": 44.72999954223633,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "observed_lane_creep_centroid",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "development",
+      "entity_type": "lane_checkpoint",
+      "entity_id": "lane-space-top-87",
+      "player_slot": 9,
+      "time": 2620,
+      "range_start": 2605,
+      "range_end": 2640,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 39.470001220703125,
+        "y": 44.63999938964844,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "observed_lane_creep_centroid",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "development",
+      "entity_type": "lane_checkpoint",
+      "entity_id": "lane-space-top-88",
+      "player_slot": 9,
+      "time": 2646,
+      "range_start": 2631,
+      "range_end": 2666,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 35.34000015258789,
+        "y": 44.970001220703125,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "observed_lane_creep_centroid",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "development",
+      "entity_type": "lane_checkpoint",
+      "entity_id": "lane-space-top-89",
+      "player_slot": 9,
+      "time": 2680,
+      "range_start": 2665,
+      "range_end": 2700,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 39.560001373291016,
+        "y": 44.779998779296875,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "observed_lane_creep_centroid",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "development",
+      "entity_type": "lane_checkpoint",
+      "entity_id": "lane-space-top-90",
+      "player_slot": 9,
+      "time": 2705,
+      "range_start": 2690,
+      "range_end": 2725,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 39.29999923706055,
+        "y": 44.68000030517578,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "observed_lane_creep_centroid",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "development",
+      "entity_type": "lane_checkpoint",
+      "entity_id": "lane-space-top-91",
+      "player_slot": 9,
+      "time": 2791,
+      "range_start": 2776,
+      "range_end": 2811,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 53.0099983215332,
+        "y": 13.15999984741211,
+        "region": "top_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "observed_lane_creep_centroid",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "development",
+      "entity_type": "lane_checkpoint",
+      "entity_id": "lane-space-top-92",
+      "player_slot": 9,
+      "time": 2817,
+      "range_start": 2802,
+      "range_end": 2837,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 27.59000015258789,
+        "y": 22.020000457763672,
+        "region": "top_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "observed_lane_creep_centroid",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "development",
+      "entity_type": "lane_checkpoint",
+      "entity_id": "lane-space-top-93",
+      "player_slot": 9,
+      "time": 2799,
+      "range_start": 2784,
+      "range_end": 2819,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 39.58000183105469,
+        "y": 44.599998474121094,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "observed_lane_creep_centroid",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "development",
+      "entity_type": "lane_checkpoint",
+      "entity_id": "lane-space-top-94",
+      "player_slot": 9,
+      "time": 2833,
+      "range_start": 2818,
+      "range_end": 2853,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 35.40999984741211,
+        "y": 44.7400016784668,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "observed_lane_creep_centroid",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "development",
+      "entity_type": "lane_checkpoint",
+      "entity_id": "lane-space-top-95",
+      "player_slot": 9,
+      "time": 2857,
+      "range_start": 2842,
+      "range_end": 2877,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 39.779998779296875,
+        "y": 44.70000076293945,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "observed_lane_creep_centroid",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "development",
+      "entity_type": "lane_checkpoint",
+      "entity_id": "lane-space-top-96",
+      "player_slot": 9,
+      "time": 2885,
+      "range_start": 2870,
+      "range_end": 2905,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 38.79999923706055,
+        "y": 44.689998626708984,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "observed_lane_creep_centroid",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
     },
     {
       "id": "",
@@ -1046,12 +2210,82 @@
     {
       "id": "",
       "module": "development",
-      "entity_type": "",
-      "entity_id": "",
+      "entity_type": "level_spike",
+      "entity_id": "level-spike-9-1675-18",
       "player_slot": 9,
-      "time": 600,
-      "range_start": 600,
-      "range_end": 600
+      "time": 1675,
+      "range_start": 1665,
+      "range_end": 1725,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 10.09000015258789,
+        "y": 39.630001068115234,
+        "region": "top_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "entity_cell",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "development",
+      "entity_type": "level_spike",
+      "entity_id": "level-spike-9-181-3",
+      "player_slot": 9,
+      "time": 181,
+      "range_start": 171,
+      "range_end": 231,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 17.93000030517578,
+        "y": 14.850000381469727,
+        "region": "top_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "entity_cell",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "development",
+      "entity_type": "level_spike",
+      "entity_id": "level-spike-9-438-6",
+      "player_slot": 9,
+      "time": 438,
+      "range_start": 428,
+      "range_end": 488,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 31.549999237060547,
+        "y": 3.259999990463257,
+        "region": "top_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "entity_cell",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "development",
+      "entity_type": "level_spike",
+      "entity_id": "level-spike-9-963-12",
+      "player_slot": 9,
+      "time": 963,
+      "range_start": 953,
+      "range_end": 1013,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 56.86000061035156,
+        "y": 57.65999984741211,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "entity_cell",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
     },
     {
       "id": "",
@@ -1062,6 +2296,606 @@
       "time": 810,
       "range_start": 800,
       "range_end": 844
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-10",
+      "player_slot": 9,
+      "time": 1926,
+      "range_start": 1911,
+      "range_end": 1941,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 31.450000762939453,
+        "y": 35.689998626708984,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "entity_cell",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-11",
+      "player_slot": 9,
+      "time": 2010,
+      "range_start": 1995,
+      "range_end": 2025,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 49.220001220703125,
+        "y": 13.279999732971191,
+        "region": "top_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "replay_observed_building",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-12",
+      "player_slot": 9,
+      "time": 2202,
+      "range_start": 2187,
+      "range_end": 2217,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 65.2300033569336,
+        "y": 37.11000061035156,
+        "region": "mid_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "replay_observed_building",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-13",
+      "player_slot": 9,
+      "time": 2539,
+      "range_start": 2524,
+      "range_end": 2554,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 76.45999908447266,
+        "y": 24.469999313354492,
+        "region": "mid_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "replay_observed_building",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-14",
+      "player_slot": 9,
+      "time": 2555,
+      "range_start": 2540,
+      "range_end": 2570,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 73.79000091552734,
+        "y": 16.459999084472656,
+        "region": "top_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "replay_observed_building",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-15",
+      "player_slot": 9,
+      "time": 2561,
+      "range_start": 2546,
+      "range_end": 2576,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 76.45999908447266,
+        "y": 24.469999313354492,
+        "region": "mid_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "replay_observed_building",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-16",
+      "player_slot": 9,
+      "time": 2611,
+      "range_start": 2596,
+      "range_end": 2626,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 29.8799991607666,
+        "y": 36.040000915527344,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "entity_cell",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-17",
+      "player_slot": 9,
+      "time": 2613,
+      "range_start": 2598,
+      "range_end": 2628,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 31.15999984741211,
+        "y": 35.47999954223633,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "entity_cell",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-18",
+      "player_slot": 9,
+      "time": 2721,
+      "range_start": 2706,
+      "range_end": 2736,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 71.68000030517578,
+        "y": 14.75,
+        "region": "top_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "replay_observed_building",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-19",
+      "player_slot": 9,
+      "time": 2729,
+      "range_start": 2714,
+      "range_end": 2744,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 73.7699966430664,
+        "y": 13.229999542236328,
+        "region": "dire_base",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "replay_observed_building",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-1",
+      "player_slot": 9,
+      "time": 230,
+      "range_start": 215,
+      "range_end": 245,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 26.049999237060547,
+        "y": 15.100000381469727,
+        "region": "top_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "entity_cell",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-20",
+      "player_slot": 9,
+      "time": 2736,
+      "range_start": 2721,
+      "range_end": 2751,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 73.7699966430664,
+        "y": 13.229999542236328,
+        "region": "dire_base",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "replay_observed_building",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-21",
+      "player_slot": 9,
+      "time": 2773,
+      "range_start": 2758,
+      "range_end": 2788,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 81.25,
+        "y": 52.56999969482422,
+        "region": "bottom_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "entity_cell",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-22",
+      "player_slot": 9,
+      "time": 2802,
+      "range_start": 2787,
+      "range_end": 2817,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 89.05999755859375,
+        "y": 47.65999984741211,
+        "region": "bottom_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "replay_observed_building",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-23",
+      "player_slot": 9,
+      "time": 2817,
+      "range_start": 2802,
+      "range_end": 2832,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 87.01000213623047,
+        "y": 29.389999389648438,
+        "region": "dire_base",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "replay_observed_building",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-24",
+      "player_slot": 9,
+      "time": 2823,
+      "range_start": 2808,
+      "range_end": 2838,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 82.2300033569336,
+        "y": 22.950000762939453,
+        "region": "dire_base",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "replay_observed_building",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-25",
+      "player_slot": 9,
+      "time": 2843,
+      "range_start": 2828,
+      "range_end": 2858,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 87.01000213623047,
+        "y": 29.389999389648438,
+        "region": "dire_base",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "replay_observed_building",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-26",
+      "player_slot": 9,
+      "time": 2866,
+      "range_start": 2851,
+      "range_end": 2881,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 83.73999786376953,
+        "y": 19.479999542236328,
+        "region": "dire_base",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "replay_observed_building",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-27",
+      "player_slot": 9,
+      "time": 2876,
+      "range_start": 2861,
+      "range_end": 2891,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 83.73999786376953,
+        "y": 19.479999542236328,
+        "region": "dire_base",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "replay_observed_building",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-28",
+      "player_slot": 9,
+      "time": 2887,
+      "range_start": 2872,
+      "range_end": 2902,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 83.73999786376953,
+        "y": 19.479999542236328,
+        "region": "dire_base",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "replay_observed_building",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-2",
+      "player_slot": 9,
+      "time": 649,
+      "range_start": 634,
+      "range_end": 664,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 79.66000366210938,
+        "y": 88.94000244140625,
+        "region": "bottom_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "replay_observed_building",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-3",
+      "player_slot": 9,
+      "time": 755,
+      "range_start": 740,
+      "range_end": 770,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 53.20000076293945,
+        "y": 46.02000045776367,
+        "region": "mid_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "replay_observed_building",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-4",
+      "player_slot": 9,
+      "time": 876,
+      "range_start": 861,
+      "range_end": 891,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 40.58000183105469,
+        "y": 58.59000015258789,
+        "region": "mid_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "replay_observed_building",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-5",
+      "player_slot": 9,
+      "time": 1005,
+      "range_start": 990,
+      "range_end": 1020,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 88.2699966430664,
+        "y": 63.66999816894531,
+        "region": "bottom_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "replay_observed_building",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-6",
+      "player_slot": 9,
+      "time": 1100,
+      "range_start": 1085,
+      "range_end": 1115,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 17.809999465942383,
+        "y": 13.15999984741211,
+        "region": "top_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "replay_observed_building",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-7",
+      "player_slot": 9,
+      "time": 1554,
+      "range_start": 1539,
+      "range_end": 1569,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 47.79999923706055,
+        "y": 88.18000030517578,
+        "region": "bottom_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "replay_observed_building",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-8",
+      "player_slot": 9,
+      "time": 1671,
+      "range_start": 1656,
+      "range_end": 1686,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 11.329999923706055,
+        "y": 38.66999816894531,
+        "region": "top_lane",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "replay_observed_building",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "objective",
+      "entity_id": "objective-9",
+      "player_slot": 9,
+      "time": 1926,
+      "range_start": 1911,
+      "range_end": 1941,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 31.450000762939453,
+        "y": 35.689998626708984,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "entity_cell",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "rune",
+      "entity_id": "rune-9-2790-unknown-1",
+      "player_slot": 9,
+      "time": 2790,
+      "range_start": 2778,
+      "range_end": 2802,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 40.400001525878906,
+        "y": 43.93000030517578,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "entity_cell",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
+    },
+    {
+      "id": "",
+      "module": "map",
+      "entity_type": "rune",
+      "entity_id": "rune-9-882-unknown-0",
+      "player_slot": 9,
+      "time": 882,
+      "range_start": 870,
+      "range_end": 894,
+      "map_focus": {
+        "coordinate_valid": true,
+        "x": 57.310001373291016,
+        "y": 57.939998626708984,
+        "region": "river",
+        "coordinate_space": "map_percent",
+        "coordinate_source": "entity_cell",
+        "coordinate_version": "dota-map-coordinates/2.0",
+        "location_confidence": null
+      }
     }
   ]
 }

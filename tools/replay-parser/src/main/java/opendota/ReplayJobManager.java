@@ -13,7 +13,9 @@ import java.net.SocketException;
 import java.net.http.HttpTimeoutException;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.CopyOption;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -44,6 +46,8 @@ final class ReplayJobManager implements AutoCloseable {
     private static final int DEFAULT_REPLAY_DOWNLOAD_WAIT_SECONDS = 600;
     private static final int DEFAULT_DECOMPRESSED_CACHE_COUNT = 2;
     private static final long MAX_IMPORTED_REPLAY_BYTES = 1_500_000_000L;
+    private static final int MOVE_RETRY_ATTEMPTS = 6;
+    private static final long MOVE_RETRY_DELAY_MILLIS = 40;
 
     private final Path dataDirectory;
     private final OpenDotaClient openDota;
@@ -757,11 +761,46 @@ final class ReplayJobManager implements AutoCloseable {
     }
 
     private static void moveReplacing(Path source, Path target) throws IOException {
-        try {
-            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-        } catch (AtomicMoveNotSupportedException ignored) {
-            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
+        moveReplacing(source, target, (from, to, options) -> {
+            Files.move(from, to, options);
+        }, MOVE_RETRY_ATTEMPTS, MOVE_RETRY_DELAY_MILLIS);
+    }
+
+    static void moveReplacing(Path source, Path target, MoveOperation operation,
+            int attempts, long initialDelayMillis) throws IOException {
+        IOException lastError = null;
+        for (int attempt = 0; attempt < Math.max(1, attempts); attempt++) {
+            try {
+                try {
+                    operation.move(source, target, StandardCopyOption.REPLACE_EXISTING,
+                            StandardCopyOption.ATOMIC_MOVE);
+                } catch (AtomicMoveNotSupportedException ignored) {
+                    operation.move(source, target, StandardCopyOption.REPLACE_EXISTING);
+                }
+                return;
+            } catch (IOException error) {
+                lastError = error;
+                if (!retryableMoveFailure(error) || attempt + 1 >= Math.max(1, attempts)) {
+                    throw error;
+                }
+                try {
+                    Thread.sleep(Math.max(0, initialDelayMillis) * (attempt + 1L));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException("Interrupted while retrying file replacement", interrupted);
+                }
+            }
         }
+        throw lastError;
+    }
+
+    private static boolean retryableMoveFailure(IOException error) {
+        return error instanceof AccessDeniedException;
+    }
+
+    @FunctionalInterface
+    interface MoveOperation {
+        void move(Path source, Path target, CopyOption... options) throws IOException;
     }
 
     private static boolean nonEmptyFile(Path path) {
@@ -796,6 +835,21 @@ final class ReplayJobManager implements AutoCloseable {
             return "replay_unavailable";
         }
         String message = safeMessage(error).toLowerCase();
+        if (message.contains("permission denied")
+                && (message.contains("getsockopt") || message.contains("socket"))) {
+            return "network_access_denied";
+        }
+        if (error instanceof HttpTimeoutException
+                || error instanceof ConnectException
+                || error instanceof SocketException
+                || message.contains("connection refused")
+                || message.contains("connection reset")
+                || message.contains("connect timed out")
+                || message.contains("network is unreachable")
+                || message.contains("no route to host")
+                || message.contains("unresolved address")) {
+            return "network_unavailable";
+        }
         if (message.contains("replay url")) {
             return "replay_unavailable";
         }

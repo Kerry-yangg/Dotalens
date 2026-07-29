@@ -21,7 +21,7 @@ import com.sun.net.httpserver.HttpServer;
 
 final class DotaLensApi {
     private static final Gson GSON = new Gson();
-    private static final String API_VERSION = "1.6.1";
+    private static final String API_VERSION = "1.7.0";
 
     private final OpenDotaClient openDota;
     private final ReplayJobManager jobs;

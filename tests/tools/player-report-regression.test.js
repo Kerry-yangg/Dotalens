@@ -330,6 +330,10 @@ function runRunnerFixture(fixture, mode, options = {}) {
     "-ManifestPath",
     fixture.manifestPath,
     "-IncludeCandidates",
+    ...(options.selectedMatchId === undefined
+      ? [] : ["-SelectedMatchId", String(options.selectedMatchId)]),
+    ...(options.maxMatches === undefined
+      ? [] : ["-MaxMatches", String(options.maxMatches)]),
     ...(options.timeoutSeconds === undefined ? [] : ["-TimeoutSeconds", String(options.timeoutSeconds)]),
     ...(options.keepParser ? ["-KeepParser"] : []),
   ], { cwd: PROJECT_ROOT, encoding: "utf8", env: environment });
@@ -1402,6 +1406,58 @@ test("ReparseAll uploads matches serially through the documented endpoints", () 
   }
 });
 
+test("runner can execute one selected match and persists pollable progress", () => {
+  const fixture = createRunnerFixture();
+  const parser = startMockParser(fixture);
+  writeRunnerManifest(fixture);
+  try {
+    const selectedMatchId = fixture.matchIds[1];
+    const result = runRunnerFixture(fixture, "ReparseAll", {
+      env: { PLAYER_REPORT_REGRESSION_API_BASE: parser.apiBase },
+      selectedMatchId,
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.deepEqual(
+      parser.events().filter((event) => event.type === "upload")
+        .map((event) => event.match_id),
+      [selectedMatchId],
+    );
+    const progress = JSON.parse(readFileSync(
+      join(fixture.runtime, "latest-progress.json"),
+      "utf8",
+    ));
+    assert.equal(progress.schema, "player-report-regression-progress/1.0");
+    assert.equal(progress.phase, "completed");
+    assert.equal(progress.matches_total, 1);
+    assert.equal(progress.matches_completed, 1);
+    assert.equal(progress.last_match_status, "validated");
+  } finally {
+    parser.stop();
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("runner limits a batch without changing manifest order", () => {
+  const fixture = createRunnerFixture();
+  const parser = startMockParser(fixture);
+  writeRunnerManifest(fixture);
+  try {
+    const result = runRunnerFixture(fixture, "ReparseAll", {
+      env: { PLAYER_REPORT_REGRESSION_API_BASE: parser.apiBase },
+      maxMatches: 1,
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.deepEqual(
+      parser.events().filter((event) => event.type === "upload")
+        .map((event) => event.match_id),
+      [fixture.matchIds[0]],
+    );
+  } finally {
+    parser.stop();
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("ReparseAll stages a cached Replay so the parser can atomically replace it", () => {
   const fixture = createRunnerFixture(["9900000001"]);
   const replayPath = join(
@@ -2272,6 +2328,115 @@ test("golden projection includes stable audit fields and excludes prose", () => 
   assert.equal(serialized.includes("natural-language"), false);
   assert.equal(serialized.includes("unstable prose"), false);
   assert.equal(projected.semantic.main_issue_id, "issue:combat_timing");
+});
+
+test("golden projection locks event candidate coverage and important event identity", () => {
+  const report = atomicReportFixture();
+  const jumpTarget = {
+    module: "vision",
+    entity_type: "ward",
+    entity_id: "ward-1",
+    player_slot: 0,
+    time: 420,
+    range_start: 410,
+    range_end: 780,
+    map_focus: { region: "river" },
+  };
+  report.event_candidate_model = "player-report-event-candidates/1.1";
+  report.event_candidates = [
+    { id: "candidate:ward:ward-1", event_type: "ward", selected: true },
+    { id: "candidate:purchase:blink", event_type: "purchase", selected: false },
+  ];
+  report.important_events = [{
+    id: "moment:ward:ward-1",
+    dedupe_key: "ward:ward-1",
+    kind: "strength",
+    importance_score: 88,
+    time_start: 420,
+    time_end: 780,
+    related_event_types: ["ward"],
+    source_candidate_ids: ["candidate:ward:ward-1"],
+    title: "unstable prose must not enter the Golden",
+    jump_target: jumpTarget,
+  }];
+
+  const projected = projectGoldenReport({
+    matchId: "fixture",
+    slot: 0,
+    report,
+  });
+
+  assert.equal(projected.event_candidate_model, "player-report-event-candidates/1.1");
+  assert.deepEqual(projected.event_candidate_summary, {
+    total: 2,
+    selected: 1,
+    type_counts: { purchase: 1, ward: 1 },
+  });
+  assert.deepEqual(projected.important_events[0], {
+    id: "moment:ward:ward-1",
+    dedupe_key: "ward:ward-1",
+    kind: "strength",
+    importance_score: 88,
+    time_start: 420,
+    time_end: 780,
+    related_event_types: ["ward"],
+    source_candidate_ids: ["candidate:ward:ward-1"],
+    jump_target_identity: "vision|ward|ward-1|0|420",
+  });
+  assert.equal(JSON.stringify(projected).includes("unstable prose"), false);
+
+  const changed = structuredClone(projected);
+  changed.important_events[0].time_start = 430;
+  const diff = compareGolden(projected, changed);
+  assert.ok(diff.approvalRequired.some(
+    (item) => item.reason === "important_event_payload_changed",
+  ));
+});
+
+test("event candidate protocol requires one localized bounded story per selected moment", () => {
+  const players = bundleFixture();
+  const report = players.by_slot["0"].report;
+  const jumpTarget = {
+    module: "vision",
+    entity_type: "ward",
+    entity_id: "ward-1",
+    player_slot: 0,
+    time: 420,
+    range_start: 410,
+    range_end: 780,
+    map_focus: { region: "river" },
+  };
+  report.event_candidates = [{
+    id: "candidate:ward:ward-1",
+    event_type: "ward",
+    dedupe_key: "ward:ward-1",
+    selected: true,
+  }];
+  report.important_events = [{
+    id: "moment:ward:ward-1",
+    dedupe_key: "ward:ward-1",
+    importance_score: 88,
+    related_event_types: ["ward"],
+    source_candidate_ids: ["candidate:ward:ward-1"],
+    jump_target: jumpTarget,
+  }];
+  report.story_nodes = [{ id: "story:ward:ward-1" }];
+
+  assert.equal(validatePlayerReportBundle(players, {
+    requireAtomic: true,
+    requireEventPool: true,
+  }).valid, true);
+
+  const invalid = structuredClone(players);
+  invalid.by_slot["0"].report.important_events[0].jump_target.range_end = 410;
+  invalid.by_slot["0"].report.important_events[0].jump_target.map_focus = {};
+  const result = validatePlayerReportBundle(invalid, {
+    requireAtomic: true,
+    requireEventPool: true,
+  });
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((error) => error.includes("important_event_range_invalid")));
+  assert.ok(result.errors.some((error) => error.includes("important_event_location_missing")));
 });
 
 test("golden projection derives stable semantic IDs from real report brief fields", () => {

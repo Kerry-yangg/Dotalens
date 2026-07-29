@@ -92,7 +92,7 @@ final class PlayerReportScoringV4 {
             impact.appliedDelta = round2(impact.dimensionCappedDelta * impact.overallCapFactor);
         }
 
-        finalizeDimensions(dimensions, impacts);
+        finalizeDimensions(dimensions, impacts, rootRows);
         double finalOverall = weightedOverall(dimensions, true);
         double behaviorModifier = round2(finalOverall - baseOverall);
         baseOverall = round2(baseOverall);
@@ -477,7 +477,7 @@ final class PlayerReportScoringV4 {
     }
 
     private static void finalizeDimensions(Map<String, DimensionState> dimensions,
-            List<ImpactState> impacts) {
+            List<ImpactState> impacts, JsonArray rootRows) {
         Map<ImpactState, JsonObject> auditRows = new java.util.IdentityHashMap<>();
         for (ImpactState impact : impacts) {
             JsonObject row = impact.json();
@@ -532,9 +532,14 @@ final class PlayerReportScoringV4 {
             dimension.row.add("recomputation", recomputation);
         }
 
-        for (JsonElement rootElement : rootsOf(impacts)) {
+        for (JsonElement rootElement : rootRows) {
+            if (!rootElement.isJsonObject()) continue;
             JsonObject root = rootElement.getAsJsonObject();
             JsonObject summary = object(root, "scoring_summary");
+            if (summary == null) {
+                summary = emptyRootSummary();
+                root.add("scoring_summary", summary);
+            }
             List<ImpactState> rootImpacts = impacts.stream()
                     .filter(item -> item.root == root).toList();
             double appliedPenalty = 0;
@@ -548,13 +553,14 @@ final class PlayerReportScoringV4 {
         }
     }
 
-    private static JsonArray rootsOf(List<ImpactState> impacts) {
-        JsonArray result = new JsonArray();
-        Set<JsonObject> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
-        for (ImpactState impact : impacts) {
-            if (seen.add(impact.root)) result.add(impact.root);
-        }
-        return result;
+    private static JsonObject emptyRootSummary() {
+        JsonObject summary = new JsonObject();
+        summary.addProperty("candidate_negative_overall", 0);
+        summary.addProperty("root_cap", ROOT_NEGATIVE_OVERALL_CAP);
+        summary.addProperty("root_cap_factor", 1);
+        summary.addProperty("root_cap_applied", false);
+        summary.addProperty("duplicate_suppressed_count", 0);
+        return summary;
     }
 
     private static double weightedOverall(Map<String, DimensionState> dimensions, boolean finalScore) {

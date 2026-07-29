@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$Installer = (Join-Path (Split-Path -Parent $PSScriptRoot) 'release\Dota-Lens-Setup-0.4.5-x64.exe'),
-    [string]$SmokeRoot = (Join-Path $PSScriptRoot 'runtime\exe-smoke-0.4.5'),
+    [string]$Installer = (Join-Path (Split-Path -Parent $PSScriptRoot) 'release\Dota-Lens-Setup-0.5.0-x64.exe'),
+    [string]$SmokeRoot = (Join-Path $PSScriptRoot 'runtime\exe-smoke-0.5.0'),
     [string]$FixtureData = (Join-Path $PSScriptRoot 'runtime\dota-lens-data'),
     [long]$MatchId = 8894766243,
     [long]$AccountId = 137129583,
@@ -40,7 +40,7 @@ if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {
 
 $results = [ordered]@{
     schema = 'dota-lens-exe-smoke/1.0'
-    version = '0.4.5'
+    version = '0.5.0'
     started_at = [DateTimeOffset]::Now.ToString('o')
     completed_at = $null
     status = 'running'
@@ -77,6 +77,7 @@ function Add-SmokeCheck {
     if (-not $Passed) {
         throw "Smoke check failed: $Name - $Detail"
     }
+    Write-Host "[smoke] Passed ${Name}: $Detail"
 }
 
 function Get-ParserStatus {
@@ -121,10 +122,15 @@ function Wait-JobTerminal {
         [int]$TimeoutSeconds = 180
     )
     $deadline = [DateTimeOffset]::Now.AddSeconds($TimeoutSeconds)
+    $lastProgressAt = [DateTimeOffset]::MinValue
     do {
         $job = Invoke-RestMethod -Uri "$apiBase/jobs/$JobId" -TimeoutSec 5
         if ($job.status -in @('completed', 'failed', 'canceled')) {
             return $job
+        }
+        if (([DateTimeOffset]::Now - $lastProgressAt).TotalSeconds -ge 5) {
+            Write-Host "[smoke] Job $JobId status=$($job.status) stage=$($job.stage)"
+            $lastProgressAt = [DateTimeOffset]::Now
         }
         Start-Sleep -Milliseconds 250
     } while ([DateTimeOffset]::Now -lt $deadline)
@@ -265,7 +271,7 @@ try {
     $status = Wait-ParserStatus -Online $true -TimeoutSeconds $StartupTimeoutSeconds
     $results.parser = $status
     Add-SmokeCheck 'app_process_alive' (-not $appProcess.HasExited) "pid=$($appProcess.Id)"
-    Add-SmokeCheck 'parser_api_version' ($status.version -eq '1.6.1') "version=$($status.version)"
+    Add-SmokeCheck 'parser_api_version' ($status.version -eq '1.7.0') "version=$($status.version)"
     Add-SmokeCheck 'bundled_java_runtime' ([string]$status.java_version -like '21*') "java=$($status.java_version)"
 
     $parserData = [IO.Path]::GetFullPath([string]$status.data_directory)

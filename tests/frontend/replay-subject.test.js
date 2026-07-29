@@ -28,7 +28,7 @@ test("detail header exposes a real switch-player command", () => {
   assert.match(app, /openMatchSubjectDialog/);
 });
 
-test("0.4.5 desktop and Parser 1.6.1 versions stay aligned", () => {
+test("0.5.0 desktop and Parser 1.7.0 versions stay aligned", () => {
   const packageJson = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
   const packageLock = JSON.parse(readFileSync(new URL("../../package-lock.json", import.meta.url), "utf8"));
   const app = readFileSync(new URL("../../app.js", import.meta.url), "utf8");
@@ -36,15 +36,15 @@ test("0.4.5 desktop and Parser 1.6.1 versions stay aligned", () => {
   const startScript = readFileSync(new URL("../../tools/Start-DotaLens.ps1", import.meta.url), "utf8");
   const smoke = readFileSync(new URL("../../tools/Invoke-DotaLensExeSmoke.ps1", import.meta.url), "utf8");
 
-  assert.equal(packageJson.version, "0.4.5");
-  assert.equal(packageLock.version, "0.4.5");
-  assert.equal(packageLock.packages[""].version, "0.4.5");
-  assert.match(app, /APP_VERSION = "0\.4\.5"/);
-  assert.match(desktop, /PARSER_API_VERSION = "1\.6\.1"/);
-  assert.match(startScript, /expectedParserVersion = "1\.6\.1"/);
-  assert.match(smoke, /Dota-Lens-Setup-0\.4\.5-x64\.exe/);
-  assert.match(smoke, /version = '0\.4\.5'/);
-  assert.match(smoke, /status\.version -eq '1\.6\.1'/);
+  assert.equal(packageJson.version, "0.5.0");
+  assert.equal(packageLock.version, "0.5.0");
+  assert.equal(packageLock.packages[""].version, "0.5.0");
+  assert.match(app, /APP_VERSION = "0\.5\.0"/);
+  assert.match(desktop, /PARSER_API_VERSION = "1\.7\.0"/);
+  assert.match(startScript, /expectedParserVersion = "1\.7\.0"/);
+  assert.match(smoke, /Dota-Lens-Setup-0\.5\.0-x64\.exe/);
+  assert.match(smoke, /version = '0\.5\.0'/);
+  assert.match(smoke, /status\.version -eq '1\.7\.0'/);
 });
 
 test("development launcher can detach the long-running frontend", () => {
@@ -52,16 +52,19 @@ test("development launcher can detach the long-running frontend", () => {
   const backgroundLauncher = readFileSync(new URL("../../tools/Start-DotaLensBackground.cjs", import.meta.url), "utf8");
 
   assert.match(startScript, /\[switch\]\$Background/);
-  assert.match(startScript, /if \(\$Background\)/);
+  assert.match(startScript, /\[switch\]\$Foreground/);
+  assert.match(startScript, /\$launchDetached = \$Background -or -not \$Foreground/);
+  assert.match(startScript, /if \(\$launchDetached\)/);
   assert.match(startScript, /Start-DotaLensBackground\.cjs/);
   assert.match(startScript, /launcher\.stdout\.log/);
   assert.match(startScript, /Background launcher PID:/);
   assert.match(backgroundLauncher, /detached:\s*true/);
   assert.match(backgroundLauncher, /stdio:\s*\["ignore",\s*stdout,\s*stderr\]/);
+  assert.match(backgroundLauncher, /"-Foreground"/);
   assert.match(backgroundLauncher, /child\.unref\(\)/);
 });
 
-test("0.4.5 EXE smoke verifies subject identity and persisted manual selection", () => {
+test("0.5.0 EXE smoke verifies subject identity and persisted manual selection", () => {
   const smoke = readFileSync(new URL("../../tools/Invoke-DotaLensExeSmoke.ps1", import.meta.url), "utf8");
 
   assert.match(smoke, /subject_auto_matched/);
@@ -72,10 +75,34 @@ test("0.4.5 EXE smoke verifies subject identity and persisted manual selection",
   assert.match(smoke, /subject_selection_persisted/);
 });
 
-test("0.4.5 EXE smoke accepts a real dem or compressed dem.bz2 fixture", () => {
+test("0.5.0 EXE smoke accepts a real dem or compressed dem.bz2 fixture", () => {
   const smoke = readFileSync(new URL("../../tools/Invoke-DotaLensExeSmoke.ps1", import.meta.url), "utf8");
 
   assert.match(smoke, /\.dem\.bz2/);
   assert.match(smoke, /fixtureFileName/);
   assert.match(smoke, /importedReplay/);
+});
+
+test("0.5.0 layout smoke binds a subject and rejects covered analysis views", () => {
+  const layoutSmoke = readFileSync(
+    new URL("../../tools/Invoke-DotaLensExeLayoutSmoke.ps1", import.meta.url),
+    "utf8",
+  );
+  const desktop = readFileSync(new URL("../../desktop/main.cjs", import.meta.url), "utf8");
+  const styles = readFileSync(new URL("../../styles.css", import.meta.url), "utf8");
+
+  assert.match(layoutSmoke, /\[int\]\$SubjectSlot/);
+  assert.match(layoutSmoke, /\/matches\/\$MatchId\/subject/);
+  assert.match(layoutSmoke, /target_visible/);
+  assert.match(layoutSmoke, /subject_dialog_closed/);
+  assert.match(desktop, /'#match-subject-dialog'/);
+  assert.match(desktop, /'#detail-player-score'/);
+  assert.match(
+    styles,
+    /@media \(max-width: 1439px\)[\s\S]*?\.ward-filter-bar\s*\{[\s\S]*?grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/,
+  );
+  assert.match(
+    styles,
+    /@media \(max-width: 1439px\)[\s\S]*?\.ward-filter-bar svg\s*\{[\s\S]*?display:\s*none/,
+  );
 });

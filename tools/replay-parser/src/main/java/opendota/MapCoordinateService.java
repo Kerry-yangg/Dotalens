@@ -175,6 +175,75 @@ final class MapCoordinateService {
                         laneDistance(point, profile.bottomLane, "bottom").distance));
     }
 
+    LaneProjection projectToLane(Point point, String lane) {
+        float[][] line = laneLine(lane);
+        if (point == null || line == null) return null;
+        double totalLength = 0;
+        for (int index = 1; index < line.length; index++) {
+            totalLength += Math.hypot(
+                    line[index][0] - line[index - 1][0],
+                    line[index][1] - line[index - 1][1]);
+        }
+        double traversed = 0;
+        double bestDistance = Double.MAX_VALUE;
+        double bestProgress = 0;
+        float bestX = line[0][0];
+        float bestY = line[0][1];
+        for (int index = 1; index < line.length; index++) {
+            float ax = line[index - 1][0];
+            float ay = line[index - 1][1];
+            float bx = line[index][0];
+            float by = line[index][1];
+            double dx = bx - ax;
+            double dy = by - ay;
+            double segmentLength = Math.hypot(dx, dy);
+            if (segmentLength <= 0) continue;
+            double t = Math.max(0, Math.min(1,
+                    ((point.x - ax) * dx + (point.y - ay) * dy)
+                            / (segmentLength * segmentLength)));
+            float projectedX = (float) (ax + t * dx);
+            float projectedY = (float) (ay + t * dy);
+            double candidateDistance = Math.hypot(point.x - projectedX, point.y - projectedY);
+            if (candidateDistance < bestDistance) {
+                bestDistance = candidateDistance;
+                bestProgress = totalLength <= 0 ? 0
+                        : (traversed + t * segmentLength) / totalLength;
+                bestX = projectedX;
+                bestY = projectedY;
+            }
+            traversed += segmentLength;
+        }
+        return new LaneProjection(
+                normalizeLane(lane),
+                Math.max(0, Math.min(1, bestProgress)),
+                bestDistance,
+                point(bestX, bestY, "lane_projection", point.x, point.y));
+    }
+
+    List<TowerAnchor> laneTowers(int team, String lane) {
+        String normalizedLane = normalizeLane(lane);
+        if (!List.of("top", "mid", "bottom").contains(normalizedLane)) return List.of();
+        String side = team == 2 ? "goodguys" : team == 3 ? "badguys" : null;
+        if (side == null) return List.of();
+        String suffix = normalizedLane.equals("bottom") ? "bot" : normalizedLane;
+        List<TowerAnchor> towers = new java.util.ArrayList<>();
+        for (int tier = 1; tier <= 3; tier++) {
+            String key = "npc_dota_" + side + "_tower" + tier + "_" + suffix;
+            Point point = building(key);
+            if (point != null) towers.add(new TowerAnchor(key, tier, point, 0));
+        }
+        return List.copyOf(towers);
+    }
+
+    TowerAnchor nearestLaneTower(Point point, int team, String lane) {
+        if (point == null) return null;
+        return laneTowers(team, lane).stream()
+                .map(tower -> new TowerAnchor(tower.key, tower.tier, tower.point,
+                        distance(point, tower.point)))
+                .min(Comparator.comparingDouble(TowerAnchor::distance))
+                .orElse(null);
+    }
+
     CampAnchor nearestCamp(Point point) {
         if (point == null || observedCamps.isEmpty()) return null;
         ObservedAnchor anchor = observedCamps.values().stream()
@@ -389,6 +458,25 @@ final class MapCoordinateService {
         return new LaneDistance(lane, best);
     }
 
+    private float[][] laneLine(String lane) {
+        return switch (normalizeLane(lane)) {
+            case "top" -> profile.topLane;
+            case "mid" -> profile.midLane;
+            case "bottom" -> profile.bottomLane;
+            default -> null;
+        };
+    }
+
+    private static String normalizeLane(String lane) {
+        if (lane == null) return "other";
+        return switch (lane.toLowerCase(Locale.ROOT)) {
+            case "top", "top_lane" -> "top";
+            case "middle", "mid", "mid_lane" -> "mid";
+            case "bottom", "bot", "bottom_lane", "bot_lane" -> "bottom";
+            default -> "other";
+        };
+    }
+
     private static double distance(Point left, Point right) {
         return Math.hypot(left.x - right.x, left.y - right.y);
     }
@@ -505,6 +593,10 @@ final class MapCoordinateService {
             String source, float sourceX, float sourceY) {}
 
     record CampAnchor(String id, int handle, Point point, double distance, int firstObserved) {}
+
+    record LaneProjection(String lane, double progress, double distance, Point point) {}
+
+    record TowerAnchor(String key, int tier, Point point, double distance) {}
 
     record Region(String primary, String lane, String context, float confidence,
             String nearestLandmark, float landmarkDistance) {

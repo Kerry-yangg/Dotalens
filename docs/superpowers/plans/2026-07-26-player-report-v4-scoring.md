@@ -77,7 +77,7 @@
 
 **样本**
 
-- `C:\Users\44238\Documents\DOTA2\release\8894766243.dem`
+- `%USERPROFILE%\Documents\DOTA2\release\8894766243.dem`
 
 **步骤**
 
@@ -93,4 +93,3 @@
 - 修改 `DOTA-LENS-0.5.0-PLAYER-REPORT-PRODUCTIZATION-PRD.md`
 
 记录完成项、测试证据、真实 Replay 结果和下一阶段未完成事项。
-

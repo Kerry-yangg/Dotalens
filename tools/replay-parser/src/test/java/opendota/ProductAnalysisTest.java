@@ -1001,6 +1001,169 @@ class ProductAnalysisTest {
     }
 
     @Test
+    void buildsObservedLaneMeetingPushDepthAndTowerSafetyFromSampledCreeps() {
+        ProductAnalysis analysis = new ProductAnalysis("7.41d");
+        for (int handle : new int[] { 101, 102 }) {
+            analysis.accept(json(String.format(java.util.Locale.ROOT,
+                    "{\"type\":\"unit_enter\",\"time\":1,\"ehandle\":%d,\"unit\":\"CDOTA_BaseNPC_Creep_Lane\",\"unit_kind\":\"lane_creep\",\"team\":2,\"x\":90,\"y\":160,\"hp\":550,\"life_state\":0}",
+                    handle)));
+            analysis.accept(json(String.format(java.util.Locale.ROOT,
+                    "{\"type\":\"unit_position\",\"time\":25,\"ehandle\":%d,\"unit\":\"CDOTA_BaseNPC_Creep_Lane\",\"unit_kind\":\"lane_creep\",\"team\":2,\"x\":112.6,\"y\":123.4,\"hp\":550,\"life_state\":0}",
+                    handle)));
+        }
+        for (int handle : new int[] { 201, 202 }) {
+            analysis.accept(json(String.format(java.util.Locale.ROOT,
+                    "{\"type\":\"unit_enter\",\"time\":1,\"ehandle\":%d,\"unit\":\"CDOTA_BaseNPC_Creep_Lane\",\"unit_kind\":\"lane_creep\",\"team\":3,\"x\":166,\"y\":96,\"hp\":550,\"life_state\":0}",
+                    handle)));
+            analysis.accept(json(String.format(java.util.Locale.ROOT,
+                    "{\"type\":\"unit_position\",\"time\":25,\"ehandle\":%d,\"unit\":\"CDOTA_BaseNPC_Creep_Lane\",\"unit_kind\":\"lane_creep\",\"team\":3,\"x\":114.0,\"y\":124.8,\"hp\":550,\"life_state\":0}",
+                    handle)));
+        }
+
+        JsonObject farm = analysis.build(90).getAsJsonObject("farm");
+        JsonObject spatial = farm.getAsJsonArray("lane_spatial_windows")
+                .get(0).getAsJsonObject();
+
+        assertEquals("observed_meeting", spatial.get("state").getAsString());
+        assertEquals(25, spatial.get("meeting_time").getAsInt());
+        assertTrue(spatial.get("coordinate_valid").getAsBoolean());
+        assertTrue(spatial.get("lane_progress_pct").getAsDouble() > 30);
+        assertTrue(spatial.get("lane_progress_pct").getAsDouble() < 50);
+        assertTrue(spatial.get("radiant_push_depth").getAsDouble() < 0);
+        assertTrue(spatial.getAsJsonObject("radiant_tower_zone")
+                .get("inside").getAsBoolean());
+        assertEquals("lane-spatial/1.0",
+                farm.getAsJsonObject("lane_spatial_schema").get("schema").getAsString());
+    }
+
+    @Test
+    void tracksPurchaseThroughStashCarryAndUsableInventoryWithoutClaimingDirectCourierEvidence() {
+        ProductAnalysis analysis = new ProductAnalysis("7.41d");
+        analysis.accept(json("""
+                {"type":"interval","slot":0,"time":299,"unit":"CDOTA_Unit_Hero_Axe","x":128,"y":128,"life_state":0,"hero_inventory":[]}
+                """));
+        analysis.accept(json("""
+                {"type":"DOTA_COMBATLOG_PURCHASE","slot":0,"time":300,"game_time_ms":300000,"event_seq":10,"targetname":"npc_dota_hero_axe","valuename":"item_blink"}
+                """));
+        analysis.accept(json("""
+                {"type":"interval","slot":0,"time":300,"unit":"CDOTA_Unit_Hero_Axe","x":128,"y":128,"life_state":0,"hero_inventory":[{"id":"item_blink","slot":9}]}
+                """));
+        analysis.accept(json("""
+                {"type":"interval","slot":0,"time":342,"unit":"CDOTA_Unit_Hero_Axe","x":128,"y":128,"life_state":0,"hero_inventory":[{"id":"item_blink","slot":6}]}
+                """));
+        analysis.accept(json("""
+                {"type":"interval","slot":0,"time":350,"unit":"CDOTA_Unit_Hero_Axe","x":128,"y":128,"life_state":0,"hero_inventory":[{"id":"item_blink","slot":0}]}
+                """));
+
+        JsonObject lifecycle = analysis.build(400).getAsJsonObject("build")
+                .getAsJsonObject("by_slot").getAsJsonObject("0")
+                .getAsJsonArray("item_delivery_lifecycles").get(0).getAsJsonObject();
+
+        assertEquals(300, lifecycle.get("purchased_at").getAsInt());
+        assertEquals(300, lifecycle.get("first_stash_at").getAsInt());
+        assertEquals(342, lifecycle.get("first_carried_at").getAsInt());
+        assertEquals(350, lifecycle.get("first_usable_at").getAsInt());
+        assertEquals(42, lifecycle.get("stash_to_carried_seconds").getAsInt());
+        assertEquals(8, lifecycle.get("carried_to_usable_seconds").getAsInt());
+        assertEquals(50, lifecycle.get("total_to_usable_seconds").getAsInt());
+        assertEquals("courier_delivery_inferred",
+                lifecycle.get("delivery_mode").getAsString());
+        assertTrue(lifecycle.get("courier_delivery_inferred").getAsBoolean());
+        assertFalse(lifecycle.get("courier_entity_observed").getAsBoolean());
+    }
+
+    @Test
+    void recordsExactRuneBenefitAndProductiveSupportAwayWindow() {
+        ProductAnalysis analysis = laneFixture();
+        analysis.accept(json("""
+                {"type":"interval","slot":1,"time":419,"unit":"CDOTA_Unit_Hero_Tusk","x":109,"y":147,"life_state":0,"level":3,"xp":900,"lh":5,"rune_pickups":0,"kills":0,"assists":0,"deaths":0}
+                """));
+        analysis.accept(json("""
+                {"type":"CHAT_MESSAGE_RUNE_PICKUP","time":420,"game_time_ms":420000,"event_seq":20,"player1":1,"value":5}
+                """));
+        analysis.accept(json("""
+                {"type":"DOTA_COMBATLOG_GOLD","time":420,"game_time_ms":420050,"event_seq":21,"targetname":"npc_dota_hero_tusk","value":40,"gold_reason":17}
+                """));
+        analysis.accept(json("""
+                {"type":"interval","slot":1,"time":421,"unit":"CDOTA_Unit_Hero_Tusk","x":109,"y":147,"life_state":0,"level":3,"xp":900,"lh":5,"rune_pickups":1,"kills":0,"assists":0,"deaths":0}
+                """));
+        analysis.accept(json("""
+                {"type":"interval","slot":0,"time":419,"unit":"CDOTA_Unit_Hero_Axe","x":79,"y":156,"life_state":0,"level":6,"xp":2600,"lh":40,"deaths":0}
+                """));
+        analysis.accept(json("""
+                {"type":"interval","slot":0,"time":421,"unit":"CDOTA_Unit_Hero_Axe","x":79,"y":156,"life_state":0,"level":6,"xp":2650,"lh":41,"deaths":0}
+                """));
+
+        JsonObject farm = analysis.build(600).getAsJsonObject("farm");
+        JsonObject rune = farm.getAsJsonObject("rune_opportunities_by_slot")
+                .getAsJsonArray("1").get(0).getAsJsonObject();
+        JsonArray away = farm.getAsJsonObject("support_away_windows_by_slot")
+                .getAsJsonArray("1");
+
+        assertEquals("bounty", rune.get("rune_type").getAsString());
+        assertEquals(40, rune.get("direct_gold").getAsInt());
+        assertEquals("chat_event_exact", rune.get("event_evidence").getAsString());
+        assertTrue(away.size() > 0);
+        assertEquals("productive", away.get(away.size() - 1).getAsJsonObject()
+                .get("outcome").getAsString());
+    }
+
+    @Test
+    void marksPullAsSuspectedAndAuditsLevelSpikeOnlyWhenOpportunityGatesPass() {
+        ProductAnalysis analysis = laneFixture();
+        analysis.accept(json("""
+                {"type":"unit_enter","time":-80,"ehandle":700,"unit":"CDOTA_NeutralSpawner","unit_kind":"neutral","team":4,"x":98.6,"y":147.2}
+                """));
+        analysis.accept(json("""
+                {"type":"interval","slot":1,"time":74,"unit":"CDOTA_Unit_Hero_Tusk","x":98.6,"y":147.2,"life_state":0,"level":2,"xp":500,"lh":1,"kills":0,"assists":0,"deaths":0}
+                """));
+        analysis.accept(json("""
+                {"type":"interval","slot":1,"time":78,"unit":"CDOTA_Unit_Hero_Tusk","x":98.6,"y":147.2,"life_state":0,"level":2,"xp":520,"lh":1,"kills":0,"assists":0,"deaths":0}
+                """));
+        for (int handle : new int[] { 301, 302, 303 }) {
+            analysis.accept(json(String.format(java.util.Locale.ROOT,
+                    "{\"type\":\"unit_enter\",\"time\":1,\"ehandle\":%d,\"unit\":\"CDOTA_BaseNPC_Creep_Lane\",\"unit_kind\":\"lane_creep\",\"team\":2,\"x\":90,\"y\":160,\"hp\":550,\"life_state\":0}",
+                    handle)));
+            analysis.accept(json(String.format(java.util.Locale.ROOT,
+                    "{\"type\":\"unit_position\",\"time\":75,\"ehandle\":%d,\"unit\":\"CDOTA_BaseNPC_Creep_Lane\",\"unit_kind\":\"lane_creep\",\"team\":2,\"x\":99,\"y\":147,\"hp\":550,\"life_state\":0}",
+                    handle)));
+        }
+        analysis.accept(json("""
+                {"type":"unit_enter","time":61,"ehandle":801,"unit":"CDOTA_BaseNPC_Creep_Neutral","unit_kind":"neutral","team":4,"x":99,"y":147,"hp":700,"life_state":0}
+                """));
+        analysis.accept(json("""
+                {"type":"unit_position","time":75,"ehandle":801,"unit":"CDOTA_BaseNPC_Creep_Neutral","unit_kind":"neutral","team":4,"x":99,"y":147,"hp":700,"life_state":0}
+                """));
+
+        analysis.accept(json("""
+                {"type":"interval","slot":0,"time":179,"unit":"CDOTA_Unit_Hero_Axe","x":80,"y":156,"life_state":0,"level":5,"xp":2300,"lh":25,"kills":0,"assists":0,"deaths":0}
+                """));
+        analysis.accept(json("""
+                {"type":"interval","slot":0,"time":180,"unit":"CDOTA_Unit_Hero_Axe","x":80,"y":156,"life_state":0,"level":6,"xp":2400,"lh":25,"kills":0,"assists":0,"deaths":0}
+                """));
+        analysis.accept(json("""
+                {"type":"DOTA_COMBATLOG_DAMAGE","time":195,"attackername":"npc_dota_hero_axe","targetname":"npc_dota_hero_juggernaut","attackerhero":true,"targethero":true,"attacker_team":2,"target_team":3,"value":520}
+                """));
+        analysis.accept(json("""
+                {"type":"interval","slot":0,"time":225,"unit":"CDOTA_Unit_Hero_Axe","x":82,"y":154,"life_state":0,"level":6,"xp":2800,"lh":33,"kills":0,"assists":1,"deaths":0}
+                """));
+
+        JsonObject farm = analysis.build(600).getAsJsonObject("farm");
+        JsonObject pull = farm.getAsJsonObject("suspected_pulls_by_slot")
+                .getAsJsonArray("1").get(0).getAsJsonObject();
+        JsonObject spike = farm.getAsJsonObject("level_spike_windows_by_slot")
+                .getAsJsonArray("0").get(0).getAsJsonObject();
+
+        assertEquals("suspected", pull.get("classification").getAsString());
+        assertFalse(pull.get("confirmed").getAsBoolean());
+        assertTrue(pull.get("confidence").getAsInt() >= 75);
+        assertEquals(6, spike.get("level").getAsInt());
+        assertEquals("used", spike.get("outcome").getAsString());
+        assertTrue(spike.get("hero_damage").getAsInt() >= 500);
+        assertTrue(spike.get("opportunity_gate").getAsBoolean());
+    }
+
+    @Test
     void enablesRetrospectiveLaneRouteOnlyWhenUnitVisibilityAndRoleGatesPass() {
         ProductAnalysis analysis = new ProductAnalysis("7.41d");
         addLaneSnapshot(analysis, 0, "puck", 12, 28, 42, 4200);
@@ -1363,6 +1526,21 @@ class ProductAnalysisTest {
         analysis.accept(json(String.format(java.util.Locale.ROOT,
                 "{\"type\":\"interval\",\"slot\":%d,\"time\":300,\"unit\":\"CDOTA_Unit_Hero_%s\",\"x\":%.1f,\"y\":%.1f,\"life_state\":0,\"level\":6,\"lh\":%d,\"networth\":%d}",
                 slot, hero, rawX, rawY, lastHits, networth)));
+    }
+
+    private static ProductAnalysis laneFixture() {
+        ProductAnalysis analysis = new ProductAnalysis("7.41d");
+        addLaneSnapshot(analysis, 0, "axe", 12, 28, 42, 4200);
+        addLaneSnapshot(analysis, 1, "tusk", 15, 30, 6, 2100);
+        addLaneSnapshot(analysis, 2, "bane", 84, 74, 5, 1900);
+        addLaneSnapshot(analysis, 3, "puck", 47, 52, 46, 4700);
+        addLaneSnapshot(analysis, 4, "drow_ranger", 82, 76, 51, 5000);
+        addLaneSnapshot(analysis, 5, "centaur", 86, 72, 44, 4300);
+        addLaneSnapshot(analysis, 6, "storm_spirit", 52, 47, 48, 4800);
+        addLaneSnapshot(analysis, 7, "juggernaut", 14, 26, 55, 5200);
+        addLaneSnapshot(analysis, 8, "crystal_maiden", 18, 24, 4, 1800);
+        addLaneSnapshot(analysis, 9, "hoodwink", 83, 69, 7, 2200);
+        return analysis;
     }
 
     private static void addCombatSnapshot(ProductAnalysis analysis, int slot, String hero,

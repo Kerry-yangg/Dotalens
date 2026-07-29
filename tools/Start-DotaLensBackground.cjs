@@ -35,6 +35,7 @@ const args = [
   "-NoProfile",
   "-File",
   scriptPath,
+  "-Foreground",
   "-FrontendPort",
   String(port),
   "-DataDirectory",

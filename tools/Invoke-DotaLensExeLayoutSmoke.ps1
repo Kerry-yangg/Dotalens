@@ -1,8 +1,9 @@
 [CmdletBinding()]
 param(
     [string]$Executable = (Join-Path (Split-Path -Parent $PSScriptRoot) 'release\win-unpacked\Dota Lens.exe'),
-    [string]$OutputDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) 'qa\0.4.5-exe-layout'),
-    [long]$MatchId = 8909845275
+    [string]$OutputDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) 'qa\0.5.0-exe-layout'),
+    [long]$MatchId = 8909845275,
+    [int]$SubjectSlot = 0
 )
 
 Set-StrictMode -Version Latest
@@ -18,6 +19,23 @@ if (-not (Test-Path -LiteralPath $executablePath -PathType Leaf)) {
     throw "Candidate executable was not found at $executablePath"
 }
 New-Item -ItemType Directory -Force -Path $outputPath | Out-Null
+
+$apiBase = 'http://127.0.0.1:5600/api'
+$analysis = Invoke-RestMethod -Uri "$apiBase/matches/$MatchId/analysis" -TimeoutSec 20
+$subjectPlayer = @($analysis.match.players | Where-Object {
+        [int]$_.player_slot -eq $SubjectSlot
+    } | Select-Object -First 1)
+if ($subjectPlayer.Count -ne 1) {
+    throw "Match $MatchId does not contain player slot $SubjectSlot"
+}
+$subject = Invoke-RestMethod -Method Put -Uri "$apiBase/matches/$MatchId/subject" `
+    -ContentType 'application/json' `
+    -Body (@{ player_slot = $SubjectSlot } | ConvertTo-Json -Compress) `
+    -TimeoutSec 20
+if ($subject.status -ne 'manual_selected' -or
+    [int]$subject.selected_player_slot -ne $SubjectSlot) {
+    throw "Could not bind match $MatchId to player slot $SubjectSlot"
+}
 
 $cases = @(
     @{ Name = 'player-score-1024x720'; View = 'player-score'; Width = 1024; Height = 720 },
@@ -44,6 +62,7 @@ $results = @()
 try {
     foreach ($case in $cases) {
         $capture = Join-Path $outputPath "$($case.Name).png"
+        Write-Host "[layout] Starting $($case.Name) ($($case.Width)x$($case.Height))"
         $env:DOTA_LENS_QA_CAPTURE = $capture
         $env:DOTA_LENS_QA_VIEW = $case.View
         $env:DOTA_LENS_QA_MATCH_ID = [string]$MatchId
@@ -55,7 +74,17 @@ try {
             'dota'
         }
 
-        $process = Start-Process -FilePath $executablePath -PassThru -Wait -WindowStyle Hidden
+        $caseStartedAt = [DateTimeOffset]::Now
+        $process = Start-Process -FilePath $executablePath -PassThru -WindowStyle Hidden
+        if (-not $process.WaitForExit(90000)) {
+            try {
+                Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            } catch {
+                # The process may exit while timeout cleanup is running.
+            }
+            throw "$($case.Name) did not exit within 90 seconds"
+        }
+        $process.Refresh()
         if ($process.ExitCode -ne 0) {
             throw "$($case.Name) exited with code $($process.ExitCode)"
         }
@@ -88,6 +117,15 @@ try {
                 } |
                 ForEach-Object { $_.Name }
         )
+        $targetSelector = if ($case.View -eq 'settings') {
+            '#page-settings'
+        } else {
+            "#detail-$($case.View)"
+        }
+        $targetRow = $metrics.rows.PSObject.Properties[$targetSelector]
+        $targetVisible = $null -ne $targetRow -and [bool]$targetRow.Value.visible
+        $subjectDialogRow = $metrics.rows.PSObject.Properties['#match-subject-dialog']
+        $subjectDialogClosed = $null -eq $subjectDialogRow -or -not [bool]$subjectDialogRow.Value.visible
         $farmMapWidth = if ($case.View -eq 'farm') {
             [int]$metrics.rows.'.farm-map-canvas'.width
         } else {
@@ -104,10 +142,14 @@ try {
             loaded_hero_images = [int]$metrics.assets.loadedHeroImages
             broken_hero_images = [int]$metrics.assets.brokenHeroImages
             visible_overflow = $visibleOverflow
+            target_visible = $targetVisible
+            subject_dialog_closed = $subjectDialogClosed
             farm_map_width = $farmMapWidth
             farm_map_usable = $farmMapUsable
             screenshot = $capture
         }
+        $elapsedSeconds = [math]::Round(([DateTimeOffset]::Now - $caseStartedAt).TotalSeconds, 1)
+        Write-Host "[layout] Passed $($case.Name) in ${elapsedSeconds}s"
     }
 } finally {
     $env:DOTA_LENS_QA_CAPTURE = $previous.Capture
@@ -121,6 +163,8 @@ try {
 $failedCases = @($results | Where-Object {
         $_.broken_hero_images -ne 0 -or
         @($_.visible_overflow).Count -gt 0 -or
+        -not $_.target_visible -or
+        -not $_.subject_dialog_closed -or
         -not $_.farm_map_usable
     })
 $summary = [ordered]@{

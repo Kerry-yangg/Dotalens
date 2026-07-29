@@ -168,6 +168,10 @@ export function atomicReportFixture({
   report.role_code = `position_${position}`;
   report.role_confidence = 96;
   report.dimension_coverage = 10;
+  report.event_candidate_model = "player-report-event-candidates/1.1";
+  report.event_candidates = [];
+  report.important_events = [];
+  report.story_nodes = [];
   report.semantic = {
     strength_ids: ["strength:lane_execution"],
     main_issue_id: "issue:combat_timing",

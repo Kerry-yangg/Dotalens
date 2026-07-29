@@ -79,6 +79,20 @@ final class PlayerReportLocalization {
                 "unknown");
     }
 
+    static JsonObject forEvent(String module, String entityType, String entityId, int slot,
+            int time, int rangeStart, int rangeEnd, JsonObject source, String region) {
+        return target(
+                module,
+                entityType,
+                entityId,
+                slot,
+                time,
+                rangeStart,
+                rangeEnd,
+                source,
+                region);
+    }
+
     static boolean ordinaryEligible(JsonObject jumpTarget) {
         if (jumpTarget == null) return false;
         String level = stringValue(jumpTarget, "location_level", "L0");
@@ -95,8 +109,9 @@ final class PlayerReportLocalization {
         row.addProperty("entity_id", entityId);
         row.addProperty("player_slot", slot);
         row.addProperty("time", Math.max(0, time));
-        row.addProperty("range_start", Math.max(0, rangeStart));
-        row.addProperty("range_end", Math.max(Math.max(0, rangeStart), rangeEnd));
+        int boundedStart = Math.max(0, rangeStart);
+        row.addProperty("range_start", boundedStart);
+        row.addProperty("range_end", Math.max(boundedStart + 1, rangeEnd));
 
         JsonObject mapFocus = mapFocus(source, region);
         String level = locationLevel(entityId, time, mapFocus);

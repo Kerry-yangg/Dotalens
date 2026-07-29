@@ -277,6 +277,67 @@ test("simple report keeps every eligible conclusion and merges one root cause", 
   );
 });
 
+test("simple report merges important events with conclusions and keeps context facts", () => {
+  const jump = (entityType, entityId, time, region) => ({
+    module: entityType === "ward" ? "vision" : entityType === "objective" ? "map" : "combat",
+    entity_type: entityType,
+    entity_id: entityId,
+    time,
+    range_start: time - 10,
+    range_end: time + 15,
+    location_level: "L2",
+    map_focus: { region },
+  });
+  const report = buildSimplePlayerReport({
+    dimensions: [],
+    insights: [
+      localizedInsight({
+        id: "ward-strength",
+        kind: "strength",
+        rootCauseId: "ward:ward-1",
+        time: 420,
+        jumpTarget: jump("ward", "ward-1", 420, "river"),
+      }),
+      localizedInsight({
+        id: "fight-problem",
+        kind: "improvement",
+        rootCauseId: "fight:fight-1",
+        time: 900,
+        jumpTarget: jump("fight", "fight-1", 900, "mid_lane"),
+      }),
+    ],
+    importantEvents: [
+      {
+        id: "moment:ward:ward-1",
+        kind: "strength",
+        dedupe_key: "ward:ward-1",
+        title: "河道眼位提供有效信息",
+        fact: "07:00 放置后发现三名敌人。",
+        time_start: 420,
+        time_end: 780,
+        jump_target: jump("ward", "ward-1", 420, "river"),
+      },
+      {
+        id: "moment:objective:objective-1",
+        kind: "context",
+        dedupe_key: "objective:objective-1",
+        title: "关键防御塔被摧毁",
+        fact: "18:40 中路一塔发生目标事件。",
+        time_start: 1120,
+        time_end: 1120,
+        jump_target: jump("objective", "objective-1", 1120, "mid_lane"),
+      },
+    ],
+  });
+
+  assert.equal(report.timeline.length, 3);
+  assert.equal(report.strengths.length, 1);
+  assert.equal(report.improvements.length, 1);
+  assert.equal(report.contexts.length, 1);
+  assert.equal(report.timeline.filter((item) => item.jumpTarget.entityId === "ward-1").length, 1);
+  assert.equal(report.contexts[0].id, "moment:objective:objective-1");
+});
+
 test("simple presentation exposes only plain-language review fields", () => {
   const presentation = presentSimpleInsight(localizedInsight({
     protocol: "player-report/4.0",
@@ -317,7 +378,8 @@ test("simple player report renders complete plain-language match coverage", () =
   assert.match(renderer, /presentSimpleInsight/);
   assert.match(renderer, /全场做得好/);
   assert.match(renderer, /全场需要改进/);
-  assert.match(renderer, /按时间查看全部结论/);
+  assert.match(renderer, /按时间查看所有重要时刻/);
+  assert.match(renderer, /data-simple-report-filter="context"/);
   assert.match(renderer, /查看这一波/);
   assert.match(renderer, /data-player-score-review=/);
   assert.match(renderer, /data-player-score-review-occurrence=/);

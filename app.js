@@ -143,6 +143,8 @@ import { OFFICIAL_ABILITY_NAMES_ZH, OFFICIAL_ITEM_NAMES_ZH } from "./dota-locali
 import {
   activeTaskFromHistory,
   aggregateCombatContributions,
+  buildMatchListFailureReport,
+  buildParseFailureReport,
   buildCombatContributionRoster,
   buildSimplePlayerReport,
   combatContributionChartModel,
@@ -155,6 +157,7 @@ import {
   filterCombatContributionFights,
   formatCountdownSeconds,
   matchHistoryGuidance,
+  matchListFailureGuidance,
   normalizeMatchCache,
   normalizeMatchSubject,
   normalizePlayerReportInsightOccurrences,
@@ -163,6 +166,7 @@ import {
   normalizeTaskHistory,
   patchCoverageImpact,
   patchResolutionLabel,
+  parseFailureGuidance,
   playerReportUpgradeState,
   presentSimpleInsight,
   recomputePlayerReportScoreAudit,
@@ -197,7 +201,7 @@ import {
 } from "./match-list-preferences.js";
 
 const API_BASE = "http://127.0.0.1:5600/api";
-const APP_VERSION = "0.4.5";
+const APP_VERSION = "0.5.0";
 const HERO_FALLBACK_IMAGE = `data:image/svg+xml,${encodeURIComponent(
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 36"><rect width="64" height="36" rx="4" fill="#252b2e"/><circle cx="32" cy="13" r="7" fill="#879296"/><path d="M17 35c1-9 7-14 15-14s14 5 15 14" fill="#879296"/></svg>',
 )}`;
@@ -914,6 +918,7 @@ const state = {
   matches: [],
   matchesStatus: "idle",
   matchesError: "",
+  matchesErrorCode: "",
   matchesOffline: false,
   matchesAvailability: null,
   matchesFetchedAt: null,
@@ -943,6 +948,8 @@ const state = {
   selectedCombatPlayerSlot: 0,
   selectedWardId: "ward-07",
   selectedFarmDiagnosticId: "farm-d3",
+  selectedBuildEventId: null,
+  selectedMapEventId: null,
   farmTimeWindow: "pre20",
   farmSource: "all",
   farmTeam: "winner",
@@ -1511,6 +1518,16 @@ function normalizeTimedEvent(event, fallbackSeconds = 0) {
   return { ...event, time: timeMs / 1000, timeMs };
 }
 
+function purchaseEventId(event, slot = state.selectedHeroSlot) {
+  if (event?.id) return String(event.id);
+  return `purchase-${Number(slot)}-${Math.round(Number(event?.time || 0))}-${String(event?.key || "unknown")}-${Number(event?.event_seq || 0)}`;
+}
+
+function objectiveEventId(event) {
+  if (event?.id) return String(event.id);
+  return `objective-${Math.round(Number(event?.time || 0))}`;
+}
+
 function compactNumber(value) {
   if (Math.abs(value) >= 1000) return `${(value / 1000).toFixed(value >= 10000 ? 0 : 1)}k`;
   return String(Math.round(value));
@@ -1628,6 +1645,8 @@ const COVERAGE_SOURCE_ZH = {
 };
 
 const TASK_ERROR_MESSAGES = {
+  network_access_denied: "本地解析器的联网权限被阻止，无法访问 OpenDota 或 Replay 下载服务。",
+  network_unavailable: "当前网络或公开服务不可用，请稍后重试或导入本机 Replay。",
   replay_unavailable: "OpenDota 暂时没有这场比赛的 Replay 地址，请稍后重试。",
   replay_server_unavailable: "Valve Replay 下载服务持续不可用，自动重试窗口已用尽，可稍后重新解析。",
   rate_limited: "OpenDota 请求过于频繁，请稍后再试。",
@@ -1641,12 +1660,10 @@ const TASK_ERROR_MESSAGES = {
 };
 
 function taskErrorMessage(job = {}) {
-  if (job.error_code === "replay_match_id_mismatch" && job.error_context) {
-    const declared = job.error_context.declared_match_id ?? job.match_id ?? "--";
-    const internal = job.error_context.internal_match_id ?? "--";
-    return `导入 ID ${declared}，录像内部 ID ${internal}。请把文件按内部 ID 重命名后重新导入。`;
-  }
-  return TASK_ERROR_MESSAGES[job.error_code] || job.message || "本地解析失败，请查看解析器日志。";
+  return parseFailureGuidance(job).detail
+    || TASK_ERROR_MESSAGES[job.error_code]
+    || job.message
+    || "本地解析失败，请查看解析器日志。";
 }
 
 function escapeHtml(value) {
@@ -1678,6 +1695,37 @@ function formatBytes(value) {
   if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
   if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
   return `${(bytes / 1024).toFixed(0)} KB`;
+}
+
+async function writeClipboardText(value) {
+  const text = String(value || "");
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Electron and local previews may deny the Clipboard API; use the DOM fallback.
+    }
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("clipboard_unavailable");
+}
+
+async function copyFeedback(value, successDetail = "可直接粘贴给开发者") {
+  try {
+    await writeClipboardText(value);
+    showToast("反馈信息已复制", successDetail, "clipboard-check");
+  } catch {
+    showToast("复制失败", "当前系统未开放剪贴板权限，请在设置中导出诊断信息", "circle-alert");
+  }
 }
 
 async function apiFetch(path, options = {}) {
@@ -1855,6 +1903,9 @@ function syncMatchLimitControls() {
   });
   const rangeLabel = document.querySelector("#account-match-range-label");
   if (rangeLabel) rangeLabel.textContent = `最多 ${state.matchLimit} 场`;
+  document.querySelectorAll("[data-match-limit-copy]").forEach((copy) => {
+    copy.textContent = `本地解析器会读取该账号最近最多 ${state.matchLimit} 场比赛，并标出可自动解析的场次。`;
+  });
 }
 
 function setMatchLimit(value, { persist = true } = {}) {
@@ -1946,6 +1997,7 @@ async function loadMatches(accountId = state.accountId, options = {}) {
   state.accountId = normalized;
   state.matchesStatus = "loading";
   state.matchesError = "";
+  state.matchesErrorCode = "";
   state.matchesOffline = false;
   state.matchesAvailability = null;
   renderMatches();
@@ -1961,6 +2013,7 @@ async function loadMatches(accountId = state.accountId, options = {}) {
     state.matches = (payload.matches || []).slice(0, confirmedLimit).map(normalizeMatch);
     state.matchesAvailability = payload.availability || null;
     state.matchesStatus = "ready";
+    state.matchesErrorCode = "";
     state.matchesOffline = false;
     state.matchesFetchedAt = payload.fetched_at || new Date().toISOString();
     window.localStorage.setItem("dota-lens-account-id", normalized);
@@ -1988,6 +2041,7 @@ async function loadMatches(accountId = state.accountId, options = {}) {
       state.matchesAvailability = null;
       state.matchesFetchedAt = fallback.fetchedAt;
       state.matchesError = fallback.error;
+      state.matchesErrorCode = error.code || "match_list_failed";
       document.querySelector("#background-status").textContent = `离线缓存：${formatGeneratedAt(fallback.savedAt)}`;
       if (parserAvailable) setParserStatus(true, "就绪 · 当前使用比赛缓存");
       updateAccountChrome();
@@ -2002,6 +2056,7 @@ async function loadMatches(accountId = state.accountId, options = {}) {
     state.matchesStatus = "error";
     state.matchesOffline = false;
     state.matchesAvailability = null;
+    state.matchesErrorCode = error.code || "match_list_failed";
     if (parserAvailable && error.code === "opendota_unavailable") {
       state.matchesError = `本地解析器已就绪，但 OpenDota 暂时无法连接：${error.message}`;
       setParserStatus(true, "就绪 · OpenDota 暂不可用");
@@ -2103,6 +2158,9 @@ function hydrateSelectedHeroModules(slot = state.selectedHeroSlot) {
   const build = modules.build?.by_slot?.[key] || {};
   replaceArray(ITEM_EVENTS, (build.purchases || []).map((event) => ({ ...normalizeTimedEvent(event), action: eventTimeMs(event) <= 0 ? "初始装备" : "购买" })));
   replaceArray(ABILITY_EVENTS, (build.abilities || []).map((event) => ({ ...normalizeTimedEvent(event), level: event.value, name: abilityName(event.key) })));
+  if (!ITEM_EVENTS.some((event) => purchaseEventId(event, slot) === state.selectedBuildEventId)) {
+    state.selectedBuildEventId = null;
+  }
 
   replaceArray(FARM_HEAT_CELLS, (modules.farm?.heat_cells_by_slot?.[key] || []).map((cell) => ({ ...cell, region: regionName(cell.region) })));
   const anomalyRows = modules.farm?.anomalies_by_slot?.[key] || [];
@@ -2232,6 +2290,9 @@ function hydrateAnalysisModules(analysis) {
     x: event.x == null ? null : Number(event.x),
     y: event.y == null ? null : Number(event.y),
   })));
+  if (!OBJECTIVE_EVENTS.some((event) => objectiveEventId(event) === state.selectedMapEventId)) {
+    state.selectedMapEventId = null;
+  }
   replaceArray(ROSHAN_ATTEMPTS, (modules.objectives?.roshan_attempts || []).map((attempt) => ({
     ...attempt,
     start: Number(attempt.start_ms ?? attempt.start * 1000) / 1000,
@@ -2349,6 +2410,18 @@ function regionForPosition(position) {
   return "河道交汇区";
 }
 
+function renderMatchTroubleshootingChecks(checks = []) {
+  return `<ol class="match-troubleshooting-list">${checks.map((check, index) => `
+    <li>
+      <span class="troubleshooting-index">${index + 1}</span>
+      <span>
+        <strong>${escapeHtml(check.title)}</strong>
+        <small>${escapeHtml(check.detail)}</small>
+      </span>
+    </li>
+  `).join("")}</ol>`;
+}
+
 function renderMatches() {
   const list = document.querySelector("#matches-list");
   const resultCount = document.querySelector("#match-result-count");
@@ -2358,13 +2431,30 @@ function renderMatches() {
     return;
   }
   if (state.matchesStatus === "error") {
-    list.innerHTML = `<div class="match-empty-state"><span class="empty-state-icon negative"><i data-lucide="plug-zap"></i></span><strong>比赛列表暂时不可用</strong><p>${escapeHtml(state.matchesError)}</p><button class="command-button secondary" type="button" data-retry-matches><i data-lucide="refresh-cw"></i><span>重新连接</span></button></div>`;
+    const guidance = matchListFailureGuidance({
+      errorCode: state.matchesErrorCode,
+      errorMessage: state.matchesError,
+      parserOnline: state.parserOnline,
+    });
+    list.innerHTML = `
+      <div class="match-empty-state match-diagnostic-state">
+        <span class="empty-state-icon negative"><i data-lucide="plug-zap"></i></span>
+        <strong>${escapeHtml(guidance.title)}</strong>
+        <p>${escapeHtml(guidance.detail)}</p>
+        <div class="match-error-summary"><i data-lucide="circle-alert"></i><span>${escapeHtml(state.matchesError)}</span></div>
+        ${renderMatchTroubleshootingChecks(guidance.checks)}
+        <div class="empty-state-actions">
+          <button class="command-button" type="button" data-retry-matches><i data-lucide="refresh-cw"></i><span>重新读取</span></button>
+          <button class="command-button secondary" type="button" data-import-private-replay><i data-lucide="file-plus-2"></i><span>导入本机 Replay</span></button>
+          <button class="command-button secondary" type="button" data-copy-match-error><i data-lucide="clipboard-check"></i><span>复制反馈</span></button>
+        </div>
+      </div>`;
     resultCount.textContent = "未读取到比赛";
     refreshIcons(list);
     return;
   }
   if (state.matchesStatus === "idle") {
-    list.innerHTML = `<div class="match-empty-state"><span class="empty-state-icon"><i data-lucide="user-round-search"></i></span><strong>输入 Dota 2 游戏 ID</strong><p>本地解析器会读取该账号最近最多 ${state.matchLimit} 场比赛，并标出可自动解析的场次。</p></div>`;
+    list.innerHTML = `<div class="match-empty-state"><span class="empty-state-icon"><i data-lucide="user-round-search"></i></span><strong>输入 Dota 2 游戏 ID</strong><p data-match-limit-copy>本地解析器会读取该账号最近最多 ${state.matchLimit} 场比赛，并标出可自动解析的场次。</p></div>`;
     resultCount.textContent = "等待账号";
     refreshIcons(list);
     return;
@@ -2376,6 +2466,7 @@ function renderMatches() {
         <span class="empty-state-icon warning"><i data-lucide="shield-alert"></i></span>
         <strong>${escapeHtml(guidance.title)}</strong>
         <p>${escapeHtml(guidance.detail)}</p>
+        ${renderMatchTroubleshootingChecks(guidance.checks)}
         <div class="empty-state-actions">
           <button class="command-button" type="button" data-import-private-replay><i data-lucide="file-plus-2"></i><span>导入本机 Replay</span></button>
           <button class="command-button secondary" type="button" data-scan-private-replays><i data-lucide="scan-search"></i><span>扫描 Replay 目录</span></button>
@@ -2564,10 +2655,12 @@ function markerHtml(marker) {
   if (!Number.isFinite(Number(marker.x)) || !Number.isFinite(Number(marker.y))) return "";
   const icon = marker.type === "camp" ? "trees" : marker.type === "ward" ? "eye" : marker.type === "objective" ? "landmark" : "swords";
   const title = marker.static ? marker.title : `${formatTime(marker.time)} · ${marker.title}`;
+  const entityId = marker.type === "objective" ? objectiveEventId(marker) : "";
+  const selected = entityId && entityId === state.selectedMapEventId;
   const actionAttribute = marker.static
     ? `data-map-marker-id="${escapeHtml(marker.id || marker.type)}" aria-disabled="true"`
-    : `data-map-time="${Number(marker.time)}"`;
-  return `<button class="map-pin ${marker.type}" type="button" ${actionAttribute} style="left:${marker.x}%;top:${marker.y}%" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}"><i data-lucide="${icon}"></i></button>`;
+    : `data-map-time="${Number(marker.time)}"${entityId ? ` data-map-event-id="${escapeHtml(entityId)}"` : ""}`;
+  return `<button class="map-pin ${marker.type} ${selected ? "selected" : ""}" type="button" ${actionAttribute} style="left:${marker.x}%;top:${marker.y}%" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}"><i data-lucide="${icon}"></i></button>`;
 }
 
 function combatMapMarkers() {
@@ -3685,15 +3778,24 @@ function updateMap() {
 }
 
 function renderMapEventList() {
-  const events = [...WARD_EVENTS, ...combatMapMarkers(), ...OBJECTIVE_EVENTS]
+  const allEvents = [...WARD_EVENTS, ...combatMapMarkers(), ...OBJECTIVE_EVENTS];
+  const events = allEvents
     .sort((a, b) => Math.abs(a.time - state.currentTime) - Math.abs(b.time - state.currentTime))
     .slice(0, 6)
     .sort((a, b) => a.time - b.time);
+  const selected = OBJECTIVE_EVENTS.find(
+    (event) => objectiveEventId(event) === state.selectedMapEventId,
+  );
+  if (selected && !events.includes(selected)) {
+    events.splice(Math.max(0, events.length - 1), 1, selected);
+    events.sort((a, b) => a.time - b.time);
+  }
   const list = document.querySelector("#map-event-list");
   list.innerHTML = events.map((event) => {
     const icon = event.type === "ward" ? "eye" : event.type === "objective" ? "landmark" : "swords";
     const location = state.currentAnalysis ? regionName(event.location || event.region || "unknown") : regionForPosition(event);
-    return `<button class="map-event-row" type="button" data-map-time="${event.time}"><time>${formatTime(event.time)}</time><i data-lucide="${icon}"></i><span><strong>${event.title}</strong><small>${location}</small></span><i data-lucide="chevron-right"></i></button>`;
+    const entityId = event.type === "objective" ? objectiveEventId(event) : "";
+    return `<button class="map-event-row ${entityId && entityId === state.selectedMapEventId ? "active" : ""}" type="button" data-map-time="${event.time}"${entityId ? ` data-map-event-id="${escapeHtml(entityId)}"` : ""}><time>${formatTime(event.time)}</time><i data-lucide="${icon}"></i><span><strong>${event.title}</strong><small>${location}</small></span><i data-lucide="chevron-right"></i></button>`;
   }).join("");
   refreshIcons(list);
 }
@@ -3875,7 +3977,8 @@ function renderBuild() {
       const isItem = "action" in event;
       const image = isItem ? itemImage(event.key) : abilityImage(event.key);
       const name = isItem ? itemName(event.key) : `${event.name || abilityName(event.key)} ${event.level}级`;
-      return `<button class="track-event" type="button" data-build-time-ms="${event.timeMs ?? event.time * 1000}" style="left:${position}px;top:${8 + lane * 38}px" title="${formatPreciseTimeMs(event.timeMs ?? event.time * 1000)} · ${name}"><img src="${image}" alt="${name}"><small>${formatTime(event.time)}</small></button>`;
+      const entityId = isItem ? purchaseEventId(event, state.selectedHeroSlot) : "";
+      return `<button class="track-event ${entityId && entityId === state.selectedBuildEventId ? "active" : ""}" type="button" data-build-time-ms="${event.timeMs ?? event.time * 1000}"${entityId ? ` data-build-event-id="${escapeHtml(entityId)}"` : ""} style="left:${position}px;top:${8 + lane * 38}px" title="${formatPreciseTimeMs(event.timeMs ?? event.time * 1000)} · ${name}"><img src="${image}" alt="${name}"><small>${formatTime(event.time)}</small></button>`;
     }).join("")}</div></div>
   `).join("");
   buildTracks.scrollLeft = previousScrollLeft;
@@ -5094,6 +5197,8 @@ function playerScoreModel(hero = safeHero(state.selectedHeroSlot), { buildBrief 
     rootCauseById,
     rootCauseSummary: scoreCard.root_cause_summary || null,
     storyNodes: Array.isArray(report?.story_nodes) ? report.story_nodes : [],
+    importantEvents: Array.isArray(report?.important_events) ? report.important_events : [],
+    eventCandidates: Array.isArray(report?.event_candidates) ? report.event_candidates : [],
     trainingPlan: Array.isArray(report?.training_plan) ? report.training_plan : [],
     evidenceIndex: report?.evidence_index && typeof report.evidence_index === "object" ? report.evidence_index : {},
     caveats: report?.caveats || [],
@@ -5107,6 +5212,7 @@ function playerScoreModel(hero = safeHero(state.selectedHeroSlot), { buildBrief 
     model.simpleReport = buildSimplePlayerReport({
       dimensions: model.dimensions,
       insights: simpleInsights,
+      importantEvents: model.importantEvents,
       stories: model.storyNodes,
       training: model.trainingPlan,
     });
@@ -5879,6 +5985,42 @@ function playerScoreDimensionHtml(dimension) {
   </button>`;
 }
 
+function renderPlayerScoreImportantMoments(model) {
+  const moments = (model.simpleReport?.timeline || [])
+    .filter((moment) => moment.importantEvent);
+  if (!moments.length) {
+    return `<section class="player-score-important-board"><header><span><small>统一事件候选池</small><strong>重要时刻</strong></span><em>候选 ${model.eventCandidates.length} 条</em></header><div class="player-score-data-gap compact"><span>当前没有同时通过重要性、定位和时间范围门槛的事件。</span></div></section>`;
+  }
+  const typeLabel = (moment) => {
+    const types = moment.relatedEventTypes || [];
+    if (types.includes("combat") || types.includes("death") || types.includes("teleport")) return "战斗";
+    if (types.includes("ward")) return "视野";
+    if (types.includes("purchase") || types.includes("item_delivery")) return "装备";
+    if (types.includes("objective")) return "目标";
+    if (types.includes("lane") || types.includes("lane_pressure")
+      || types.includes("suspected_pull") || types.includes("level_spike")) return "对线";
+    if (types.includes("rune_control") || types.includes("support_route")) return "节奏";
+    if (types.includes("farm")) return "发育";
+    return "事实";
+  };
+  const rows = moments.map((moment) => {
+    const presented = presentSimpleInsight(moment);
+    const time = presented.jumpTarget.rangeStart ?? presented.time ?? 0;
+    const end = presented.jumpTarget.rangeEnd ?? presented.timeEnd ?? time;
+    const location = presented.location
+      || (presented.jumpTarget.mapFocus?.region
+        ? regionName(presented.jumpTarget.mapFocus.region) : "地图已定位");
+    const tone = presented.kind === "strength" ? "strength"
+      : presented.kind === "improvement" ? "improvement" : "context";
+    return `<button class="player-score-important-row ${tone}" type="button" data-player-score-review="${escapeHtml(presented.id)}">
+      <time>${formatTime(time)}-${formatTime(end)}</time>
+      <span><small>${typeLabel(moment)} · ${escapeHtml(location)}</small><strong>${escapeHtml(plainText(presented.title, "比赛关键时刻"))}</strong><em>${escapeHtml(plainText(presented.fact, "已定位到具体 Replay 片段。"))}</em></span>
+      <i data-lucide="arrow-up-right"></i>
+    </button>`;
+  }).join("");
+  return `<section class="player-score-important-board"><header><span><small>统一事件候选池筛选结果</small><strong>所有重要时刻</strong></span><em>入选 ${moments.length} / 候选 ${model.eventCandidates.length}</em></header><div>${rows}</div></section>`;
+}
+
 function renderPlayerScoreOverview(model) {
   const phaseHtml = model.phases.length ? model.phases.map((phase) => {
     const score = phase.score == null ? "--" : Math.round(phase.score);
@@ -5896,6 +6038,7 @@ function renderPlayerScoreOverview(model) {
     <section class="player-score-dimension-board"><header><span><small>十项公共维度</small><strong>${escapeHtml(model.role.label)}权重</strong></span><em>缺失指标不按 0 分</em></header><div class="player-score-dimension-grid">${model.dimensions.map(playerScoreDimensionHtml).join("")}</div></section>
     <section class="player-score-priority-board"><header><span><small>下一局训练重点</small><strong>稳定项与优先复核</strong></span><em>最多三条建议</em></header><div class="player-score-strength-list">${strengths}</div><div class="player-score-advice-list">${advice}</div></section>
     <section class="player-score-phase-board"><header><span><small>固定检查点 + 动态阶段</small><strong>分阶段表现</strong></span></header><div>${phaseHtml}</div></section>
+    ${renderPlayerScoreImportantMoments(model)}
   </div>`;
 }
 
@@ -5903,6 +6046,7 @@ function renderSimplePlayerReport(model) {
   const simpleReport = model.simpleReport || buildSimplePlayerReport({
     dimensions: model.dimensions,
     insights: [],
+    importantEvents: model.importantEvents,
   });
   const training = simpleReport.primaryTraining
     || model.brief?.training?.[0]
@@ -5995,21 +6139,23 @@ function renderSimplePlayerReport(model) {
   const improvementHtml = simpleReport.improvements.map(
     (insight) => insightCard(insight, "improvement"),
   ).join("") || `<div class="simple-report-empty"><i data-lucide="shield-check"></i><span><strong>没有能够明确归到你身上的问题</strong><small>分数偏低不等于一定做错；证据不够时不会硬批评。</small></span></div>`;
-  const activeFilter = ["strength", "improvement"].includes(state.simpleReportFilter)
+  const activeFilter = ["strength", "improvement", "context"].includes(state.simpleReportFilter)
     ? state.simpleReportFilter
     : "all";
   const filteredTimeline = simpleReport.timeline.filter((insight) => (
     activeFilter === "all"
     || activeFilter === "strength" && ["strength", "positive"].includes(insight.kind)
     || activeFilter === "improvement" && ["improvement", "problem", "priority"].includes(insight.kind)
+    || activeFilter === "context" && insight.kind === "context"
   ));
   const timelineHtml = filteredTimeline.map((source) => {
     const insight = presentSimpleInsight(source);
     const meta = insightMeta(insight);
     const strength = ["strength", "positive"].includes(insight.kind);
-    return `<button class="simple-report-timeline-row ${strength ? "strength" : "improvement"}" type="button" data-player-score-review="${escapeHtml(insight.id)}">
+    const context = insight.kind === "context";
+    return `<button class="simple-report-timeline-row ${context ? "context" : strength ? "strength" : "improvement"}" type="button" data-player-score-review="${escapeHtml(insight.id)}">
       <time>${escapeHtml(meta.range)}</time>
-      <i data-lucide="${strength ? "circle-check" : "circle-alert"}"></i>
+      <i data-lucide="${context ? "map-pin" : strength ? "circle-check" : "circle-alert"}"></i>
       <span><strong>${escapeHtml(plainText(insight.title))}</strong><small>${escapeHtml([meta.location, plainText(insight.fact)].filter(Boolean).join(" · "))}</small></span>
       <i data-lucide="arrow-up-right"></i>
     </button>`;
@@ -6023,7 +6169,7 @@ function renderSimplePlayerReport(model) {
       <div class="simple-report-verdict">
         <span><i data-lucide="scroll"></i>整场复盘 · ${escapeHtml(model.role.label)}</span>
         <h2>${escapeHtml(plainText(model.brief?.verdict, "这场的明确结论仍在生成中。"))}</h2>
-        <p>已确认 <b>${simpleReport.strengths.length}</b> 个做得好的地方、<b>${simpleReport.improvements.length}</b> 个需要改进的地方，全部可以回到对应片段。</p>
+        <p>已确认 <b>${simpleReport.strengths.length}</b> 个做得好的地方、<b>${simpleReport.improvements.length}</b> 个需要改进的地方和 <b>${simpleReport.contexts.length}</b> 个关键事实，全部可以回到对应片段。</p>
       </div>
       <div class="simple-report-training">
         <span><i data-lucide="target"></i>下一局训练目标</span>
@@ -6048,11 +6194,12 @@ function renderSimplePlayerReport(model) {
     </div>
     <section class="simple-report-timeline-section">
       <header>
-        <span><small>从开局到结束，不只挑三条</small><strong>按时间查看全部结论</strong></span>
+        <span><small>从开局到结束，保留所有真正重要的节点</small><strong>按时间查看所有重要时刻</strong></span>
         <div class="simple-report-filters" role="group" aria-label="结论筛选">
           <button type="button" class="${activeFilter === "all" ? "active" : ""}" data-simple-report-filter="all">全部 ${simpleReport.timeline.length}</button>
           <button type="button" class="${activeFilter === "strength" ? "active" : ""}" data-simple-report-filter="strength">做得好 ${simpleReport.strengths.length}</button>
           <button type="button" class="${activeFilter === "improvement" ? "active" : ""}" data-simple-report-filter="improvement">需改进 ${simpleReport.improvements.length}</button>
+          <button type="button" class="${activeFilter === "context" ? "active" : ""}" data-simple-report-filter="context">重要事实 ${simpleReport.contexts.length}</button>
         </div>
       </header>
       <div class="simple-report-timeline">${timelineHtml}</div>
@@ -6081,6 +6228,37 @@ function renderPlayerScoreLane(model) {
   </div>`;
 }
 
+function renderPlayerScoreP1Audit(model, eventTypes, title, subtitle) {
+  const allowed = new Set(eventTypes);
+  const labels = {
+    lane_pressure: "兵线空间",
+    item_delivery: "装备到手",
+    rune_control: "抢符收益",
+    support_route: "辅助离线",
+    suspected_pull: "疑似拉野",
+    level_spike: "等级窗口",
+  };
+  const rows = model.eventCandidates
+    .filter((candidate) => allowed.has(String(candidate.event_type || "")))
+    .sort((left, right) => Number(left.time_start || 0) - Number(right.time_start || 0));
+  const content = rows.map((candidate) => {
+    const jump = normalizePlayerReportJumpTarget(candidate.jump_target);
+    const start = Number(candidate.time_start ?? jump.rangeStart ?? 0);
+    const end = Number(candidate.time_end ?? jump.rangeEnd ?? start);
+    const location = jump.mapFocus?.region
+      ? regionName(jump.mapFocus.region)
+      : "位置已记录";
+    const kind = candidate.kind === "strength"
+      ? "strength" : candidate.kind === "improvement" ? "improvement" : "context";
+    return `<button class="player-score-p1-row ${kind}" type="button" data-player-score-review="${escapeHtml(candidate.id)}">
+      <time>${formatTime(start)}${end > start ? `<small>至 ${formatTime(end)}</small>` : ""}</time>
+      <span><small>${escapeHtml(labels[candidate.event_type] || "节奏事实")} · ${escapeHtml(location)} · 置信度 ${Math.round(Number(candidate.confidence || 0))}%</small><strong>${escapeHtml(candidate.title || "可复核事实")}</strong><em>${escapeHtml(candidate.fact || "打开对应片段查看证据。")}</em></span>
+      <i data-lucide="arrow-up-right"></i>
+    </button>`;
+  }).join("") || `<div class="player-score-data-gap compact"><span>本场没有生成这组 P1 事实；旧分析包需重新解析。</span></div>`;
+  return `<section class="player-score-p1-audit"><header><span><small>${escapeHtml(subtitle)}</small><strong>${escapeHtml(title)}</strong></span><em>${rows.length} 条可定位事实</em></header><div>${content}</div></section>`;
+}
+
 function renderPlayerScoreFarm(model) {
   const cells = farmCellsForHero(model.hero.slot);
   const diagnostics = farmDiagnosticsForHero(model.hero.slot).slice().sort((left, right) => Number(left.time || 0) - Number(right.time || 0));
@@ -6106,6 +6284,7 @@ function renderPlayerScoreFarm(model) {
     <section class="player-score-farm-map"><header><span><small>真实 Dota 地图</small><strong>空间收益与移动路线</strong></span><button class="text-command" type="button" data-player-score-jump="farm">打开完整打钱分析</button></header><div class="player-score-map-canvas"><img src="/assets/dota-map-740.webp" alt="Dota 2 打钱地图"><svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><polyline points="${route}"></polyline></svg>${heat}${currentMarker}</div></section>
     <section class="player-score-farm-summary"><header><span><small>收入来源</small><strong>本场资源构成</strong></span></header><div><span><small>已归因总收益</small><strong>${total.toLocaleString("zh-CN")}</strong></span><span><small>兵线</small><strong>${lane.toLocaleString("zh-CN")} · ${total ? Math.round(lane / total * 100) : 0}%</strong></span><span><small>野区</small><strong>${neutral.toLocaleString("zh-CN")} · ${total ? Math.round(neutral / total * 100) : 0}%</strong></span><span><small>路线复核窗口</small><strong>${diagnostics.length}</strong></span></div></section>
     <section class="player-score-farm-diagnostics"><header><span><small>事实与候选分开</small><strong>路线复核</strong></span><em>${diagnostics.filter((item) => item.recommendation_enabled).length} 条通过门禁</em></header><div>${diagnosticHtml}</div></section>
+    ${renderPlayerScoreP1Audit(model, ["lane_pressure", "item_delivery"], "兵线与装备节奏", "交汇点、塔区、推进深度和购买到可用的完整延误")}
   </div>`;
 }
 
@@ -6132,6 +6311,7 @@ function renderPlayerScoreTempo(model) {
     </section>
     <section class="player-score-domain-stories"><header><span><small>固定区间 + 动态阶段</small><strong>地图节奏过程</strong></span><em>事实不等同于好坏</em></header><div>${storyRows}</div></section>
     <section class="player-score-domain-events"><header><span><small>TP、神符与目标</small><strong>可归属事件</strong></span><em>${events.length} 条</em></header><div>${eventRows}</div></section>
+    ${renderPlayerScoreP1Audit(model, ["rune_control", "support_route", "suspected_pull", "level_spike"], "控符、离线与等级窗口", "抢符收益、核心线上代价、疑似拉野与关键等级后的 45 秒")}
   </div>`;
 }
 
@@ -6981,10 +7161,13 @@ function renderPlayerReportReviewBar() {
   const location = navigation.mapFocus?.region
     ? regionName(navigation.mapFocus.region)
     : viewLabel;
-  root.classList.toggle("is-problem", review.kind !== "strength");
+  root.classList.toggle("is-problem", review.kind === "improvement");
+  root.classList.toggle("is-context", review.kind === "context");
   document.querySelector("#player-report-review-origin").textContent = review.kind === "strength"
     ? "来自玩家报告 · 做得好"
-    : "来自玩家报告 · 主要问题";
+    : review.kind === "context"
+      ? "来自玩家报告 · 重要事实"
+      : "来自玩家报告 · 主要问题";
   document.querySelector("#player-report-review-title").textContent = review.title || "复盘这一波";
   document.querySelector("#player-report-review-range").textContent =
     `${formatTime(navigation.rangeStart)}-${formatTime(navigation.rangeEnd)}`;
@@ -6999,6 +7182,15 @@ function reviewPlayerScoreInsight(insightId, occurrenceIndex = null) {
     ...(model.simpleReport?.timeline || []),
     ...(model.brief?.strengths || []),
     ...(model.brief?.priorities || []),
+    ...model.eventCandidates.map((candidate) => ({
+      id: candidate.id,
+      kind: candidate.kind || "context",
+      title: candidate.title || "可复核事实",
+      fact: candidate.fact || "",
+      action: candidate.action || "",
+      jumpTarget: normalizePlayerReportJumpTarget(candidate.jump_target),
+      occurrences: [],
+    })),
   ].find((item, index, items) => (
     items.findIndex((candidate) => String(candidate.id) === String(item.id)) === index
     && String(item.id) === String(insightId)
@@ -7076,6 +7268,22 @@ function reviewPlayerScoreInsight(insightId, occurrenceIndex = null) {
     if (navigation.view === "vision") {
       const ward = WARD_RECORDS.find((item) => String(item.id) === String(navigation.selectedId));
       focusWardOnMap(ward);
+    }
+    if (navigation.view === "build") {
+      const event = ITEM_EVENTS.find((item) => (
+        purchaseEventId(item, state.selectedHeroSlot) === String(navigation.selectedId)
+      ));
+      const node = document.querySelector(
+        `[data-build-event-id="${CSS.escape(String(navigation.selectedId || ""))}"]`,
+      );
+      node?.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
+      if (event) updatePlayheadMs(event.timeMs ?? event.time * 1000, { syncSegment: false });
+    }
+    if (navigation.view === "map") {
+      renderMapMarkers();
+      document.querySelector(
+        `[data-map-event-id="${CSS.escape(String(navigation.selectedId || ""))}"]`,
+      )?.focus({ preventScroll: true });
     }
   });
 }
@@ -7219,8 +7427,39 @@ function renderTasks() {
     const retryDetail = job.stage === "waiting_replay_file" && job.retry_attempt
       ? ` · 第 ${Number(job.retry_attempt)} 次重试${job.http_status ? ` · HTTP ${job.http_status}` : ""}` : "";
     const liveDetail = stageDetail;
-    const friendlyMessage = job.status === "failed" ? taskErrorMessage(job) : liveDetail;
-    const errorDetail = job.status === "failed" ? `<div class="task-error-message"><i data-lucide="circle-alert"></i><span><strong>${escapeHtml(job.error_code || "parse_failed")}</strong>${escapeHtml(friendlyMessage)}</span></div>` : "";
+    const failure = job.status === "failed" ? parseFailureGuidance(job) : null;
+    const failedStage = job.failed_stage || job.stage || "unknown";
+    const failedStageLabel = TASK_STAGE_META[failedStage]?.[0] || "未知阶段";
+    const retryableLabel = job.retryable === true ? "可以重试"
+      : job.retryable === false ? "不建议直接重试" : "等待确认";
+    const phaseDurations = job.phase_durations_ms && typeof job.phase_durations_ms === "object"
+      ? Object.entries(job.phase_durations_ms)
+        .map(([phase, duration]) => `${TASK_STAGE_META[phase]?.[0] || phase} ${Math.max(0, Math.round(Number(duration) || 0))}ms`)
+        .join(" · ")
+      : "";
+    const errorDetail = failure ? `
+      <section class="task-failure-detail" aria-label="解析失败说明">
+        <header class="task-failure-header">
+          <span><i data-lucide="circle-alert"></i></span>
+          <div><strong>${escapeHtml(failure.title)}</strong><p>${escapeHtml(failure.detail)}</p></div>
+        </header>
+        <div class="task-failure-next">
+          <strong>建议这样处理</strong>
+          <ol>${failure.suggestions.map((suggestion) => `<li>${escapeHtml(suggestion)}</li>`).join("")}</ol>
+        </div>
+        <details class="task-technical-details">
+          <summary>查看报错技术信息</summary>
+          <dl>
+            <div><dt>错误代码</dt><dd>${escapeHtml(job.error_code || "parse_failed")}</dd></div>
+            <div><dt>失败阶段</dt><dd>${escapeHtml(failedStageLabel)} · ${escapeHtml(failedStage)}</dd></div>
+            <div><dt>任务进度</dt><dd>${Math.max(0, Math.min(100, Math.round(Number(job.progress) || 0)))}%</dd></div>
+            <div><dt>重试判断</dt><dd>${escapeHtml(retryableLabel)}</dd></div>
+            ${job.http_status ? `<div><dt>HTTP 状态</dt><dd>${escapeHtml(job.http_status)}</dd></div>` : ""}
+            ${phaseDurations ? `<div><dt>阶段耗时</dt><dd>${escapeHtml(phaseDurations)}</dd></div>` : ""}
+            <div class="task-technical-message"><dt>原始错误</dt><dd>${escapeHtml(job.message || "未提供")}</dd></div>
+          </dl>
+        </details>
+      </section>` : "";
     const updatedAt = Date.parse(job.updated_at || job.created_at || "");
     const stalledSeconds = Number.isFinite(updatedAt) ? Math.max(0, Math.floor((Date.now() - updatedAt) / 1000)) : 0;
     const stalled = active && stalledSeconds >= 90;
@@ -7236,7 +7475,7 @@ function renderTasks() {
       ${errorDetail}
       ${stalledDetail}
       <div class="task-resource-grid"><span><small>任务阶段</small><strong>${stageLabel}</strong></span><span><small>已处理</small><strong>${transferred}</strong></span><span><small>总大小</small><strong>${total}</strong></span><span><small>有效事件</small><strong>${eventCount}</strong></span></div>
-      <div class="task-actions"><button class="command-button secondary" type="button" data-task-action="matches"><i data-lucide="arrow-left"></i><span>返回比赛</span></button>${active ? `<button class="command-button danger" type="button" data-task-action="cancel" data-job-id="${job.id}"><i data-lucide="square"></i><span>取消解析</span></button>` : ""}${["failed", "canceled"].includes(job.status) ? `<button class="command-button" type="button" data-task-action="retry" data-match-id="${job.match_id}"><i data-lucide="rotate-cw"></i><span>重新解析</span></button>` : ""}${job.status === "completed" ? `<button class="command-button" type="button" data-task-action="open" data-match-id="${job.match_id}"><i data-lucide="arrow-up-right"></i><span>打开报告</span></button>` : ""}</div>
+      <div class="task-actions"><button class="command-button secondary" type="button" data-task-action="matches"><i data-lucide="arrow-left"></i><span>返回比赛</span></button>${active ? `<button class="command-button danger" type="button" data-task-action="cancel" data-job-id="${job.id}"><i data-lucide="square"></i><span>取消解析</span></button>` : ""}${job.status === "failed" ? `<button class="command-button secondary" type="button" data-task-action="copy-error" data-job-id="${job.id}"><i data-lucide="clipboard-check"></i><span>复制反馈</span></button>` : ""}${["failed", "canceled"].includes(job.status) ? `<button class="command-button" type="button" data-task-action="retry" data-match-id="${job.match_id}"><i data-lucide="rotate-cw"></i><span>重新解析</span></button>` : ""}${job.status === "completed" ? `<button class="command-button" type="button" data-task-action="open" data-match-id="${job.match_id}"><i data-lucide="arrow-up-right"></i><span>打开报告</span></button>` : ""}</div>
     `;
   }
 
@@ -8543,6 +8782,15 @@ function bindEvents() {
   document.querySelector("#back-to-matches").addEventListener("click", () => setPage("matches"));
   document.querySelector("#parser-status").addEventListener("click", () => setPage("tasks"));
   document.querySelector("#matches-list").addEventListener("click", (event) => {
+    if (event.target.closest("[data-copy-match-error]")) {
+      void copyFeedback(buildMatchListFailureReport({
+        errorCode: state.matchesErrorCode,
+        errorMessage: state.matchesError,
+        parserStatus: state.parserStatus || { status: state.parserOnline ? "ready" : "unavailable" },
+        appVersion: APP_VERSION,
+      }));
+      return;
+    }
     if (event.target.closest("[data-retry-matches]")) {
       loadMatches(state.accountId);
       return;
@@ -8661,7 +8909,10 @@ function bindEvents() {
   }));
   document.querySelectorAll("#development-map-markers, #full-map-markers, #map-event-list").forEach((container) => container.addEventListener("click", (event) => {
     const target = event.target.closest("[data-map-time]");
-    if (target) updateCurrentTime(target.dataset.mapTime);
+    if (target) {
+      if (target.dataset.mapEventId) state.selectedMapEventId = target.dataset.mapEventId;
+      updateCurrentTime(target.dataset.mapTime);
+    }
   }));
   document.querySelectorAll("[data-ward-layer]").forEach((button) => button.addEventListener("click", () => {
     const layer = button.dataset.wardLayer;
@@ -8773,7 +9024,10 @@ function bindEvents() {
   });
   document.querySelector("#build-tracks").addEventListener("click", (event) => {
     const target = event.target.closest("[data-build-time-ms]");
-    if (target) updatePlayheadMs(target.dataset.buildTimeMs);
+    if (target) {
+      if (target.dataset.buildEventId) state.selectedBuildEventId = target.dataset.buildEventId;
+      updatePlayheadMs(target.dataset.buildTimeMs);
+    }
   });
   document.querySelector("#usage-list").addEventListener("click", (event) => {
     const target = event.target.closest("[data-build-time-ms]");
@@ -9069,6 +9323,18 @@ function bindEvents() {
     const button = event.target.closest("[data-task-action]");
     if (!button) return;
     if (button.dataset.taskAction === "matches") setPage("matches");
+    if (button.dataset.taskAction === "copy-error") {
+      const job = state.activeJob?.id === button.dataset.jobId
+        ? state.activeJob
+        : state.taskHistory.find((item) => item.id === button.dataset.jobId);
+      if (job) {
+        void copyFeedback(buildParseFailureReport(job, {
+          appVersion: APP_VERSION,
+          parserStatus: state.parserStatus || { status: state.parserOnline ? "ready" : "unavailable" },
+        }), "已隐藏账号信息，可直接粘贴给开发者");
+      }
+      return;
+    }
     if (button.dataset.taskAction === "cancel") {
       cancelActiveJob();
       return;
