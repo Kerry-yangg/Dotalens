@@ -165,14 +165,23 @@ async function run() {
     }
     await capture(page, "03-downloaded");
 
-    const closed = electronApp.waitForEvent("close", { timeout: 180000 });
+    const updateMainProcess = electronApp.process();
+    const exited = updateMainProcess.exitCode == null
+      ? new Promise((resolve) => updateMainProcess.once("exit", resolve))
+      : Promise.resolve();
     await page.locator("#update-install").click();
-    await closed;
-    electronApp = null;
 
     result.status = "install_started";
     result.completed_at = new Date().toISOString();
     persist();
+
+    await Promise.race([exited, sleep(60000)]);
+    try {
+      await electronApp.close();
+    } catch {
+      // The application normally exits itself after launching the installer.
+    }
+    electronApp = null;
   } catch (error) {
     if (electronApp) {
       try {

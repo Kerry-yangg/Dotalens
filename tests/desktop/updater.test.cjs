@@ -13,6 +13,7 @@ class FakeUpdater extends EventEmitter {
     this.checkCalls = 0;
     this.downloadCalls = 0;
     this.installCalls = 0;
+    this.installArguments = [];
   }
 
   async checkForUpdates() {
@@ -26,8 +27,9 @@ class FakeUpdater extends EventEmitter {
     return [];
   }
 
-  quitAndInstall() {
+  quitAndInstall(...arguments_) {
     this.installCalls += 1;
+    this.installArguments.push(arguments_);
   }
 }
 
@@ -112,6 +114,7 @@ test("install waits while Replay parser has active jobs", async () => {
   assert.deepEqual(installed, { ok: true });
   assert.equal(parserStops, 1);
   assert.equal(updater.installCalls, 1);
+  assert.deepEqual(updater.installArguments, [[true, true]]);
   assert.equal(controller.getState().status, "installing");
 });
 

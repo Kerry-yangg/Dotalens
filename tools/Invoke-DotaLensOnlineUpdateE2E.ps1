@@ -102,6 +102,7 @@ $results = [ordered]@{
     after = $null
     timings = [ordered]@{}
     update_ui = $null
+    assisted_installer_recovery = $null
     error = $null
 }
 
@@ -471,6 +472,74 @@ try {
         "count=$(@($uiReport.screenshots).Count)"
 
     $versionObservedAt = [DateTimeOffset]::Now
+    $installedVersion = $null
+    $automaticDeadline = [DateTimeOffset]::Now.AddSeconds(20)
+    do {
+        $installedVersion = Get-NormalizedProductVersion -Path $appExecutable
+        if ($installedVersion -eq $expectedNewVersion) {
+            break
+        }
+        Start-Sleep -Milliseconds 500
+    } while ([DateTimeOffset]::Now -lt $automaticDeadline)
+
+    $assistedInstallerUsed = $installedVersion -ne $expectedNewVersion
+    if ($assistedInstallerUsed) {
+        $pendingInstaller = Join-Path $localAppDataPath `
+            'dota-lens-desktop-ui-updater\pending\Dota-Lens-Setup-0.5.0-x64.exe'
+        Add-E2ECheck 'pending_installer_available' `
+            (Test-Path -LiteralPath $pendingInstaller -PathType Leaf) $pendingInstaller
+        Get-Process -Name 'Dota-Lens-Setup-0.5.0-x64' -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                try {
+                    if ($_.Path -and
+                        [IO.Path]::GetFullPath($_.Path).Equals(
+                            [IO.Path]::GetFullPath($pendingInstaller),
+                            [StringComparison]::OrdinalIgnoreCase
+                        )) {
+                        Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+                    }
+                } catch {
+                    # The assisted installer may exit while its path is inspected.
+                }
+            }
+        $recoveryStartedAt = [DateTimeOffset]::Now
+        $recovery = Invoke-TestProcess -FilePath $pendingInstaller `
+            -ArgumentList @('/S', '--updated', '--force-run', "/D=$installPath") `
+            -TimeoutSeconds 180 `
+            -Label 'Assisted installer silent recovery' `
+            -Environment @{
+                APPDATA = $appDataPath
+                LOCALAPPDATA = $localAppDataPath
+                DOTA_LENS_USER_DATA_DIR = $userDataPath
+                DOTA_LENS_DATA_DIR = $parserDataPath
+            }
+        Add-E2ECheck 'assisted_installer_recovery_exit' ($recovery.exit_code -eq 0) `
+            "exit=$($recovery.exit_code)"
+        $results.assisted_installer_recovery = [ordered]@{
+            required = $true
+            reason = '0.4.5 launched the assisted NSIS installer with isSilent=false'
+            installer = $pendingInstaller
+            elapsed_ms = [math]::Round(
+                ([DateTimeOffset]::Now - $recoveryStartedAt).TotalMilliseconds
+            )
+        }
+    } else {
+        $results.assisted_installer_recovery = [ordered]@{
+            required = $false
+            reason = $null
+            installer = $null
+            elapsed_ms = 0
+        }
+    }
+    $results.checks.one_click_install = [ordered]@{
+        passed = -not $assistedInstallerUsed
+        detail = if ($assistedInstallerUsed) {
+            '0.4.5 opened the assisted installer; the downloaded package was completed silently for verification'
+        } else {
+            'The updater replaced the installed version without an assisted installer'
+        }
+    }
+
     $installedVersion = Wait-InstalledVersion -Executable $appExecutable `
         -Version $expectedNewVersion -TimeoutSeconds 180
     $results.timings.install_replace_ms = [math]::Round(
@@ -479,10 +548,19 @@ try {
     Add-E2ECheck 'new_version_installed' ($installedVersion -eq $expectedNewVersion) `
         "version=$installedVersion"
 
-    $newStatus = Wait-ParserStatus -Online $true -TimeoutSeconds $StartupTimeoutSeconds
+    $autoRestarted = $true
+    try {
+        $newStatus = Wait-ParserStatus -Online $true -TimeoutSeconds $StartupTimeoutSeconds
+    } catch {
+        $autoRestarted = $false
+        $newAppProcess = Start-IsolatedApp -Executable $appExecutable
+        $newStatus = Wait-ParserStatus -Online $true -TimeoutSeconds $StartupTimeoutSeconds
+    }
     $newParserData = [IO.Path]::GetFullPath([string]$newStatus.data_directory)
-    Add-E2ECheck 'updated_app_auto_restarted' ($newStatus.status -eq 'ready') `
-        "parser_pid=$($newStatus.pid)"
+    $results.checks.updated_app_auto_restarted = [ordered]@{
+        passed = $autoRestarted
+        detail = "parser_pid=$($newStatus.pid)"
+    }
     Add-E2ECheck 'new_parser_version' ($newStatus.version -eq $expectedParserVersion) `
         "version=$($newStatus.version)"
     Add-E2ECheck 'new_parser_same_data' `
@@ -528,7 +606,11 @@ try {
         selected_player_slot = [int]$afterAnalysis.match.subject.selected_player_slot
         marker_sha256 = (Get-FileHash -LiteralPath $markerPath -Algorithm SHA256).Hash
     }
-    $results.status = 'passed'
+    $results.status = if ($assistedInstallerUsed -or -not $autoRestarted) {
+        'passed_with_issue'
+    } else {
+        'passed'
+    }
 } catch {
     $results.status = 'failed'
     $results.error = [ordered]@{

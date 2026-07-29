@@ -214,7 +214,7 @@ function createUpdateController(options = {}) {
     publish({ status: "installing" });
     try {
       await stopParser();
-      updater.quitAndInstall(false, true);
+      updater.quitAndInstall(true, true);
       return { ok: true };
     } catch (error) {
       const safe = safeError(error);
