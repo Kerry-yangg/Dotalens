@@ -85,12 +85,12 @@ export function createPreviewUpdateState(status = "available", currentVersion = 
   return {
     status: normalized,
     currentVersion,
-    latestVersion: hasRelease ? "0.5.0" : normalized === "up_to_date" ? currentVersion : null,
-    releaseName: hasRelease ? "Dota Lens 0.5.0" : null,
+    latestVersion: hasRelease ? "0.5.1" : normalized === "up_to_date" ? currentVersion : null,
+    releaseName: hasRelease ? "Dota Lens 0.5.1" : null,
     releaseNotes: hasRelease
-      ? "新增应用内在线更新\n玩家报告继续完善\n修复 Replay 解析与页面体验问题"
+      ? "修复部分新录像无法解压的问题\n兼容 BZip2 与 Zstandard Replay\n加固玩家报告关键时刻渲染"
       : "",
-    releaseDate: hasRelease ? "2026-07-27T12:00:00Z" : null,
+    releaseDate: hasRelease ? "2026-07-29T12:00:00Z" : null,
     progress: normalized === "downloading" ? 36.8 : normalized === "downloaded" ? 100 : null,
     bytesPerSecond: normalized === "downloading" ? 1572864 : null,
     transferred: normalized === "downloading" ? 73400320 : null,

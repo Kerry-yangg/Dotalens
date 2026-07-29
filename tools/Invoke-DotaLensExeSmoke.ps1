@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$Installer = (Join-Path (Split-Path -Parent $PSScriptRoot) 'release\Dota-Lens-Setup-0.5.0-x64.exe'),
-    [string]$SmokeRoot = (Join-Path $PSScriptRoot 'runtime\exe-smoke-0.5.0'),
+    [string]$Installer = (Join-Path (Split-Path -Parent $PSScriptRoot) 'release\Dota-Lens-Setup-0.5.1-x64.exe'),
+    [string]$SmokeRoot = (Join-Path $PSScriptRoot 'runtime\exe-smoke-0.5.1'),
     [string]$FixtureData = (Join-Path $PSScriptRoot 'runtime\dota-lens-data'),
     [long]$MatchId = 8894766243,
     [long]$AccountId = 137129583,
@@ -40,7 +40,7 @@ if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {
 
 $results = [ordered]@{
     schema = 'dota-lens-exe-smoke/1.0'
-    version = '0.5.0'
+    version = '0.5.1'
     started_at = [DateTimeOffset]::Now.ToString('o')
     completed_at = $null
     status = 'running'

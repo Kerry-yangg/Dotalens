@@ -108,6 +108,22 @@ class ReplayJobManagerTest {
     }
 
     @Test
+    void compressedImportAcceptsValveZstandardReplayPayloads() throws Exception {
+        byte[] compressed = new byte[] {
+                (byte) 0x28, (byte) 0xB5, (byte) 0x2F, (byte) 0xFD, 0, 1, 2, 3
+        };
+
+        try (ReplayJobManager manager = new ReplayJobManager(temporaryDirectory,
+                new OpenDotaClient("http://127.0.0.1:1", ""))) {
+            Path imported = manager.importReplay(9973575403L,
+                    new ByteArrayInputStream(compressed), true);
+
+            assertEquals("9973575403.dem.bz2", imported.getFileName().toString());
+            assertTrue(manager.hasReplayCache(9973575403L));
+        }
+    }
+
+    @Test
     void detectsRecoverableReplayFilesButIgnoresPartialDownloads() throws Exception {
         Path replayDirectory = temporaryDirectory.resolve("replays");
         Files.createDirectories(replayDirectory);

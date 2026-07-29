@@ -32,6 +32,12 @@ const qaDirectoryRoot = process.env.DOTA_LENS_QA_DIRECTORY_ROOT || "C:\\Dota Len
 const qaSettingsPanel = new Set(["account", "display", "dota", "parser", "updates", "diagnostics"]).has(process.env.DOTA_LENS_QA_SETTINGS_PANEL)
   ? process.env.DOTA_LENS_QA_SETTINGS_PANEL
   : "dota";
+const qaReadingMode = new Set(["simple", "professional"]).has(process.env.DOTA_LENS_QA_READING_MODE)
+  ? process.env.DOTA_LENS_QA_READING_MODE
+  : null;
+const qaUpdateState = /^[a-z_]+$/.test(process.env.DOTA_LENS_QA_UPDATE_STATE || "")
+  ? process.env.DOTA_LENS_QA_UPDATE_STATE
+  : null;
 
 if (userDataOverride) {
   app.setPath("userData", userDataOverride);
@@ -407,6 +413,16 @@ function createWindow() {
         if (ready) break;
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
+      const contentReadyExpression = {
+        "player-score": "Boolean(document.querySelector('.player-score-simple-report, .player-score-overview')) && !document.querySelector('.player-score-module-loading')",
+        combat: "Boolean(document.querySelector('#combat-contribution-chart canvas')) && Boolean(document.querySelector('#combat-responsibility-radar canvas, #combat-responsibility-radar.empty'))",
+      }[qaView];
+      if (contentReadyExpression) {
+        for (let attempt = 0; attempt < 200; attempt += 1) {
+          if (await mainWindow.webContents.executeJavaScript(contentReadyExpression)) break;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+      }
       if (qaView === "settings" && qaDirectoryPickers) {
         await mainWindow.webContents.executeJavaScript(`(async () => {
           for (const button of document.querySelectorAll('[data-directory-picker]')) {
@@ -510,7 +526,7 @@ function createWindow() {
   });
   mainWindow.on("closed", () => { mainWindow = null; });
   const frontendUrl = qaCapturePath
-    ? `${APP_URL}?preview=${qaView}${qaMatchId ? `&qaMatch=${qaMatchId}` : ""}${qaScoreboardStress ? "&scoreboardStress=1" : ""}${qaView === "settings" ? `&settingsPanel=${qaSettingsPanel}` : ""}`
+    ? `${APP_URL}?preview=${qaView}${qaMatchId ? `&qaMatch=${qaMatchId}` : ""}${qaScoreboardStress ? "&scoreboardStress=1" : ""}${qaView === "settings" ? `&settingsPanel=${qaSettingsPanel}` : ""}${qaReadingMode ? `&readingMode=${qaReadingMode}` : ""}${qaUpdateState ? `&updateState=${qaUpdateState}` : ""}`
     : APP_URL;
   mainWindow.loadURL(frontendUrl).catch((error) => {
     console.error(`Failed to load ${APP_URL}`, error);

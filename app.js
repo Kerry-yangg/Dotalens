@@ -201,7 +201,7 @@ import {
 } from "./match-list-preferences.js";
 
 const API_BASE = "http://127.0.0.1:5600/api";
-const APP_VERSION = "0.5.0";
+const APP_VERSION = "0.5.1";
 const HERO_FALLBACK_IMAGE = `data:image/svg+xml,${encodeURIComponent(
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 36"><rect width="64" height="36" rx="4" fill="#252b2e"/><circle cx="32" cy="13" r="7" fill="#879296"/><path d="M17 35c1-9 7-14 15-14s14 5 15 14" fill="#879296"/></svg>',
 )}`;
@@ -392,6 +392,8 @@ const PREVIEW_MATCH_ID = /^\d+$/.test(APP_PARAMS.get("qaMatch") || "") ? APP_PAR
 const PREVIEW_SCOREBOARD_STRESS = APP_PARAMS.get("scoreboardStress") === "1";
 const PREVIEW_SETTINGS_PANEL = APP_PARAMS.get("settingsPanel") || "dota";
 const PREVIEW_UPDATE_STATE = APP_PARAMS.get("updateState");
+const PREVIEW_READING_MODE = ["simple", "professional"].includes(APP_PARAMS.get("readingMode"))
+  ? APP_PARAMS.get("readingMode") : null;
 const DEFAULT_ACCOUNT_ID = window.localStorage.getItem("dota-lens-account-id") || "";
 const DIRECTORY_SETTINGS_KEY = "dota-lens-directory-settings-v1";
 const READING_MODE_KEY = "dota-lens-reading-mode-v1";
@@ -5985,6 +5987,10 @@ function playerScoreDimensionHtml(dimension) {
   </button>`;
 }
 
+function playerScorePlainText(value, fallback = "") {
+  return simplifyPlayerReportText(String(value || fallback));
+}
+
 function renderPlayerScoreImportantMoments(model) {
   const moments = (model.simpleReport?.timeline || [])
     .filter((moment) => moment.importantEvent);
@@ -6014,7 +6020,7 @@ function renderPlayerScoreImportantMoments(model) {
       : presented.kind === "improvement" ? "improvement" : "context";
     return `<button class="player-score-important-row ${tone}" type="button" data-player-score-review="${escapeHtml(presented.id)}">
       <time>${formatTime(time)}-${formatTime(end)}</time>
-      <span><small>${typeLabel(moment)} · ${escapeHtml(location)}</small><strong>${escapeHtml(plainText(presented.title, "比赛关键时刻"))}</strong><em>${escapeHtml(plainText(presented.fact, "已定位到具体 Replay 片段。"))}</em></span>
+      <span><small>${typeLabel(moment)} · ${escapeHtml(location)}</small><strong>${escapeHtml(playerScorePlainText(presented.title, "比赛关键时刻"))}</strong><em>${escapeHtml(playerScorePlainText(presented.fact, "已定位到具体 Replay 片段。"))}</em></span>
       <i data-lucide="arrow-up-right"></i>
     </button>`;
   }).join("");
@@ -6051,9 +6057,6 @@ function renderSimplePlayerReport(model) {
   const training = simpleReport.primaryTraining
     || model.brief?.training?.[0]
     || playerScoreRoleTraining(model.position);
-  const plainText = (value, fallback = "") => simplifyPlayerReportText(
-    String(value || fallback),
-  );
   const domainMeta = {
     lane: { icon: "git-compare-arrows", dimension: "lane_execution" },
     farm: { icon: "wheat", dimension: "farm_efficiency" },
@@ -6100,12 +6103,12 @@ function renderSimplePlayerReport(model) {
     const insight = presentSimpleInsight(source);
     const meta = insightMeta(insight);
     const strength = tone === "strength";
-    const fact = plainText(insight.fact, "这条结论已经定位到具体片段，事实说明仍需补充。");
-    const impact = plainText(
+    const fact = playerScorePlainText(insight.fact, "这条结论已经定位到具体片段，事实说明仍需补充。");
+    const impact = playerScorePlainText(
       insight.impact,
       strength ? "这次处理为队伍保留了正向收益。" : "目前只能确认问题发生，直接后果还需结合片段复核。",
     );
-    const action = plainText(
+    const action = playerScorePlainText(
       insight.action,
       strength ? "在相同场景继续保持这套处理。" : "遇到相同局面时，先停一下并重新确认队友、敌人和目标位置。",
     );
@@ -6114,7 +6117,7 @@ function renderSimplePlayerReport(model) {
         <span class="simple-report-insight-icon"><i data-lucide="${strength ? "circle-check" : "circle-alert"}"></i></span>
         <span class="simple-report-insight-copy">
           <small><time>${escapeHtml(meta.range)}</time>${meta.location ? `<span>${escapeHtml(meta.location)}</span>` : ""}</small>
-          <strong>${escapeHtml(plainText(insight.title, strength ? "值得保持的处理" : "需要复核的处理"))}</strong>
+          <strong>${escapeHtml(playerScorePlainText(insight.title, strength ? "值得保持的处理" : "需要复核的处理"))}</strong>
           <span class="simple-report-insight-line"><b>发生了什么</b><em>${escapeHtml(fact)}</em></span>
           <span class="simple-report-insight-line impact"><b>${strength ? "带来的好处" : "造成的影响"}</b><em>${escapeHtml(impact)}</em></span>
           <span class="simple-report-insight-line action"><b>${strength ? "怎么保持" : "下次怎么做"}</b><em>${escapeHtml(action)}</em></span>
@@ -6156,19 +6159,19 @@ function renderSimplePlayerReport(model) {
     return `<button class="simple-report-timeline-row ${context ? "context" : strength ? "strength" : "improvement"}" type="button" data-player-score-review="${escapeHtml(insight.id)}">
       <time>${escapeHtml(meta.range)}</time>
       <i data-lucide="${context ? "map-pin" : strength ? "circle-check" : "circle-alert"}"></i>
-      <span><strong>${escapeHtml(plainText(insight.title))}</strong><small>${escapeHtml([meta.location, plainText(insight.fact)].filter(Boolean).join(" · "))}</small></span>
+      <span><strong>${escapeHtml(playerScorePlainText(insight.title))}</strong><small>${escapeHtml([meta.location, playerScorePlainText(insight.fact)].filter(Boolean).join(" · "))}</small></span>
       <i data-lucide="arrow-up-right"></i>
     </button>`;
   }).join("") || `<div class="simple-report-empty compact"><i data-lucide="list-x"></i><span><strong>当前筛选没有结论</strong><small>切换“全部”可查看整场已确认内容。</small></span></div>`;
-  const trainingAction = plainText(training.action || model.brief?.focus, "下一局先确认职责，再决定当前这一分钟最重要的事。");
-  const trainingTrigger = plainText(training.trigger, "遇到相同局面时");
-  const trainingCheck = plainText(training.successCheck, "下一局能在对应时间点重新检查结果");
+  const trainingAction = playerScorePlainText(training.action || model.brief?.focus, "下一局先确认职责，再决定当前这一分钟最重要的事。");
+  const trainingTrigger = playerScorePlainText(training.trigger, "遇到相同局面时");
+  const trainingCheck = playerScorePlainText(training.successCheck, "下一局能在对应时间点重新检查结果");
 
   return `<div class="player-score-simple-report">
     <header class="simple-report-lead">
       <div class="simple-report-verdict">
         <span><i data-lucide="scroll"></i>整场复盘 · ${escapeHtml(model.role.label)}</span>
-        <h2>${escapeHtml(plainText(model.brief?.verdict, "这场的明确结论仍在生成中。"))}</h2>
+        <h2>${escapeHtml(playerScorePlainText(model.brief?.verdict, "这场的明确结论仍在生成中。"))}</h2>
         <p>已确认 <b>${simpleReport.strengths.length}</b> 个做得好的地方、<b>${simpleReport.improvements.length}</b> 个需要改进的地方和 <b>${simpleReport.contexts.length}</b> 个关键事实，全部可以回到对应片段。</p>
       </div>
       <div class="simple-report-training">
@@ -7794,7 +7797,7 @@ async function simulatePreviewUpdateAction(action) {
     return;
   }
   if (action === "install") {
-    const latestVersion = state.updateState.latestVersion || "0.5.0";
+    const latestVersion = state.updateState.latestVersion || "0.5.1";
     applyUpdateState({ ...state.updateState, status: "installing" });
     await pause(700);
     applyUpdateState({
@@ -9478,6 +9481,9 @@ async function init() {
   setBuildCompactView(state.buildCompactView);
   setCombatCompactView(state.combatCompactView);
   readingModeController.restore();
+  if (PREVIEW_READING_MODE) {
+    readingModeController.set(PREVIEW_READING_MODE, { persist: false, render: false });
+  }
   setPlayerScoreEvidenceOpen(false);
   renderMatches();
   renderReplays();

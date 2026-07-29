@@ -32,8 +32,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
-import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
-
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
@@ -194,11 +192,12 @@ final class ReplayJobManager implements AutoCloseable {
                 }
             }
             if (copied == 0) throw new EOFException("Imported Replay file is empty");
-            if (!compressed && !validDem(part)) {
+            ReplayCompression.Format format = ReplayCompression.detect(part);
+            if (!compressed && format != ReplayCompression.Format.DEM) {
                 throw new IOException("Imported file is not a valid Dota 2 DEM Replay");
             }
-            if (compressed && !validBzip2(part)) {
-                throw new IOException("Imported file is not a valid BZip2 Replay archive");
+            if (compressed && !ReplayCompression.isCompressed(format)) {
+                throw new IOException("Imported file is not a supported BZip2 or Zstandard Replay archive");
             }
             moveReplacing(part, replayFile);
             if (compressed) {
@@ -558,8 +557,13 @@ final class ReplayJobManager implements AutoCloseable {
 
     private Path prepareReplay(JobState job, Path downloadedReplay)
             throws IOException, InterruptedException {
-        if (!downloadedReplay.getFileName().toString().endsWith(".bz2")) {
+        ReplayCompression.Format compression = ReplayCompression.detect(downloadedReplay);
+        if (compression == ReplayCompression.Format.DEM) {
             return downloadedReplay;
+        }
+        if (!ReplayCompression.isCompressed(compression)) {
+            throw new IOException("Replay has an unsupported payload signature: "
+                    + ReplayCompression.signature(downloadedReplay));
         }
         Path demFile = downloadedReplay.resolveSibling(job.matchId + ".dem");
         if (validDem(demFile)) {
@@ -569,10 +573,11 @@ final class ReplayJobManager implements AutoCloseable {
 
         Path part = demFile.resolveSibling(demFile.getFileName() + ".part");
         Files.deleteIfExists(part);
-        job.update("decompressing", 49, "Decompressing Replay");
-        if (!decompressWithConfiguredPython(job, downloadedReplay, part)) {
+        job.update("decompressing", 49, "Decompressing " + compression + " Replay");
+        if (compression != ReplayCompression.Format.BZIP2
+                || !decompressWithConfiguredPython(job, downloadedReplay, part)) {
             job.throwIfCanceled();
-            decompressWithJava(job, downloadedReplay, part);
+            decompressWithJava(job, downloadedReplay, part, compression);
         }
         if (!validDem(part)) {
             Files.deleteIfExists(part);
@@ -627,7 +632,8 @@ final class ReplayJobManager implements AutoCloseable {
         }
     }
 
-    private void decompressWithJava(JobState job, Path source, Path target)
+    private void decompressWithJava(JobState job, Path source, Path target,
+            ReplayCompression.Format compression)
             throws IOException, InterruptedException {
         long inputSize = Files.size(source);
         InputStream fileInput = Files.newInputStream(source);
@@ -638,7 +644,7 @@ final class ReplayJobManager implements AutoCloseable {
                                 49 + (int) Math.min(5, consumed * 5 / inputSize),
                                 "Decompressing Replay with Java fallback", consumed, inputSize));
                 InputStream compressed = new BufferedInputStream(progressInput);
-                InputStream decompressed = new BZip2CompressorInputStream(compressed, true);
+                InputStream decompressed = ReplayCompression.openDecompressing(compressed, compression);
                 OutputStream output = new BufferedOutputStream(Files.newOutputStream(target), 1024 * 1024)) {
             decompressed.transferTo(output);
         } finally {
@@ -657,15 +663,6 @@ final class ReplayJobManager implements AutoCloseable {
             }
         }
         return new String(header, StandardCharsets.US_ASCII).equals("PBDEMS2");
-    }
-
-    private static boolean validBzip2(Path path) throws IOException {
-        if (!Files.isRegularFile(path) || Files.size(path) < 3) return false;
-        byte[] header = new byte[3];
-        try (InputStream input = Files.newInputStream(path)) {
-            if (input.read(header) != header.length) return false;
-        }
-        return new String(header, StandardCharsets.US_ASCII).equals("BZh");
     }
 
     private void parseReplay(JobState job, Path replayFile, Path outputFile)

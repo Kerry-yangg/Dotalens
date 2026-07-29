@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Executable = (Join-Path (Split-Path -Parent $PSScriptRoot) 'release\win-unpacked\Dota Lens.exe'),
-    [string]$OutputDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) 'qa\0.5.0-exe-layout'),
+    [string]$OutputDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) 'qa\0.5.1-exe-layout'),
     [long]$MatchId = 8909845275,
     [int]$SubjectSlot = 0
 )

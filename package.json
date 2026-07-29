@@ -1,6 +1,6 @@
 {
   "name": "dota-lens-desktop-ui",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Dota 2 本地单场 Replay 复盘与逐秒数据分析客户端",
   "author": "Dota Lens",
   "license": "MIT",

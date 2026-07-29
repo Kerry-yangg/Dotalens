@@ -28,7 +28,7 @@ test("detail header exposes a real switch-player command", () => {
   assert.match(app, /openMatchSubjectDialog/);
 });
 
-test("0.5.0 desktop and Parser 1.7.0 versions stay aligned", () => {
+test("0.5.1 desktop and Parser 1.7.0 versions stay aligned", () => {
   const packageJson = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
   const packageLock = JSON.parse(readFileSync(new URL("../../package-lock.json", import.meta.url), "utf8"));
   const app = readFileSync(new URL("../../app.js", import.meta.url), "utf8");
@@ -36,14 +36,14 @@ test("0.5.0 desktop and Parser 1.7.0 versions stay aligned", () => {
   const startScript = readFileSync(new URL("../../tools/Start-DotaLens.ps1", import.meta.url), "utf8");
   const smoke = readFileSync(new URL("../../tools/Invoke-DotaLensExeSmoke.ps1", import.meta.url), "utf8");
 
-  assert.equal(packageJson.version, "0.5.0");
-  assert.equal(packageLock.version, "0.5.0");
-  assert.equal(packageLock.packages[""].version, "0.5.0");
-  assert.match(app, /APP_VERSION = "0\.5\.0"/);
+  assert.equal(packageJson.version, "0.5.1");
+  assert.equal(packageLock.version, "0.5.1");
+  assert.equal(packageLock.packages[""].version, "0.5.1");
+  assert.match(app, /APP_VERSION = "0\.5\.1"/);
   assert.match(desktop, /PARSER_API_VERSION = "1\.7\.0"/);
   assert.match(startScript, /expectedParserVersion = "1\.7\.0"/);
-  assert.match(smoke, /Dota-Lens-Setup-0\.5\.0-x64\.exe/);
-  assert.match(smoke, /version = '0\.5\.0'/);
+  assert.match(smoke, /Dota-Lens-Setup-0\.5\.1-x64\.exe/);
+  assert.match(smoke, /version = '0\.5\.1'/);
   assert.match(smoke, /status\.version -eq '1\.7\.0'/);
 });
 
@@ -64,7 +64,7 @@ test("development launcher can detach the long-running frontend", () => {
   assert.match(backgroundLauncher, /child\.unref\(\)/);
 });
 
-test("0.5.0 EXE smoke verifies subject identity and persisted manual selection", () => {
+test("0.5.1 EXE smoke verifies subject identity and persisted manual selection", () => {
   const smoke = readFileSync(new URL("../../tools/Invoke-DotaLensExeSmoke.ps1", import.meta.url), "utf8");
 
   assert.match(smoke, /subject_auto_matched/);
@@ -75,7 +75,7 @@ test("0.5.0 EXE smoke verifies subject identity and persisted manual selection",
   assert.match(smoke, /subject_selection_persisted/);
 });
 
-test("0.5.0 EXE smoke accepts a real dem or compressed dem.bz2 fixture", () => {
+test("0.5.1 EXE smoke accepts a real dem or compressed dem.bz2 fixture", () => {
   const smoke = readFileSync(new URL("../../tools/Invoke-DotaLensExeSmoke.ps1", import.meta.url), "utf8");
 
   assert.match(smoke, /\.dem\.bz2/);
@@ -83,7 +83,7 @@ test("0.5.0 EXE smoke accepts a real dem or compressed dem.bz2 fixture", () => {
   assert.match(smoke, /importedReplay/);
 });
 
-test("0.5.0 layout smoke binds a subject and rejects covered analysis views", () => {
+test("0.5.1 layout smoke binds a subject and rejects covered analysis views", () => {
   const layoutSmoke = readFileSync(
     new URL("../../tools/Invoke-DotaLensExeLayoutSmoke.ps1", import.meta.url),
     "utf8",

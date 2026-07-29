@@ -4,6 +4,21 @@
 
 No changes yet.
 
+## 0.5.1 - 2026-07-29
+
+### Fixed
+
+- Detect downloaded Replay compression from the payload signature instead of trusting the `.dem.bz2` suffix.
+- Decompress Valve Replay payloads encoded with either BZip2 or Zstandard, preventing valid matches from failing with `Stream is not in the BZip2 format`.
+- Accept Zstandard-compressed files through the trusted local Replay import path.
+- Keep player-report key-moment text rendering available outside the simple-report renderer.
+- Wait for player-report and combat charts before completing packaged desktop QA captures.
+
+### Validation
+
+- Parsed match `8918837931` from its real Zstandard payload into `202,001` events.
+- Passed the complete frontend, tools, desktop and parser test suites.
+
 ## 0.5.0 - 2026-07-29
 
 ### Added

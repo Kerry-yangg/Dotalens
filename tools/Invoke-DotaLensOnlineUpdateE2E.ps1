@@ -1,9 +1,9 @@
 [CmdletBinding()]
 param(
-    [string]$OldInstaller = (Join-Path (Split-Path -Parent $PSScriptRoot) 'release\Dota-Lens-Setup-0.4.5-x64.exe'),
-    [string]$NewInstaller = (Join-Path (Split-Path -Parent $PSScriptRoot) 'release\Dota-Lens-Setup-0.5.0-x64.exe'),
+    [string]$OldInstaller = (Join-Path (Split-Path -Parent $PSScriptRoot) 'release\Dota-Lens-Setup-0.5.0-x64.exe'),
+    [string]$NewInstaller = (Join-Path (Split-Path -Parent $PSScriptRoot) 'release\Dota-Lens-Setup-0.5.1-x64.exe'),
     [string]$FixtureData = (Join-Path $PSScriptRoot 'runtime\dota-lens-data'),
-    [string]$E2ERoot = (Join-Path $PSScriptRoot "runtime\online-update-e2e-0.5.0\$([DateTimeOffset]::Now.ToString('yyyyMMdd-HHmmss'))"),
+    [string]$E2ERoot = (Join-Path $PSScriptRoot "runtime\online-update-e2e-0.5.1\$([DateTimeOffset]::Now.ToString('yyyyMMdd-HHmmss'))"),
     [string]$NodeExecutable = 'C:\Users\44238\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe',
     [string]$NodeModules = 'C:\Users\44238\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\node_modules',
     [long]$MatchId = 8894766243,
@@ -39,8 +39,8 @@ $uiStderrPath = Join-Path $e2ePath 'update-ui.stderr.log'
 $reportPath = Join-Path $e2ePath 'online-update-e2e-report.json'
 $markerPath = Join-Path $userDataPath 'online-update-e2e-marker.json'
 $apiBase = 'http://127.0.0.1:5600/api'
-$expectedOldVersion = '0.4.5'
-$expectedNewVersion = '0.5.0'
+$expectedOldVersion = '0.5.0'
+$expectedNewVersion = '0.5.1'
 $expectedParserVersion = '1.7.0'
 $updaterScript = Join-Path $PSScriptRoot 'Run-DotaLensOnlineUpdateUi.cjs'
 
@@ -355,7 +355,7 @@ try {
 
     $installStartedAt = [DateTimeOffset]::Now
     $installResult = Invoke-TestProcess -FilePath $oldInstallerPath `
-        -ArgumentList @('/S', "/D=$installPath") -TimeoutSeconds 180 -Label '0.4.5 install'
+        -ArgumentList @('/S', "/D=$installPath") -TimeoutSeconds 180 -Label '0.5.0 install'
     $results.timings.old_install_ms = [math]::Round(
         ([DateTimeOffset]::Now - $installStartedAt).TotalMilliseconds
     )
@@ -436,7 +436,7 @@ try {
     $nodeResult = Invoke-TestProcess -FilePath $NodeExecutable `
         -ArgumentList @($updaterScript) `
         -TimeoutSeconds $UpdateTimeoutSeconds `
-        -Label '0.4.5 to 0.5.0 updater UI' `
+        -Label '0.5.0 to 0.5.1 updater UI' `
         -Environment @{
             APPDATA = $appDataPath
             LOCALAPPDATA = $localAppDataPath
@@ -485,10 +485,10 @@ try {
     $assistedInstallerUsed = $installedVersion -ne $expectedNewVersion
     if ($assistedInstallerUsed) {
         $pendingInstaller = Join-Path $localAppDataPath `
-            'dota-lens-desktop-ui-updater\pending\Dota-Lens-Setup-0.5.0-x64.exe'
+            'dota-lens-desktop-ui-updater\pending\Dota-Lens-Setup-0.5.1-x64.exe'
         Add-E2ECheck 'pending_installer_available' `
             (Test-Path -LiteralPath $pendingInstaller -PathType Leaf) $pendingInstaller
-        Get-Process -Name 'Dota-Lens-Setup-0.5.0-x64' -ErrorAction SilentlyContinue |
+        Get-Process -Name 'Dota-Lens-Setup-0.5.1-x64' -ErrorAction SilentlyContinue |
             ForEach-Object {
                 try {
                     if ($_.Path -and
@@ -517,7 +517,7 @@ try {
             "exit=$($recovery.exit_code)"
         $results.assisted_installer_recovery = [ordered]@{
             required = $true
-            reason = '0.4.5 launched the assisted NSIS installer with isSilent=false'
+            reason = '0.5.0 launched the assisted NSIS installer with isSilent=false'
             installer = $pendingInstaller
             elapsed_ms = [math]::Round(
                 ([DateTimeOffset]::Now - $recoveryStartedAt).TotalMilliseconds
@@ -534,7 +534,7 @@ try {
     $results.checks.one_click_install = [ordered]@{
         passed = -not $assistedInstallerUsed
         detail = if ($assistedInstallerUsed) {
-            '0.4.5 opened the assisted installer; the downloaded package was completed silently for verification'
+            '0.5.0 opened the assisted installer; the downloaded package was completed silently for verification'
         } else {
             'The updater replaced the installed version without an assisted installer'
         }
