@@ -1,15 +1,15 @@
 # Dota Lens
 
-Dota Lens 是一款面向 Dota 2 玩家个人复盘的 Windows 桌面客户端。输入 Steam 32 位数字
-ID 后，可读取最近比赛、获取 Replay，并在本机完成逐秒解析和多模块分析。
+Dota Lens 是一款面向 Dota 2 玩家个人复盘的 Windows 桌面客户端。输入 Dota 2 游戏
+数字 ID 后，可读取最近比赛、获取 Replay，并在本机完成逐秒解析和多模块分析。
 
-> 当前开发版本：`0.4.5`。分析结论用于辅助复盘，不应视为绝对的游戏判断。
+> 当前版本：`0.5.1`。分析结论用于辅助复盘，不应视为绝对的游戏判断。
 
-[查看 Windows 安装程序](https://github.com/Kerry-yangg/Dotalens/releases)
+[下载 v0.5.1 Windows 安装程序](https://github.com/Kerry-yangg/Dotalens/releases/tag/v0.5.1)
 
 ## 主要功能
 
-- 按 Steam 32 位数字 ID 读取最近比赛，展示胜负、KDA、补刀、反补、GPM 和 XPM。
+- 按 Dota 2 游戏数字 ID 读取最近比赛，展示胜负、KDA、补刀、反补、GPM 和 XPM。
 - 选择比赛后确认是否复盘，自动请求 Replay 元数据、下载、解压、解析并生成紧凑分析包。
 - 查看逐秒英雄状态、位置、经济、经验、补刀、物品栏、技能升级和事件时间轴。
 - 提供发育与打钱、眼位、全场地图、出装、战斗团战和逐玩家报告等分析模块。
@@ -23,9 +23,9 @@ ID 后，可读取最近比赛、获取 Replay，并在本机完成逐秒解析�
 支持 Windows 10/11 x64。普通用户无需单独安装 Node.js、Java 或 Maven。
 
 1. 在 [Releases](https://github.com/Kerry-yangg/Dotalens/releases) 下载
-   `Dota-Lens-Setup-0.4.5-x64.exe`。
+   `Dota-Lens-Setup-0.5.1-x64.exe`。
 2. 运行安装程序并选择安装目录。
-3. 启动 Dota Lens，输入 OpenDota 使用的 Steam 32 位 `account_id`。
+3. 启动 Dota Lens，输入 Dota 2 个人资料中显示的游戏数字 ID。
 4. 选择一场比赛，确认后等待本地解析完成。
 
 ### 8500+ Immortal Draft 对局
@@ -61,7 +61,7 @@ Release 页面下载，并核对 Release 中公布的 SHA-256。
 - 不同 Dota 2 Patch 的 Replay 字段会变化，地图校准和派生结论需要持续回归验证。
 - 连续真实队伍视野、完整逐波兵线和营地状态在部分 Replay 中不可得，产品会显示证据缺口。
 - 当前只构建和验证 Windows x64 安装程序，尚未提供 macOS 或 Linux 桌面包。
-- `0.4.5` 仍使用 Electron 默认程序图标，后续版本会补充独立品牌图标与代码签名。
+- `0.5.1` 仍使用 Electron 默认程序图标，后续版本会补充独立品牌图标与代码签名。
 
 ## 本地开发
 
