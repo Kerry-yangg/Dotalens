@@ -1,123 +1,95 @@
 # Dota Lens
 
-Dota Lens 是一款面向 Dota 2 玩家个人复盘的 Windows 桌面客户端。输入 Dota 2 游戏
-数字 ID 后，可读取最近比赛、获取 Replay，并在本机完成逐秒解析和多模块分析。
+> 面向 Dota 2 玩家的一体化本地 Replay 复盘工具。当前版本：`v0.5.5`。
 
-> 当前版本：`0.5.1`。分析结论用于辅助复盘，不应视为绝对的游戏判断。
+[**下载 Windows x64 安装包**](https://github.com/Kerry-yangg/Dotalens/releases/download/v0.5.5/Dota-Lens-Setup-0.5.5-x64.exe) · [查看 v0.5.5 更新说明](https://github.com/Kerry-yangg/Dotalens/releases/tag/v0.5.5)
 
-[下载 v0.5.1 Windows 安装程序](https://github.com/Kerry-yangg/Dotalens/releases/tag/v0.5.1)
+Dota Lens 可以通过 Dota 2 游戏数字 ID 读取公开比赛，也支持手动导入本地 Replay。录像会在本机解析，并生成对线、发育、团战、视野、出装和逐玩家报告。分析结论都尽量保留时间、地图和事实依据，方便直接跳回对应片段复核。
+
+## v0.5.5 重点更新
+
+### 一页复盘
+
+- 用一页内容概括本场定位、主要优点、关键问题和下一局训练目标。
+- 重要结论可跳转到对应时间、地图、团战或详细数据，不只给出泛泛建议。
+- 提供“简明分析 / 专业分析”两种阅读方式：普通玩家先看结论，硬核玩家继续下钻证据和计算依据。
+
+### 前 10 分钟对线复盘
+
+- 分开呈现“本路结果”和“个人执行”，避免把队友表现直接算到个人头上。
+- 核心位重点分析逐分钟补刀、关键兵、经验、经济差、换血、补给与离线收益。
+- 辅助位重点分析对线期累计消耗、技能伤害对象、有效消耗、击杀前回溯和离线影响。
+- 为 1/2/3/4/5 号位分别生成对线总结、做得好的片段、值得复盘的片段和可验证训练目标。
+
+### 玩家评分与团战决策
+
+- 调整评分模型，缺失证据只影响完整度，不再无故拉低表现分。
+- 同时展示综合分、本场排名和证据完整度，更容易识别本场发挥最好与最差的玩家。
+- 团战分析会聚焦 BKB 等关键物品和重要技能的可用窗口，帮助判断是被控后无法使用，还是有机会却没有使用。
+
+### 视野、分享与更新
+
+- 眼位分析支持地图缩放、真假眼区分、存活与被拆信息、评分和本机学习样本。
+- 一键生成适合分享给朋友的轻量复盘内容，同时保留可定位的关键时刻。
+- 支持客户端内检查更新、下载安装新版，以及自定义读取最近比赛的数量。
 
 ## 主要功能
 
-- 按 Dota 2 游戏数字 ID 读取最近比赛，展示胜负、KDA、补刀、反补、GPM 和 XPM。
-- 选择比赛后确认是否复盘，自动请求 Replay 元数据、下载、解压、解析并生成紧凑分析包。
-- 查看逐秒英雄状态、位置、经济、经验、补刀、物品栏、技能升级和事件时间轴。
-- 提供发育与打钱、眼位、全场地图、出装、战斗团战和逐玩家报告等分析模块。
-- 对打钱路线、安全兵线、眼位生命周期、战斗类型和位置职责输出证据、置信度及缺失数据提示。
-- 支持解析进度、超时提示、取消任务、失败重试和本地 Replay 缓存。
-- 校验 Replay 内部比赛 ID，并为每场比赛持久保存“本人”玩家归属；账号无法自动匹配时可从十名玩家中手动选择。
-- 显示 Patch 的确认、按录像时间推断或边界不确定状态，证据不足时关闭依赖 Patch 的负向评分。
+- 通过 Dota 2 游戏数字 ID 读取公开比赛，展示胜负、KDA、补刀、反补、GPM 和 XPM。
+- 自动获取公开 Replay，完成下载、解压、本地解析和紧凑分析包生成。
+- 手动导入 `.dem` 或 `.dem.bz2` Replay，高分对局和公开服务缺失的录像也可分析。
+- 提供比赛总览、对线复盘、发育复盘、出装、战斗团战、视野分析和玩家评分报告。
+- 查看英雄位置、经济、经验、物品、技能、击杀、眼位及关键事件时间轴。
+- 结论支持跳转到对应时间和地图位置，并区分事实、程序推导、置信度与数据局限。
+- 支持解析进度、取消、超时提示、失败原因、重试和本地任务历史。
 
 ## 安装使用
 
-支持 Windows 10/11 x64。普通用户无需单独安装 Node.js、Java 或 Maven。
+支持 Windows 10/11 x64。普通用户无需另外安装 Node.js、Java、Maven 或 Replay 解析器。
 
-1. 在 [Releases](https://github.com/Kerry-yangg/Dotalens/releases) 下载
-   `Dota-Lens-Setup-0.5.1-x64.exe`。
+1. 下载 [`Dota-Lens-Setup-0.5.5-x64.exe`](https://github.com/Kerry-yangg/Dotalens/releases/download/v0.5.5/Dota-Lens-Setup-0.5.5-x64.exe)。
 2. 运行安装程序并选择安装目录。
 3. 启动 Dota Lens，输入 Dota 2 个人资料中显示的游戏数字 ID。
-4. 选择一场比赛，确认后等待本地解析完成。
+4. 从比赛列表选择一场比赛，确认后等待本地解析完成。
+5. 如果公开服务没有录像，可在客户端中手动导入本地 Replay。
 
-### 8500+ Immortal Draft 对局
+安装程序暂未进行商业代码签名，Windows SmartScreen 可能显示“未知发布者”。请只从本仓库 Release 页面下载。
 
-Valve 不会把 8500+ Immortal Draft 对局列入公开比赛历史或 Web API，Replay 也只向
-参赛者开放。这类比赛不能通过 OpenDota 自动获取，但账号本人仍可完整复盘：
+`v0.5.5` 安装包 SHA-256：
+
+```text
+5A9E4BFA02918368AA582276ABA75ED83FFA7688DA6E488F22871788C085540C
+```
+
+## 高分对局与本地 Replay
+
+部分高分 Immortal Draft 对局不会出现在公开比赛历史中，公开服务也可能拿不到 Replay 地址。这不代表录像无法分析：
 
 1. 在 Dota 2 客户端的比赛历史中下载自己的 Replay。
-2. 在 Dota Lens 选择“导入 Replay”，或在设置中选择 Replay 目录后点击“扫描目录”。
-3. 选择 `比赛ID.dem` 或 `比赛ID.dem.bz2`，等待本地解析完成。
+2. 在 Dota Lens 中选择“导入 Replay”，或者在设置中选择 Replay 目录后扫描。
+3. 导入对应的 `.dem` 或 `.dem.bz2` 文件并等待解析。
 
-Dota Lens 会从 Replay 重建比赛 ID、胜负、时长、10 名玩家、英雄和基础数据，再生成
-现有发育、视野、战斗与玩家报告。非参赛者无法通过公共接口下载此类 Replay。
-
-安装程序目前未做商业代码签名，Windows SmartScreen 可能显示未知发布者。请只从本仓库的
-Release 页面下载，并核对 Release 中公布的 SHA-256。
+Dota Lens 会从 Replay 重建比赛 ID、胜负、时长、十名玩家、英雄和基础事件，再生成现有分析模块。非参赛者通常无法通过公共接口下载这类 Replay。
 
 ## 数据与隐私
 
-- 账号 ID 和比赛查询会发送到 OpenDota API。
-- 公开比赛的 Replay 会从 OpenDota 返回的 Valve Replay 地址下载。
-- 手动导入的 Replay 只会写入本机解析缓存，不会上传到 Dota Lens 的外部服务。
-- Replay 解析和产品分析在本机执行，Dota Lens 不额外上传 Replay 或分析结果。
-- Replay、压缩后的原始事件和分析摘要保存在 Electron 的本机应用数据目录。
-- 项目未接入自有遥测或广告 SDK；OpenDota、Valve CDN 等外部服务适用各自条款。
+- 比赛列表查询会请求 OpenDota 等公开服务。
+- 公开 Replay 会从公开服务提供的 Valve Replay 地址下载。
+- 手动导入的 Replay、解析事件、分析结果和本机学习样本默认只保存在本机。
+- Dota Lens 不会把本地 Replay 或完整分析报告上传到自有服务器。
+- 外部公开服务适用其各自的隐私政策与服务条款。
 
-首次启动不会预填任何账号。账号只在用户完成查询后保存到本机 `localStorage`。
+## 数据局限
 
-## 当前限制
+- 分析结论用于辅助复盘，不应视为绝对的游戏判断。
+- Dota 2 Patch、地图和 Replay 字段会持续变化，部分推导需要随版本校准。
+- 证据不足时，客户端会降低结论置信度或明确提示无法判断，而不是用缺失数据批评玩家。
+- 当前只提供并验证 Windows x64 客户端，暂未提供 macOS 或 Linux 版本。
 
-- 公开比赛列表及自动 Replay 获取依赖 OpenDota；8500+ Immortal Draft 需要参赛者从
-  Dota 2 客户端下载 Replay 后手动导入。
-- 不同 Dota 2 Patch 的 Replay 字段会变化，地图校准和派生结论需要持续回归验证。
-- 连续真实队伍视野、完整逐波兵线和营地状态在部分 Replay 中不可得，产品会显示证据缺口。
-- 当前只构建和验证 Windows x64 安装程序，尚未提供 macOS 或 Linux 桌面包。
-- `0.5.1` 仍使用 Electron 默认程序图标，后续版本会补充独立品牌图标与代码签名。
+## 发布与源码说明
 
-## 本地开发
+`v0.5.5` Release 仅发布 Windows 安装包和在线更新所需元数据，不发布与该版本对应的新版源代码。仓库中历史上已经公开的代码仍遵循其发布时附带的许可证；这不代表后续未公开版本的源代码一并发布。
 
-开发环境建议使用：
+Dota Lens 使用的 OpenDota Parser、Clarity、前端依赖以及 Dota 2 名称、地图、英雄、物品和技能资源具有各自的版权与许可，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
-- PowerShell 7+
-- Node.js 22.12+
-- JDK 21（包含 `jlink`）
-- Maven 3.9+
-- Python 3.11+（仅 Replay POC 与 Python 测试需要）
-
-默认构建脚本会从以下本机目录查找工具，这些目录不会提交到 Git：
-
-```text
-tools/runtime/jdk-21/
-tools/runtime/apache-maven-3.9.12/
-```
-
-安装前端依赖并启动开发环境：
-
-```powershell
-npm ci
-./tools/Build-DotaLensParser.ps1
-./tools/Start-DotaLens.ps1
-```
-
-验证和打包：
-
-```powershell
-npm run build
-./tools/Build-DotaLensParser.ps1
-python -m unittest discover -s ./tools/replay-poc/tests -v
-./tools/Build-DotaLensRuntime.ps1
-npm run desktop:dist
-```
-
-安装程序输出到 `release/`。该目录、Replay、原始 JSONL、分析缓存和本机运行时均被
-`.gitignore` 排除。
-
-## 项目结构
-
-```text
-desktop/                 Electron 主进程与安全预加载脚本
-public/assets/            地图、英雄及界面运行所需资源
-tools/replay-parser/      基于 OpenDota Parser 和 Clarity 的 Java Replay 解析器
-tools/replay-poc/         原始 JSONL 解析验证与 Python 测试
-app.js                    桌面产品交互和数据渲染
-index.html / styles.css   主界面结构与样式
-*.md                      PRD、判断逻辑、评估报告和实施路线
-```
-
-## 许可与声明
-
-项目自有源代码采用 [MIT License](LICENSE)。OpenDota Parser、Clarity、前端依赖以及
-Dota 2 名称、地图、英雄、物品和技能资源具有各自的版权与许可，详见
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-
-Dota Lens 是非官方社区项目，与 Valve、完美世界或 OpenDota 无隶属、授权或背书关系。
-Dota 2 是 Valve Corporation 的商标。
+Dota Lens 是非官方社区项目，与 Valve、完美世界或 OpenDota 无隶属、授权或背书关系。Dota 2 是 Valve Corporation 的商标。
