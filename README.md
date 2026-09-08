@@ -1,31 +1,21 @@
 # Dota Lens
 
-> 面向 Dota 2 玩家的一体化本地 Replay 复盘工具。当前版本：`v0.5.7`。
+> 面向 Dota 2 玩家的一体化本地 Replay 复盘工具。当前版本：`v0.5.9`。
 
-[**下载 Windows x64 安装包**](https://github.com/Kerry-yangg/Dotalens/releases/download/v0.5.7/Dota-Lens-Setup-0.5.7-x64.exe) · [查看 v0.5.7 更新说明](https://github.com/Kerry-yangg/Dotalens/releases/tag/v0.5.7)
+[**下载 Windows x64 安装包**](https://github.com/Kerry-yangg/Dotalens/releases/download/v0.5.9/Dota-Lens-Setup-0.5.9-x64.exe) · [查看 v0.5.9 更新说明](https://github.com/Kerry-yangg/Dotalens/releases/tag/v0.5.9)
 
 Dota Lens 可以通过 Dota 2 游戏数字 ID 读取公开比赛，也支持手动导入本地 Replay。录像会在本机解析，并生成对线、发育、团战、视野、出装和逐玩家报告。分析结论都尽量保留时间、地图和事实依据，方便直接跳回对应片段复核。
 
-## v0.5.7 重点更新
+## v0.5.9 重点更新
 
-### 整场个人团战报告
+- **本机报告更容易打开**：比赛页、Replay 列表和已完成任务可直接打开保存的报告，无需先连接账号；首次使用提供游戏 ID、导入录像和本机报告三个入口。
+- **本局总结优先**：打开比赛先看本局总结，再按需进入深度分析和分析思路；从结果回查前序交战、死亡状态和对应证据。
+- **团战与开团前视野**：整场个人团战报告结合十人生命、魔法和状态；可切换天辉、夜魇、上帝视角，并定位开团前 10 秒、前 5 秒或交战开始。
+- **证据往返更稳定**：查看片段后返回报告可保留页签、筛选和阅读位置；修复首次跳转被异步加载重置及播放过程中地图、时间条跳动的问题。
+- **结论与数字更清楚**：简明模式优先显示游戏事实；本路结果与个人执行分开呈现，统一跨局统计口径、单位和缺失数据说明。
+- **分享与失败恢复**：补齐报告读取重试入口，修复 PNG 导出和 HTML 分享中英雄图片缺失。
 
-- 汇总整场重要战斗、个人参与、第一轮到场、交换结果、经济影响与目标转化。
-- 典型团战会拆解个人伤害、进入击杀链的有效伤害、控制、技能物品窗口和战后结果。
-- 每条重要结论都可以直接跳到对应团战回放、时间轴和地图位置复核。
-
-### 团战证据与目标决策
-
-- 新增 1 秒、3 秒和 5 秒爆发窗口，并区分总伤害与实际进入击杀链的伤害。
-- 关键技能和 BKB 等物品先检查学习、冷却、魔法、距离、控制与实际使用，再生成结论。
-- 推塔或打盾建议增加买活、Glyph、Backdoor、兵线、肉山状态和双方 ETA 门禁；证据不足时只说明限制，不强行归责。
-
-### 地形视野与辅助决策
-
-- 视野范围可结合本地地形包计算树木、高低坡和阻挡；没有地形证据时明确标记为圆形估算。
-- 视野分析支持按己方、敌方和阵容筛选，并结合团战位置查看高价值视野区域。
-- 辅助决策增加核心安全、资源机会、活动组与机会成本审计，缺失关键证据时不会生成负面归责。
-- 客户端版本为 `0.5.7`，内置 Parser API 为 `1.15.0`。
+客户端版本为 `0.5.9`，内置 Parser API 为 `1.16.0`。完整说明见 [v0.5.9 Release](https://github.com/Kerry-yangg/Dotalens/releases/tag/v0.5.9)。
 
 ## 主要功能
 
@@ -44,7 +34,7 @@ Dota Lens 可以通过 Dota 2 游戏数字 ID 读取公开比赛，也支持手�
 
 支持 Windows 10/11 x64。普通用户无需另外安装 Node.js、Java、Maven 或 Replay 解析器。
 
-1. 下载 [`Dota-Lens-Setup-0.5.7-x64.exe`](https://github.com/Kerry-yangg/Dotalens/releases/download/v0.5.7/Dota-Lens-Setup-0.5.7-x64.exe)。
+1. 下载 [`Dota-Lens-Setup-0.5.9-x64.exe`](https://github.com/Kerry-yangg/Dotalens/releases/download/v0.5.9/Dota-Lens-Setup-0.5.9-x64.exe)。
 2. 运行安装程序并选择安装目录。
 3. 启动 Dota Lens，输入 Dota 2 个人资料中显示的游戏数字 ID。
 4. 从比赛列表选择一场比赛，确认后等待本地解析完成。
@@ -52,11 +42,7 @@ Dota Lens 可以通过 Dota 2 游戏数字 ID 读取公开比赛，也支持手�
 
 安装程序暂未进行商业代码签名，Windows SmartScreen 可能显示“未知发布者”。请只从本仓库 Release 页面下载。
 
-`v0.5.7` 安装包 SHA-256：
-
-```text
-B3C42349FDBE2AAC39F094A162BA93FBD237FB939E6853859096F33478F5CBFC
-```
+安装包的 SHA-256 请参见同一 Release 中的 [`SHA256SUMS.txt`](https://github.com/Kerry-yangg/Dotalens/releases/download/v0.5.9/SHA256SUMS.txt)。
 
 ## 高分对局与本地 Replay
 
@@ -85,7 +71,7 @@ Dota Lens 会从 Replay 重建比赛 ID、胜负、时长、十名玩家、英�
 
 ## 发布与源码说明
 
-`v0.5.7` Release 仅发布 Windows 安装包和在线更新所需元数据，不发布与该版本对应的新版源代码。仓库中历史上已经公开的代码仍遵循其发布时附带的许可证；这不代表后续未公开版本的源代码一并发布。
+`v0.5.9` Release 仅发布 Windows 安装包、在线更新所需元数据、校验文件及版本说明，不发布与该版本对应的新版源代码。仓库中历史上已经公开的代码仍遵循其发布时附带的许可证；这不代表后续未公开版本的源代码一并发布。
 
 Dota Lens 使用的 OpenDota Parser、Clarity、前端依赖以及 Dota 2 名称、地图、英雄、物品和技能资源具有各自的版权与许可，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 

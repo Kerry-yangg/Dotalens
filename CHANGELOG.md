@@ -4,6 +4,29 @@
 
 No changes yet.
 
+## 0.5.9 - 2026-09-08
+
+### Added
+
+- Open saved local reports from matches, Replay files, and completed tasks without first connecting an account.
+- Add a result-led review tab beside the match summary and detailed analysis, with links back to the supporting Replay evidence.
+- Show ten-player health, mana, and status beside the teamfight map, with Radiant, Dire, and omniscient perspectives and pre-fight time shortcuts.
+
+### Changed
+
+- Open matches on the summary, preserve report context when returning from evidence, and reuse previously loaded teamfight details.
+- Clarify simple-mode language, cross-match statistics, units, evidence limitations, and missing values.
+
+### Fixed
+
+- Stabilize the map and playback bar while key-frame descriptions change.
+- Use the compact teamfight layout at narrower desktop widths to keep the analysis panel readable.
+- Prevent asynchronous loading from resetting report jumps to the first fight or an incorrect farm segment.
+- Wait for the report module before rendering a tab or section selected immediately after opening a match.
+- Restore report retries, PNG exports, and hero images in shared HTML reports.
+
+Download the Windows x64 installer and checksum from [v0.5.9](https://github.com/Kerry-yangg/Dotalens/releases/tag/v0.5.9). See [the full release notes](docs/releases/v0.5.9.md) for details and limitations. This release does not upload the new product source code.
+
 ## 0.5.1 - 2026-07-29
 
 ### Fixed
